@@ -41,18 +41,14 @@ public sealed class SettingsServiceTests
         var settings =
             workspace.CreateSettings();
 
-        settings.ProjectName =
-            "SpëllQuäke 日本語";
+        settings.AssetRootFolder =
+            Path.Combine(workspace.Root, "SpëllQuäke 日本語");
 
         service.Save(
             settings);
 
         var loaded =
             service.Load();
-
-        Assert.Equal(
-            settings.ProjectName,
-            loaded.ProjectName);
 
         Assert.Equal(
             settings.DownloadFolder,

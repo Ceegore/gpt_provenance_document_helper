@@ -45,20 +45,7 @@ public sealed class ImageFinderService
             return null;
         }
 
-        var chatGptCandidates =
-            allCandidates
-                .Where(file =>
-                    file.Name.StartsWith(
-                        "ChatGPT Image",
-                        StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-        var candidates =
-            chatGptCandidates.Count > 0
-                ? chatGptCandidates
-                : allCandidates;
-
-        return candidates
+        return allCandidates
             .OrderByDescending(
                 file => file.LastWriteTimeUtc)
             .ThenByDescending(

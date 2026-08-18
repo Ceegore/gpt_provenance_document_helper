@@ -51,7 +51,6 @@ public sealed class SettingsServiceBranchTests
 
         var settings = new AppSettings
         {
-            ProjectName = "Test",
             DownloadFolder = workspace.Downloads,
             AssetRootFolder = workspace.Assets,
             AcceptedExtensions = new List<string> { " png ", ".JPG", "webp" }

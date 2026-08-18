@@ -22,6 +22,14 @@ public sealed class TemplateService
         "{{PROMPT}}"
     };
 
+    private static readonly string[] FinalNoReferenceTokens =
+    {
+        "{{FINAL_FILENAME}}",
+        "{{PROJECT}}",
+        "{{GENERATION_DATE}}",
+        "{{PROMPT}}"
+    };
+
     private static readonly Regex TokenRegex =
         new(
             @"\{\{[^{}\r\n]+\}\}",
@@ -29,16 +37,21 @@ public sealed class TemplateService
 
     private readonly string _referenceTemplatePath;
     private readonly string _finalTemplatePath;
+    private readonly string? _finalNoReferenceTemplatePath;
 
     public TemplateService(
         string referenceTemplatePath,
-        string finalTemplatePath)
+        string finalTemplatePath,
+        string? finalNoReferenceTemplatePath = null)
     {
         _referenceTemplatePath =
             referenceTemplatePath;
 
         _finalTemplatePath =
             finalTemplatePath;
+
+        _finalNoReferenceTemplatePath =
+            finalNoReferenceTemplatePath;
     }
 
     public ValidationResult ValidateTemplates()
@@ -55,6 +68,14 @@ public sealed class TemplateService
             _finalTemplatePath,
             FinalTokens,
             errors);
+
+        if (!string.IsNullOrWhiteSpace(_finalNoReferenceTemplatePath))
+        {
+            ValidateTemplate(
+                _finalNoReferenceTemplatePath,
+                FinalNoReferenceTokens,
+                errors);
+        }
 
         return errors.Count == 0
             ? ValidationResult.Success()
@@ -111,6 +132,45 @@ public sealed class TemplateService
 
                 ["{{REFERENCE_FILENAME}}"] =
                     referenceFilename,
+
+                ["{{PROJECT}}"] =
+                    project,
+
+                ["{{GENERATION_DATE}}"] =
+                    generationDate,
+
+                ["{{PROMPT}}"] =
+                    prompt
+            };
+
+        return RenderSinglePass(
+            template,
+            values);
+    }
+
+    public string RenderFinalNoReference(
+        string finalFilename,
+        string project,
+        string generationDate,
+        string prompt)
+    {
+        if (string.IsNullOrWhiteSpace(_finalNoReferenceTemplatePath))
+        {
+            throw new InvalidOperationException(
+                "No-reference template path is not configured.");
+        }
+
+        var template =
+            LoadValidatedTemplate(
+                _finalNoReferenceTemplatePath,
+                FinalNoReferenceTokens);
+
+        var values =
+            new Dictionary<string, string>(
+                StringComparer.Ordinal)
+            {
+                ["{{FINAL_FILENAME}}"] =
+                    finalFilename,
 
                 ["{{PROJECT}}"] =
                     project,

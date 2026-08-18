@@ -64,7 +64,7 @@ public sealed class AssetProcessorServiceTests
             provenance);
 
         Assert.Contains(
-            "SpellQuake",
+            session.ProjectName,
             provenance);
 
         Assert.Contains(

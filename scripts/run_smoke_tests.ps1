@@ -21,6 +21,7 @@ Write-Host "Executable SHA-256: $exeHash"
 $templateDir = Join-Path $PublishDir "templates"
 $refTemplate = Join-Path $templateDir "reference.md"
 $finalTemplate = Join-Path $templateDir "final.md"
+$finalNoRefTemplate = Join-Path $templateDir "final_no_reference.md"
 
 if (-not (Test-Path $refTemplate)) {
     throw "Reference template missing at: $refTemplate"
@@ -28,7 +29,10 @@ if (-not (Test-Path $refTemplate)) {
 if (-not (Test-Path $finalTemplate)) {
     throw "Final template missing at: $finalTemplate"
 }
-Write-Host "Templates verified: reference.md, final.md present."
+if (-not (Test-Path $finalNoRefTemplate)) {
+    throw "Final no-reference template missing at: $finalNoRefTemplate"
+}
+Write-Host "Templates verified: reference.md, final.md, final_no_reference.md present."
 
 # 2. Verify core runtime dependencies
 $coreAssemblies = @(
@@ -46,11 +50,13 @@ foreach ($dll in $coreAssemblies) {
 Write-Host "Core runtime assemblies verified in publish directory."
 
 # 3. Real Process Startup, Window Title & Graceful Shutdown Smoke Test
-Write-Host "Testing process startup and window creation of $exePath ..."
-$proc = Start-Process -FilePath $exePath -PassThru
+$absExePath = (Resolve-Path $exePath).Path
+$workDir = Split-Path -Parent $absExePath
+Write-Host "Testing process startup and window creation of $absExePath ..."
+$proc = Start-Process -FilePath $absExePath -WorkingDirectory $workDir -PassThru
 
-# Allow a cold self-contained Windows launch to create its main window.
-$timeoutMs = 15000
+# Wait up to 5 seconds for main window to appear
+$timeoutMs = 5000
 $elapsedMs = 0
 $windowTitle = ""
 $hasWindow = $false
@@ -58,14 +64,19 @@ $hasWindow = $false
 while ($elapsedMs -lt $timeoutMs) {
     Start-Sleep -Milliseconds 250
     $elapsedMs += 250
-    $proc.Refresh()
-    if ($proc.HasExited) {
-        break
-    }
-    if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
-        $windowTitle = $proc.MainWindowTitle
-        $hasWindow = $true
-        break
+    try {
+        $p = [System.Diagnostics.Process]::GetProcessById($proc.Id)
+        if ($p.HasExited) {
+            break
+        }
+        if ($p.MainWindowHandle -ne [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($p.MainWindowTitle)) {
+            $windowTitle = $p.MainWindowTitle
+            $hasWindow = $true
+            $proc = $p
+            break
+        }
+    } catch {
+        # Process handle lookup retry
     }
 }
 
@@ -109,8 +120,15 @@ if (-not $gracefulShutdown) {
 # 4. Release Archive Creation & Verification
 $archivePath = $null
 $archiveHash = $null
+$productVersion = (Get-Item $exePath).VersionInfo.ProductVersion
+if (-not $productVersion) {
+    throw "Could not determine product version from executable."
+}
+$productVersion = $productVersion.Split('+')[0]
+Write-Host "Executable ProductVersion: $productVersion"
+
 if ($CreateArchive) {
-    $archiveName = "AssetProvenanceHelper-v1.0.0-win-x64.zip"
+    $archiveName = "AssetProvenanceHelper-v$($productVersion)-win-x64.zip"
     $archivePath = Join-Path $LogOutputDir $archiveName
     Write-Host "Compressing publish directory to $archivePath ..."
     Compress-Archive -Path "$PublishDir/*" -DestinationPath $archivePath -Force

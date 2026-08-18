@@ -24,6 +24,11 @@ public sealed class TestWorkspace : IDisposable
             Templates,
             "final.md");
 
+    public string FinalNoReferenceTemplatePath =>
+        Path.Combine(
+            Templates,
+            "final_no_reference.md");
+
     public string SettingsPath =>
         Path.Combine(
             Root,
@@ -73,9 +78,6 @@ public sealed class TestWorkspace : IDisposable
     {
         return new AppSettings
         {
-            ProjectName =
-                "SpellQuake",
-
             DownloadFolder =
                 Downloads,
 
@@ -116,7 +118,8 @@ public sealed class TestWorkspace : IDisposable
     {
         return new TemplateService(
             ReferenceTemplatePath,
-            FinalTemplatePath);
+            FinalTemplatePath,
+            FinalNoReferenceTemplatePath);
     }
 
     public ValidationService CreateValidationService()
@@ -176,6 +179,19 @@ public sealed class TestWorkspace : IDisposable
             Prompt: "{{PROMPT}}"
 
             STATIC_FINAL_MARKER
+            """);
+
+        File.WriteAllText(
+            FinalNoReferenceTemplatePath,
+            """
+            # AI ASSET RIGHTS / PROVENANCE RECORD
+
+            Asset ID: {{FINAL_FILENAME}}
+            Project: {{PROJECT}}
+            Generation date: {{GENERATION_DATE}}
+            Prompt: "{{PROMPT}}"
+
+            STATIC_FINAL_NO_REFERENCE_MARKER
             """);
     }
 

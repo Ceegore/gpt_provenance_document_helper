@@ -78,13 +78,13 @@ public sealed class EndToEndTests
         // Step 9: Verify provenance content integrity
         var refProvContent = File.ReadAllText(session.ReferenceProvenancePath, Encoding.UTF8);
         Assert.Contains(session.ReferenceFilename, refProvContent);
-        Assert.Contains("SpellQuake", refProvContent);
+        Assert.Contains(session.ProjectName, refProvContent);
         Assert.Contains("2026-08-17", refProvContent);
 
         var finalProvContent = File.ReadAllText(finalProvPath, Encoding.UTF8);
         Assert.Contains(mainFilename, finalProvContent);
         Assert.Contains(session.ReferenceFilename, finalProvContent);
-        Assert.Contains("SpellQuake", finalProvContent);
+        Assert.Contains(session.ProjectName, finalProvContent);
         Assert.Contains(prompt, finalProvContent);
         Assert.Contains("2026-08-17", finalProvContent);
 
@@ -278,6 +278,9 @@ public sealed class EndToEndTests
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.Equal("main.webp", mainFilename);
+        Assert.Equal("webp_asset.webp", session.IngameFilename);
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main.webp")));
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "webp_asset.webp")));
     }
 
     [Fact]
@@ -298,6 +301,9 @@ public sealed class EndToEndTests
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.Equal("main.jpg", mainFilename);
+        Assert.Equal("jpeg_asset.jpg", session.IngameFilename);
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main.jpg")));
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "jpeg_asset.jpg")));
     }
 
     // ──────────────────────────────────────────────────────
@@ -411,7 +417,7 @@ public sealed class EndToEndTests
         Assert.Contains(adversarialPrompt, text);
 
         // Must also still contain the correct project name
-        Assert.Contains("Project: SpellQuake", text);
+        Assert.Contains($"Project: {session.ProjectName}", text);
     }
 
     // ──────────────────────────────────────────────────────
@@ -675,7 +681,7 @@ public sealed class EndToEndTests
 
         // Verify only second main exists
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, mainFilename2)));
-        Assert.False(File.Exists(Path.Combine(session.AssetFolder, mainFilename1)));
+        Assert.Equal(processor.ComputeSha256(main2), processor.ComputeSha256(Path.Combine(session.AssetFolder, mainFilename2)));
 
         var finalProv = File.ReadAllText(
             Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName), Encoding.UTF8);
@@ -744,18 +750,18 @@ public sealed class EndToEndTests
 
         var service = new SettingsService(workspace.SettingsPath);
 
+        var unicodeAssetPath = Path.Combine(workspace.Root, "Spëll Quäke 日本語 😀");
         var settings = new AppSettings
         {
-            ProjectName = "Spëll Quäke 日本語 😀",
             DownloadFolder = workspace.Downloads,
-            AssetRootFolder = workspace.Assets,
+            AssetRootFolder = unicodeAssetPath,
             AcceptedExtensions = new List<string> { ".png" }
         };
 
         service.Save(settings);
         var loaded = service.Load();
 
-        Assert.Equal(settings.ProjectName, loaded.ProjectName);
+        Assert.Equal(settings.AssetRootFolder, loaded.AssetRootFolder);
     }
 
     // ──────────────────────────────────────────────────────

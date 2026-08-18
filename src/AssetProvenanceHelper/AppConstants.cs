@@ -3,6 +3,7 @@ namespace AssetProvenanceHelper;
 public static class AppConstants
 {
     public const string ReferenceFolderName = "reference";
+    public const string IngameFolderName = "ingame";
 
     public const string ReferenceProvenanceFileName =
         "license.txt — AI Reference Asset.md";

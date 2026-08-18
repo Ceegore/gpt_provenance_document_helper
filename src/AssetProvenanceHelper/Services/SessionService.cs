@@ -20,6 +20,8 @@ public sealed class SessionService
     private readonly TemplateService? _templateService;
     private readonly ValidationService? _validationService;
 
+    public string SessionFilePath => _sessionPath;
+
     private readonly JsonSerializerOptions _jsonOptions =
         new()
         {

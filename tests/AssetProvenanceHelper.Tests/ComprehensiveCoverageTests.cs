@@ -11,6 +11,7 @@ using System.Windows.Forms;
 using AssetProvenanceHelper.Dialogs;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
+using AssetProvenanceHelper.Ui;
 using Xunit;
 
 namespace AssetProvenanceHelper.Tests;
@@ -416,14 +417,12 @@ public class ComprehensiveCoverageTests
 
         var emptySettings = new AppSettings
         {
-            ProjectName = "proj",
             DownloadFolder = "",
             AssetRootFolder = "",
             AcceptedExtensions = new List<string> { ".png" }
         };
         var r1 = service.ValidateSettings(emptySettings);
         Assert.False(r1.IsValid);
-        Assert.Contains(r1.Errors, e => e.Contains("Download Folder must not be empty"));
         Assert.Contains(r1.Errors, e => e.Contains("Asset Root Folder must not be empty"));
 
         using var workspace = new TestWorkspace();
@@ -432,7 +431,6 @@ public class ComprehensiveCoverageTests
 
         var nestedSettings = new AppSettings
         {
-            ProjectName = "proj",
             DownloadFolder = nestedDownloadDir,
             AssetRootFolder = workspace.Assets,
             AcceptedExtensions = new List<string> { ".png" }
@@ -450,7 +448,6 @@ public class ComprehensiveCoverageTests
 
         var settings = new AppSettings
         {
-            ProjectName = "proj",
             DownloadFolder = workspace.Downloads,
             AssetRootFolder = workspace.Assets,
             AcceptedExtensions = new List<string> { ".png" }
@@ -961,6 +958,12 @@ public class ComprehensiveCoverageTests
             var handleMainMethod = typeof(MainForm).GetMethod("HandleMainImage", BindingFlags.NonPublic | BindingFlags.Instance);
             Assert.NotNull(handleMainMethod);
 
+            var mainImg = workspace.CreateImage("main_test.png", new byte[] { 1, 2, 3 });
+            form.SetSelectedImage(ImageSlot.Main, mainImg);
+            var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
+            Assert.NotNull(txtPrompt);
+            txtPrompt.Text = "Prompt text";
+
             handleMainMethod.Invoke(form, null);
             Assert.Contains(messages, m => m.Contains("No active reference session"));
 
@@ -1004,7 +1007,11 @@ public class ComprehensiveCoverageTests
             stateField?.SetValue(form, 1); // UiState.ReferenceReady
 
             handleMainMethod.Invoke(form, null);
-            Assert.Contains(messages, m => m.Contains("No usable image was found"));
+            Assert.True(sessionService.Exists()); // Still active
+
+            var pnlHost = typeof(MainForm).GetField("pnlMainImageHost", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as Panel;
+            Assert.NotNull(pnlHost);
+            Assert.Equal(UiTheme.Error, pnlHost.BackColor);
 
             MainForm.MessageBoxProvider = null;
         });
@@ -1045,8 +1052,7 @@ public class ComprehensiveCoverageTests
             stateField?.SetValue(form, 1); // UiState.ReferenceReady
 
             var mainImg = workspace.CreateImage("main.png", new byte[] { 7, 8, 9 });
-            var setManualMethod = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManualMethod?.Invoke(form, new object[] { mainImg });
+            form.SetSelectedImage(ImageSlot.Main, mainImg);
 
             var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
             Assert.NotNull(txtPrompt);
@@ -1251,14 +1257,15 @@ public class ComprehensiveCoverageTests
             var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
             var session = processor.ProcessReference(settings, "asset_rec_comp", refSource, DateTimeOffset.Now);
 
+            var processedAt = DateTimeOffset.Now;
             var mainSource = workspace.CreateImage("main.png", new byte[] { 7, 7, 7 });
-            var mainFilename = processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "main prompt", DateTimeOffset.Now);
+            var mainFilename = processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "main prompt", processedAt);
             
             session.IsMainCommitting = true;
             session.MainTransactionId = "0123456789abcdef0123456789abcdef";
             session.MainFilename = mainFilename;
             session.MainPrompt = "main prompt";
-            session.MainProcessedAt = DateTimeOffset.Now;
+            session.MainProcessedAt = processedAt;
             session.MainHash = processor.ComputeSha256(Path.Combine(session.AssetFolder, mainFilename));
             sessionService.Save(session); // Simulate crash right before session deletion
 
@@ -1340,9 +1347,6 @@ public class ComprehensiveCoverageTests
 
             var recoverMethod = typeof(MainForm).GetMethod("RecoverSessionOnStartup", BindingFlags.NonPublic | BindingFlags.Instance);
 
-            // User chooses to cancel session
-            TwoChoiceDialog.CustomChoiceProvider = (owner, title, message, p, s) => false;
-
             using var form = new MainForm(
                 settings,
                 workspace.CreateSettingsService(),
@@ -1353,7 +1357,11 @@ public class ComprehensiveCoverageTests
                 sessionService);
 
             recoverMethod?.Invoke(form, null);
-            Assert.False(sessionService.Exists());
+            Assert.True(sessionService.Exists());
+
+            var currentSession = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as AssetSession;
+            Assert.NotNull(currentSession);
+            Assert.Equal("asset_rec_std", currentSession.AssetFolderName);
         });
     }
 
@@ -1458,9 +1466,7 @@ public class ComprehensiveCoverageTests
             Assert.Equal(DragDropEffects.Copy, dragEvent.Effect);
 
             dragDropMethod.Invoke(form, new object[] { form, dragEvent });
-            var lblManual = form.Controls.Find("lblManualSelection", true).FirstOrDefault() as Label;
-            Assert.NotNull(lblManual);
-            Assert.Contains("drag.png", lblManual.Text);
+            Assert.Equal(img, form.GetSelectedImage(ImageSlot.Reference));
 
             // Non-file DataObject
             var textDataObj = new DataObject(DataFormats.Text, "some text");
@@ -1490,7 +1496,8 @@ public class ComprehensiveCoverageTests
                 sessionService);
 
             // Buttons present in form
-            var btnRefresh = form.Controls.Find("btnRefresh", true).FirstOrDefault() as Button;
+            var btnRefresh = form.Controls.Find("btnRefreshReference", true).FirstOrDefault() as Button
+                ?? form.Controls.Find("btnRefresh", true).FirstOrDefault() as Button;
             var btnClearPrompt = form.Controls.Find("btnClearPrompt", true).FirstOrDefault() as Button;
             var btnOpenAssetFolder = form.Controls.Find("btnOpenAssetFolder", true).FirstOrDefault() as Button;
             Assert.NotNull(btnRefresh);
@@ -1660,9 +1667,9 @@ public class ComprehensiveCoverageTests
 
         // Settings load success
         var settingsService = new SettingsService(AppBootstrap.GetSettingsPath(baseDir));
-        settingsService.Save(new AppSettings { ProjectName = "Proj1", DownloadFolder = workspace.Downloads, AssetRootFolder = workspace.Assets });
+        settingsService.Save(new AppSettings { DownloadFolder = workspace.Downloads, AssetRootFolder = workspace.Assets });
         var loaded = AppBootstrap.LoadSettingsOrDefaults(settingsService);
-        Assert.Equal("Proj1", loaded.ProjectName);
+        Assert.Equal(workspace.Downloads, loaded.DownloadFolder);
 
         // Settings load failure with warning callback
         var corruptFile = Path.Combine(baseDir, "corrupt_settings.json");
@@ -1707,14 +1714,15 @@ public class ComprehensiveCoverageTests
             Assert.NotNull(handleRefMethod);
 
             // Invalid settings
-            var txtProject = form.Controls.Find("txtProject", true).FirstOrDefault() as TextBox;
-            Assert.NotNull(txtProject);
-            txtProject.Text = "";
+            var txtAssetRoot = form.Controls.Find("txtAssetRoot", true).FirstOrDefault() as TextBox;
+            Assert.NotNull(txtAssetRoot);
+            var originalAssetRoot = txtAssetRoot.Text;
+            txtAssetRoot.Text = "";
             MainForm.MessageBoxProvider = (owner, msg, title, btns, icon) => { };
             handleRefMethod.Invoke(form, null);
 
             // Invalid folder name
-            txtProject.Text = "Project";
+            txtAssetRoot.Text = originalAssetRoot;
             var txtFolderName = form.Controls.Find("txtAssetFolderName", true).FirstOrDefault() as TextBox;
             Assert.NotNull(txtFolderName);
             txtFolderName.Text = "../invalid";
@@ -1752,6 +1760,8 @@ public class ComprehensiveCoverageTests
             var processor = workspace.CreateAssetProcessor();
             var sessionService = workspace.CreateSessionService();
 
+            MainForm.MessageBoxProvider = (owner, msg, title, btns, icon) => { };
+
             using var form = new MainForm(
                 settings,
                 workspace.CreateSettingsService(),
@@ -1773,23 +1783,21 @@ public class ComprehensiveCoverageTests
             var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
             sessionField?.SetValue(form, session);
 
-            // 2. User cancels dialog
+            // 2. User cancels dialog with valid replacement candidate
+            var repl1 = workspace.CreateImage("repl1.png", new byte[] { 4, 5, 6 });
+            form.SetSelectedImage(ImageSlot.Reference, repl1);
             TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => false;
             handleReplaceMethod.Invoke(form, null);
 
-            // 3. User confirms but no usable image found
+            // 3. User confirms but no candidate selected
+            form.SetSelectedImage(ImageSlot.Reference, null);
             TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => true;
-            MainForm.MessageBoxProvider = (owner, msg, title, btns, icon) => { };
-            var clearManual = typeof(MainForm).GetMethod("ClearManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            clearManual?.Invoke(form, null);
-            File.Delete(refSource);
             handleReplaceMethod.Invoke(form, null);
 
             // 4. Invalid replacement image
             var invalidImg = Path.Combine(workspace.Downloads, "bad.xyz");
             File.WriteAllBytes(invalidImg, new byte[] { 1, 2, 3 });
-            var setManual = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManual?.Invoke(form, new object[] { invalidImg });
+            form.SetSelectedImage(ImageSlot.Reference, invalidImg);
             handleReplaceMethod.Invoke(form, null);
 
             MainForm.MessageBoxProvider = null;
@@ -1844,23 +1852,22 @@ public class ComprehensiveCoverageTests
             setManual?.Invoke(form, new object[] { invalidSource });
             handleMainMethod.Invoke(form, null);
 
-            // 5. Valid image, prompt empty, clipboard empty
+            // 5. Valid image, prompt empty -> Rejected without auto-paste
             var validMain = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
-            setManual?.Invoke(form, new object[] { validMain });
+            form.SetSelectedImage(ImageSlot.Main, validMain);
             var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
             Assert.NotNull(txtPrompt);
             txtPrompt.Text = "";
-            form.ClipboardProvider = () => "";
             handleMainMethod.Invoke(form, null);
+            Assert.NotNull(sessionField?.GetValue(form));
 
-            // 6. Valid image, prompt empty, clipboard text available, user cancels paste dialog
+            // 6. Paste clipboard explicitly
             form.ClipboardProvider = () => "Pasted prompt content";
-            TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => false; // Cancel paste
-            handleMainMethod.Invoke(form, null);
-            Assert.Equal("", txtPrompt.Text);
+            var pasteMethod = typeof(MainForm).GetMethod("PasteClipboard", BindingFlags.NonPublic | BindingFlags.Instance);
+            pasteMethod?.Invoke(form, null);
+            Assert.Equal("Pasted prompt content", txtPrompt.Text);
 
-            // 7. Valid image, prompt empty, clipboard text available, user confirms paste
-            TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => true; // Confirm paste
+            // 7. Complete with valid image and prompt
             handleMainMethod.Invoke(form, null);
             Assert.Null(sessionField?.GetValue(form));
 

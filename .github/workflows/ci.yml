@@ -93,7 +93,7 @@ jobs:
           path: |
             **/*.trx
             artifacts/publish/**
-            artifacts/AssetProvenanceHelper-v1.0.0-win-x64.zip
+            artifacts/AssetProvenanceHelper-v*-win-x64.zip
             artifacts/smoke-test-log.json
 
   coverage:
@@ -125,7 +125,7 @@ jobs:
       - name: Verify Coverage Artifact
         shell: pwsh
         run: |
-          $covFiles = Get-ChildItem -Path "artifacts/coverage" -Filter "coverage.cobertura.xml" -Recurse
+          $covFiles = Get-ChildItem -Path "artifacts/coverage" -Filter "coverage.cobertura.xml" -Recurse | Sort-Object LastWriteTime -Descending
           if ($covFiles.Count -eq 0) {
             Write-Error "Coverage file coverage.cobertura.xml was not generated!"
             exit 1

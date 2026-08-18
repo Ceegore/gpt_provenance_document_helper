@@ -19,6 +19,8 @@ public sealed class AppBootstrapContext
 
     public required string FinalTemplatePath { get; init; }
 
+    public required string FinalNoReferenceTemplatePath { get; init; }
+
     public required AppSettings Settings { get; set; }
 
     public required SettingsService SettingsService { get; init; }
@@ -72,6 +74,13 @@ public static class AppBootstrap
             "templates",
             "final.md");
 
+    public static string GetFinalNoReferenceTemplatePath(
+        string baseDirectory) =>
+        Path.Combine(
+            baseDirectory,
+            "templates",
+            "final_no_reference.md");
+
     public static AppSettings LoadSettingsOrDefaults(
         SettingsService settingsService,
         Action<string, string>? showWarning = null)
@@ -116,6 +125,10 @@ public static class AppBootstrap
             GetFinalTemplatePath(
                 baseDirectory);
 
+        var finalNoReferenceTemplatePath =
+            GetFinalNoReferenceTemplatePath(
+                baseDirectory);
+
         var settingsService =
             new SettingsService(
                 settingsPath);
@@ -131,7 +144,8 @@ public static class AppBootstrap
         var templateService =
             new TemplateService(
                 referenceTemplatePath,
-                finalTemplatePath);
+                finalTemplatePath,
+                finalNoReferenceTemplatePath);
 
         var imageFinderService =
             new ImageFinderService();
@@ -166,6 +180,9 @@ public static class AppBootstrap
 
             FinalTemplatePath =
                 finalTemplatePath,
+
+            FinalNoReferenceTemplatePath =
+                finalNoReferenceTemplatePath,
 
             Settings =
                 settings,

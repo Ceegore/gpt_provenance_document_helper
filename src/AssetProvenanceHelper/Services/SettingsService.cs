@@ -34,8 +34,6 @@ public sealed class SettingsService
 
         return new AppSettings
         {
-            ProjectName = string.Empty,
-
             DownloadFolder =
                 Directory.Exists(defaultDownloads)
                     ? defaultDownloads
@@ -160,7 +158,6 @@ public sealed class SettingsService
     private static void Normalize(
         AppSettings settings)
     {
-        settings.ProjectName ??= string.Empty;
         settings.DownloadFolder ??= string.Empty;
         settings.AssetRootFolder ??= string.Empty;
 

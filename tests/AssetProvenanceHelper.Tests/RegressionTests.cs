@@ -296,7 +296,6 @@ public sealed class RegressionTests
 
         var settings = new AppSettings
         {
-            ProjectName = "AtomicProject",
             DownloadFolder = workspace.Downloads,
             AssetRootFolder = workspace.Assets,
             AcceptedExtensions = new List<string> { ".png", ".webp" }
@@ -306,7 +305,7 @@ public sealed class RegressionTests
 
         Assert.True(File.Exists(workspace.SettingsPath));
         var loaded = service.Load();
-        Assert.Equal("AtomicProject", loaded.ProjectName);
+        Assert.Equal(workspace.Assets, loaded.AssetRootFolder);
         Assert.Equal(2, loaded.AcceptedExtensions.Count);
     }
 
@@ -550,7 +549,6 @@ public sealed class RegressionTests
             var processor = workspace.CreateAssetProcessor();
             var settings = new AppSettings
             {
-                ProjectName = "TestProj",
                 DownloadFolder = workspace.Downloads,
                 AssetRootFolder = junctionRoot,
                 AcceptedExtensions = new List<string> { ".png" }
@@ -1258,8 +1256,7 @@ public sealed class RegressionTests
                 var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
                 if (txtPrompt != null) txtPrompt.Text = "test prompt";
 
-                var manualSelectionField = typeof(MainForm).GetField("_manualSelectionPath", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                manualSelectionField?.SetValue(form, mainSource);
+                form.SetSelectedImage(ImageSlot.Main, mainSource);
 
                 AssetProcessorService.OnMainPromotedHook = dest =>
                 {
@@ -1878,8 +1875,7 @@ public sealed class RegressionTests
                 var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
                 if (txtPrompt != null) txtPrompt.Text = "Ctrl+M prompt";
 
-                var manualSelectionField = typeof(MainForm).GetField("_manualSelectionPath", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                manualSelectionField?.SetValue(form, mainSource);
+                form.SetSelectedImage(ImageSlot.Main, mainSource);
 
                 var keyMethod = typeof(MainForm).GetMethod("MainForm_KeyDown", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 Assert.NotNull(keyMethod);
@@ -1889,6 +1885,7 @@ public sealed class RegressionTests
 
                 Assert.False(sessionService.Exists());
                 Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main.png")));
+                Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg85.png")));
                 Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
             }
             catch (Exception ex)
@@ -2475,7 +2472,6 @@ public sealed class RegressionTests
 
         var invalidSettings = new AppSettings
         {
-            ProjectName = "Project",
             DownloadFolder = workspace.Downloads,
             AssetRootFolder = workspace.Assets,
             AcceptedExtensions = new List<string> { "../exe", ".bat", "..\\png", "   " }
@@ -2871,6 +2867,7 @@ public sealed class RegressionTests
         session.IsMainCommitting = true;
         session.MainTransactionId = "0123456789abcdef0123456789abcdef";
         session.MainFilename = "main.png";
+        session.IngameFilename = "asset_r122.png";
         session.MainPrompt = "test prompt";
         session.MainProcessedAt = DateTimeOffset.Now;
         session.MainHash = new string('a', 64); // Different hash
@@ -2978,8 +2975,10 @@ public sealed class RegressionTests
             File.WriteAllText(session.ReferenceProvenancePath, "CORRUPT CONTENT MISSING TOKENS");
 
             var mainPath = Path.Combine(session.AssetFolder, "main.png");
+            var ingamePath = Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_r125.png");
             var finalProv = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
             Assert.True(File.Exists(mainPath));
+            Assert.True(File.Exists(ingamePath));
             Assert.True(File.Exists(finalProv));
 
             TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => false; // User exits
@@ -2998,7 +2997,9 @@ public sealed class RegressionTests
 
             // Main and Final provenance MUST NOT be deleted
             Assert.True(File.Exists(mainPath));
+            Assert.True(File.Exists(ingamePath));
             Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(mainPath));
+            Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(ingamePath));
             Assert.True(File.Exists(finalProv));
 
             TwoChoiceDialog.CustomChoiceProvider = null;
@@ -3403,14 +3404,14 @@ public sealed class RegressionTests
 
         var settingsPath = AppBootstrap.GetSettingsPath(baseDir);
         var settingsService = new SettingsService(settingsPath);
-        settingsService.Save(new AppSettings { ProjectName = "REG136", DownloadFolder = workspace.Downloads, AssetRootFolder = workspace.Assets });
+        settingsService.Save(new AppSettings { DownloadFolder = workspace.Downloads, AssetRootFolder = workspace.Assets });
 
         var loaded = AppBootstrap.LoadSettingsOrDefaults(settingsService);
-        Assert.Equal("REG136", loaded.ProjectName);
+        Assert.Equal(workspace.Assets, loaded.AssetRootFolder);
 
         var ctx = AppBootstrap.CreateContext(baseDir);
         Assert.NotNull(ctx);
-        Assert.Equal("REG136", ctx.Settings.ProjectName);
+        Assert.Equal(workspace.Assets, ctx.Settings.AssetRootFolder);
     }
 
     [Fact]
@@ -4954,9 +4955,11 @@ public sealed class RegressionTests
 
         Assert.Equal("main1.png", result);
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg182.png")));
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
         Assert.True(session.IsMainCommitting);
         Assert.Equal("main1.png", session.MainFilename);
+        Assert.Equal("asset_reg182.png", session.IngameFilename);
         Assert.Equal(ValidationService.ComputeSha256(main1), session.MainHash);
     }
 
@@ -4985,6 +4988,7 @@ public sealed class RegressionTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", processedAt));
             Assert.Contains("filename", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg183_a.png")));
         }
 
         // 2. Prompt mismatch
@@ -5001,6 +5005,7 @@ public sealed class RegressionTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "NEW PROMPT", processedAt));
             Assert.Contains("prompt", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg183_b.png")));
         }
 
         // 3. ProcessedAt mismatch
@@ -5017,6 +5022,7 @@ public sealed class RegressionTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", processedAt));
             Assert.Contains("processedAt", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg183_c.png")));
         }
 
         // 4. Hash mismatch
@@ -5033,6 +5039,7 @@ public sealed class RegressionTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", processedAt));
             Assert.Contains("hash", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg183_d.png")));
         }
     }
 
@@ -5058,6 +5065,7 @@ public sealed class RegressionTests
         var result = processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", processedAt);
         Assert.Equal("main1.png", result);
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg184.png")));
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
     }
 
@@ -5471,6 +5479,7 @@ public sealed class RegressionTests
         var result = processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", t1);
         Assert.Equal("main.png", result);
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main.png")));
+        Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "asset_reg195.png")));
     }
 
     [Fact]

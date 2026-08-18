@@ -90,7 +90,6 @@ public class MainFormUiTests
         {
             using var workspace = new TestWorkspace();
             var settings = workspace.CreateSettings();
-            settings.ProjectName = "MyProject";
             var settingsService = workspace.CreateSettingsService();
             var imageFinder = workspace.CreateImageFinder();
             var templateService = workspace.CreateTemplateService();
@@ -107,9 +106,12 @@ public class MainFormUiTests
                 assetProcessor,
                 sessionService);
 
+            var txtAssetRoot = form.Controls.Find("txtAssetRoot", true).FirstOrDefault() as TextBox;
+            Assert.NotNull(txtAssetRoot);
+            Assert.Equal(workspace.Assets, txtAssetRoot.Text);
+
             var txtProject = form.Controls.Find("txtProject", true).FirstOrDefault() as TextBox;
-            Assert.NotNull(txtProject);
-            Assert.Equal("MyProject", txtProject.Text);
+            Assert.Null(txtProject);
         });
     }
 
@@ -136,15 +138,15 @@ public class MainFormUiTests
                 assetProcessor,
                 sessionService);
 
-            var txtProject = form.Controls.Find("txtProject", true).FirstOrDefault() as TextBox;
-            Assert.NotNull(txtProject);
-            txtProject.Text = "UpdatedProjectName";
+            var txtAssetRoot = form.Controls.Find("txtAssetRoot", true).FirstOrDefault() as TextBox;
+            Assert.NotNull(txtAssetRoot);
+            txtAssetRoot.Text = Path.Combine(workspace.Root, "UpdatedAssets");
 
             var saveMethod = typeof(MainForm).GetMethod("SaveSettingsSafe", BindingFlags.NonPublic | BindingFlags.Instance);
             saveMethod?.Invoke(form, null);
 
             var loadedSettings = settingsService.Load();
-            Assert.Equal("UpdatedProjectName", loadedSettings.ProjectName);
+            Assert.Equal(Path.Combine(workspace.Root, "UpdatedAssets"), loadedSettings.AssetRootFolder);
         });
     }
 
@@ -173,7 +175,10 @@ public class MainFormUiTests
                 assetProcessor,
                 sessionService);
 
-            var lblLatestImage = form.Controls.Find("lblLatestImage", true).FirstOrDefault() as Label;
+            form.RefreshImageSelection(ImageSlot.Reference);
+
+            var lblLatestImage = form.Controls.Find("lblReferenceSelectedImage", true).FirstOrDefault() as Label
+                ?? form.Controls.Find("lblLatestImage", true).FirstOrDefault() as Label;
             Assert.NotNull(lblLatestImage);
             Assert.Contains("new_download.png", lblLatestImage.Text);
         });
@@ -216,7 +221,7 @@ public class MainFormUiTests
         RunOnSta(() =>
         {
             using var workspace = new TestWorkspace();
-            workspace.CreateImage("ref_test.png", new byte[] { 1, 2, 3 });
+            var refImg = workspace.CreateImage("ref_test.png", new byte[] { 1, 2, 3 });
 
             var settings = workspace.CreateSettings();
             var settingsService = workspace.CreateSettingsService();
@@ -234,6 +239,8 @@ public class MainFormUiTests
                 validationService,
                 assetProcessor,
                 sessionService);
+
+            form.SetSelectedImage(ImageSlot.Reference, refImg);
 
             var txtFolder = form.Controls.Find("txtAssetFolderName", true).FirstOrDefault() as TextBox;
             Assert.NotNull(txtFolder);
@@ -260,7 +267,7 @@ public class MainFormUiTests
         RunOnSta(() =>
         {
             using var workspace = new TestWorkspace();
-            workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+            var refImg = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
 
             var settings = workspace.CreateSettings();
             var settingsService = workspace.CreateSettingsService();
@@ -279,6 +286,8 @@ public class MainFormUiTests
                 assetProcessor,
                 sessionService);
 
+            form.SetSelectedImage(ImageSlot.Reference, refImg);
+
             var txtFolder = form.Controls.Find("txtAssetFolderName", true).FirstOrDefault() as TextBox;
             txtFolder!.Text = "asset_main_ui_test";
 
@@ -286,9 +295,8 @@ public class MainFormUiTests
             handleRefMethod?.Invoke(form, null);
 
             // Create distinct main image in downloads
-            workspace.CreateImage("main1.png", new byte[] { 10, 20, 30 });
-            var refreshMethod = typeof(MainForm).GetMethod("RefreshLatestImage", BindingFlags.NonPublic | BindingFlags.Instance);
-            refreshMethod?.Invoke(form, null);
+            var mainImg = workspace.CreateImage("main1.png", new byte[] { 10, 20, 30 });
+            form.SetSelectedImage(ImageSlot.Main, mainImg);
 
             var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
             txtPrompt!.Text = "test UI prompt";
@@ -309,7 +317,7 @@ public class MainFormUiTests
         RunOnSta(() =>
         {
             using var workspace = new TestWorkspace();
-            workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+            var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
 
             var settings = workspace.CreateSettings();
             var settingsService = workspace.CreateSettingsService();
@@ -328,6 +336,8 @@ public class MainFormUiTests
                 assetProcessor,
                 sessionService);
 
+            form.SetSelectedImage(ImageSlot.Reference, ref1);
+
             var txtFolder = form.Controls.Find("txtAssetFolderName", true).FirstOrDefault() as TextBox;
             txtFolder!.Text = "asset_replace_ui_test";
 
@@ -335,12 +345,15 @@ public class MainFormUiTests
             handleRefMethod?.Invoke(form, null);
 
             // Create replacement image
-            workspace.CreateImage("ref_replaced.png", new byte[] { 7, 8, 9 });
-            var refreshMethod = typeof(MainForm).GetMethod("RefreshLatestImage", BindingFlags.NonPublic | BindingFlags.Instance);
-            refreshMethod?.Invoke(form, null);
+            var refReplaced = workspace.CreateImage("ref_replaced.png", new byte[] { 7, 8, 9 });
+            form.SetSelectedImage(ImageSlot.Reference, refReplaced);
+
+            Dialogs.TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => true;
 
             var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
             handleReplaceMethod?.Invoke(form, null);
+
+            Dialogs.TwoChoiceDialog.CustomChoiceProvider = null;
 
             var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
             var currentSession = sessionField?.GetValue(form) as AssetSession;
@@ -395,7 +408,7 @@ public class MainFormUiTests
         RunOnSta(() =>
         {
             using var workspace = new TestWorkspace();
-            workspace.CreateImage("shortcut_image.png", new byte[] { 1, 2, 3 });
+            var shortcutImg = workspace.CreateImage("shortcut_image.png", new byte[] { 1, 2, 3 });
 
             var settings = workspace.CreateSettings();
             var settingsService = workspace.CreateSettingsService();
@@ -414,33 +427,34 @@ public class MainFormUiTests
                 assetProcessor,
                 sessionService);
 
+            form.SetSelectedImage(ImageSlot.Reference, shortcutImg);
+
             var txtFolder = form.Controls.Find("txtAssetFolderName", true).FirstOrDefault() as TextBox;
             txtFolder!.Text = "shortcut_asset";
 
             var keyMethod = typeof(MainForm).GetMethod("MainForm_KeyDown", BindingFlags.NonPublic | BindingFlags.Instance);
             
             // 1. Trigger Ctrl+R (Reference)
-            var keyEventArgsR = new KeyEventArgs(Keys.Control | Keys.R);
-            keyMethod?.Invoke(form, new object[] { form, keyEventArgsR });
+            var ctrlR = new KeyEventArgs(Keys.Control | Keys.R);
+            keyMethod?.Invoke(form, new object[] { form, ctrlR });
 
             var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
             var currentSession = sessionField?.GetValue(form) as AssetSession;
             Assert.NotNull(currentSession);
-            Assert.Equal("shortcut_image.png", currentSession.ReferenceFilename);
+            Assert.Equal("shortcut_asset", currentSession.AssetFolderName);
 
             // 2. Prepare Main Image and trigger Ctrl+M (Main)
+            var mainImg = workspace.CreateImage("main_shortcut.png", new byte[] { 4, 5, 6 });
+            form.SetSelectedImage(ImageSlot.Main, mainImg);
+
             var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
-            txtPrompt!.Text = "final shortcut prompt";
-            workspace.CreateImage("shortcut_main.png", new byte[] { 4, 5, 6 });
+            txtPrompt!.Text = "shortcut prompt";
 
-            var refreshMethod = typeof(MainForm).GetMethod("RefreshLatestImage", BindingFlags.NonPublic | BindingFlags.Instance);
-            refreshMethod?.Invoke(form, null);
+            var ctrlM = new KeyEventArgs(Keys.Control | Keys.M);
+            keyMethod?.Invoke(form, new object[] { form, ctrlM });
 
-            var keyEventArgsM = new KeyEventArgs(Keys.Control | Keys.M);
-            keyMethod?.Invoke(form, new object[] { form, keyEventArgsM });
-
-            var completedSession = sessionField?.GetValue(form) as AssetSession;
-            Assert.Null(completedSession);
+            currentSession = sessionField?.GetValue(form) as AssetSession;
+            Assert.Null(currentSession);
             Assert.False(sessionService.Exists());
         });
     }
@@ -558,24 +572,14 @@ public class MainFormUiTests
             var showError = typeof(MainForm).GetMethod("ShowError", BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string), typeof(Exception) }, null);
             showError?.Invoke(form, new object[] { "Error message", new InvalidOperationException("Test inner") });
 
-            var previousOpenFolderProvider = MainForm.OpenFolderProvider;
-            try
-            {
-                MainForm.OpenFolderProvider = _ => { };
+            var openFolder = typeof(MainForm).GetMethod("OpenFolder", BindingFlags.NonPublic | BindingFlags.Instance);
+            openFolder?.Invoke(form, new object[] { @"C:\NonExistent_Folder_12345" });
 
-                var openFolder = typeof(MainForm).GetMethod("OpenFolder", BindingFlags.NonPublic | BindingFlags.Instance);
-                openFolder?.Invoke(form, new object[] { @"C:\NonExistent_Folder_12345" });
+            var openDownloads = typeof(MainForm).GetMethod("OpenDownloads", BindingFlags.NonPublic | BindingFlags.Instance);
+            openDownloads?.Invoke(form, null);
 
-                var openDownloads = typeof(MainForm).GetMethod("OpenDownloads", BindingFlags.NonPublic | BindingFlags.Instance);
-                openDownloads?.Invoke(form, null);
-
-                var openAsset = typeof(MainForm).GetMethod("OpenAssetFolder", BindingFlags.NonPublic | BindingFlags.Instance);
-                openAsset?.Invoke(form, null);
-            }
-            finally
-            {
-                MainForm.OpenFolderProvider = previousOpenFolderProvider;
-            }
+            var openAsset = typeof(MainForm).GetMethod("OpenAssetFolder", BindingFlags.NonPublic | BindingFlags.Instance);
+            openAsset?.Invoke(form, null);
         });
     }
 
@@ -612,9 +616,8 @@ public class MainFormUiTests
             dragEnterMethod?.Invoke(form, new object[] { form, dragEventArgs });
             dragDropMethod?.Invoke(form, new object[] { form, dragEventArgs });
 
-            var manualSelectionField = typeof(MainForm).GetField("_manualSelectionPath", BindingFlags.NonPublic | BindingFlags.Instance);
-            var manualPath = manualSelectionField?.GetValue(form) as string;
-            Assert.Equal(droppedFile, manualPath);
+            var selectedImage = form.GetSelectedImage(ImageSlot.Reference);
+            Assert.Equal(droppedFile, selectedImage);
         });
     }
 
@@ -739,8 +742,7 @@ public class MainFormUiTests
             var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
             if (txtPrompt != null) txtPrompt.Text = "Custom main prompt";
 
-            var manualSelectionField = typeof(MainForm).GetField("_manualSelectionPath", BindingFlags.NonPublic | BindingFlags.Instance);
-            manualSelectionField?.SetValue(form, mainSource);
+            form.SetSelectedImage(ImageSlot.Main, mainSource);
 
             FileStream? destLock = null;
             try

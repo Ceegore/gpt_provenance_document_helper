@@ -79,7 +79,7 @@ public sealed class ImageFinderServiceTests
     }
 
     [Fact]
-    public void ChatGptImage_IsPreferredOverNewerUnrelatedImage()
+    public void NewestSupportedImage_WinsRegardlessOfChatGPTFilename()
     {
         using var workspace =
             new TestWorkspace();
@@ -108,7 +108,7 @@ public sealed class ImageFinderServiceTests
                 workspace.CreateSettings());
 
         Assert.Equal(
-            Path.GetFullPath(chatGpt),
+            Path.GetFullPath(unrelated),
             Path.GetFullPath(result!));
     }
 

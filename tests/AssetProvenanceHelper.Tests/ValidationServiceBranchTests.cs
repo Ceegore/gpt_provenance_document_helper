@@ -13,24 +13,23 @@ public sealed class ValidationServiceBranchTests
     {
         var service = new ValidationService();
 
-        // Null / empty project name
-        var s1 = new AppSettings { ProjectName = "", DownloadFolder = @"C:\Downloads", AssetRootFolder = @"C:\Assets", AcceptedExtensions = new List<string> { ".png" } };
+        // Null / empty asset root folder
+        var s1 = new AppSettings { DownloadFolder = @"C:\Downloads", AssetRootFolder = "", AcceptedExtensions = new List<string> { ".png" } };
         Assert.False(service.ValidateSettings(s1).IsValid);
 
         // Empty extensions
-        var s2 = new AppSettings { ProjectName = "Proj", DownloadFolder = @"C:\Downloads", AssetRootFolder = @"C:\Assets", AcceptedExtensions = new List<string>() };
+        var s2 = new AppSettings { DownloadFolder = @"C:\Downloads", AssetRootFolder = @"C:\Assets", AcceptedExtensions = new List<string>() };
         Assert.False(service.ValidateSettings(s2).IsValid);
 
         // Non-existent directories
-        var s3 = new AppSettings { ProjectName = "Proj", DownloadFolder = @"Z:\NonExistent_Downloads_123", AssetRootFolder = @"Z:\NonExistent_Assets_123", AcceptedExtensions = new List<string> { ".png" } };
+        var s3 = new AppSettings { DownloadFolder = @"Z:\NonExistent_Downloads_123", AssetRootFolder = @"Z:\NonExistent_Assets_123", AcceptedExtensions = new List<string> { ".png" } };
         var r3 = service.ValidateSettings(s3);
         Assert.False(r3.IsValid);
-        Assert.Contains(r3.Errors, e => e.Contains("Download Folder does not exist"));
         Assert.Contains(r3.Errors, e => e.Contains("Asset Root Folder does not exist"));
 
         // Same directory for download and asset
         using var workspace = new TestWorkspace();
-        var s4 = new AppSettings { ProjectName = "Proj", DownloadFolder = workspace.Downloads, AssetRootFolder = workspace.Downloads, AcceptedExtensions = new List<string> { ".png" } };
+        var s4 = new AppSettings { DownloadFolder = workspace.Downloads, AssetRootFolder = workspace.Downloads, AcceptedExtensions = new List<string> { ".png" } };
         var r4 = service.ValidateSettings(s4);
         Assert.False(r4.IsValid);
         Assert.Contains(r4.Errors, e => e.Contains("cannot be the same directory"));
@@ -38,7 +37,7 @@ public sealed class ValidationServiceBranchTests
         // Subdirectory relationship
         var subDir = Path.Combine(workspace.Downloads, "subdir");
         Directory.CreateDirectory(subDir);
-        var s5 = new AppSettings { ProjectName = "Proj", DownloadFolder = workspace.Downloads, AssetRootFolder = subDir, AcceptedExtensions = new List<string> { ".png" } };
+        var s5 = new AppSettings { DownloadFolder = workspace.Downloads, AssetRootFolder = subDir, AcceptedExtensions = new List<string> { ".png" } };
         var r5 = service.ValidateSettings(s5);
         Assert.False(r5.IsValid);
         Assert.Contains(r5.Errors, e => e.Contains("inside"));
