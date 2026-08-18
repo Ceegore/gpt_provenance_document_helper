@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Windows Build & Test
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.418'
+
+      - name: Show environment
+        run: dotnet --info
+
+      - name: Restore
+        run: dotnet restore AssetProvenanceHelper.sln
+
+      - name: Debug build - warnings are errors
+        run: >
+          dotnet build AssetProvenanceHelper.sln
+          -c Debug
+          --no-restore
+          -warnaserror
+
+      - name: Debug tests
+        run: >
+          dotnet test AssetProvenanceHelper.sln
+          -c Debug
+          --no-build
+          --logger "trx;LogFileName=debug.trx"
+
+      - name: Release build - warnings are errors
+        run: >
+          dotnet build AssetProvenanceHelper.sln
+          -c Release
+          --no-restore
+          -warnaserror
+
+      - name: Release tests
+        run: >
+          dotnet test AssetProvenanceHelper.sln
+          -c Release
+          --no-build
+          --logger "trx;LogFileName=release.trx"
+
+      - name: Flakiness 20x test loop
+        shell: pwsh
+        run: |
+          for ($i = 1; $i -le 20; $i++) {
+            dotnet test AssetProvenanceHelper.sln -c Release --no-build --logger "console;verbosity=minimal"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Flakiness run $i failed"
+              exit $LASTEXITCODE
+            }
+          }
+
+      - name: Publish win-x64
+        run: >
+          dotnet publish
+          src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -o artifacts/publish
+
+      - name: Verify Published Package Integrity & Process Startup Smoke
+        shell: pwsh
+        run: pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
+
+      - name: Upload test and publish artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: |
+            **/*.trx
+            artifacts/publish/**
+            artifacts/AssetProvenanceHelper-v1.0.0-win-x64.zip
+            artifacts/smoke-test-log.json
+
+  coverage:
+    name: Coverage Gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.418'
+
+      - name: Restore
+        run: dotnet restore AssetProvenanceHelper.sln
+
+      - name: Build Release
+        run: >
+          dotnet build AssetProvenanceHelper.sln
+          -c Release
+          --no-restore
+          -warnaserror
+
+      - name: Test with Coverage
+        run: dotnet test tests/AssetProvenanceHelper.Tests/AssetProvenanceHelper.Tests.csproj -c Release --no-build --collect:"XPlat Code Coverage" --results-directory artifacts/coverage
+
+      - name: Verify Coverage Artifact
+        shell: pwsh
+        run: |
+          $covFiles = Get-ChildItem -Path "artifacts/coverage" -Filter "coverage.cobertura.xml" -Recurse
+          if ($covFiles.Count -eq 0) {
+            Write-Error "Coverage file coverage.cobertura.xml was not generated!"
+            exit 1
+          }
+          $covPath = $covFiles[0].FullName
+          [xml]$covXml = Get-Content $covPath
+          $linesValid = [int]$covXml.coverage.'lines-valid'
+          $branchesValid = [int]$covXml.coverage.'branches-valid'
+          $lineRate = [Math]::Round([double]$covXml.coverage.'line-rate' * 100, 2)
+          $branchRate = [Math]::Round([double]$covXml.coverage.'branch-rate' * 100, 2)
+          Write-Host "Validated coverage artifact for commit $env:GITHUB_SHA : $linesValid lines-valid, $branchesValid branches-valid"
+          Write-Host "Line coverage: $lineRate%, Branch coverage: $branchRate%"
+          if ($linesValid -le 0 -or $branchesValid -le 0) {
+            Write-Error "Coverage file is empty or missing valid lines/branches!"
+            exit 1
+          }
+          $requiredEntries = @(
+            @{ Name = "AssetProvenanceHelper.MainForm"; File = "MainForm.cs" },
+            @{ Name = "AssetProvenanceHelper.AppBootstrap"; File = "Services\AppBootstrap.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.AssetProcessorService"; File = "Services\AssetProcessorService.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.SessionService"; File = "Services\SessionService.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.ValidationService"; File = "Services\ValidationService.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.SettingsService"; File = "Services\SettingsService.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.TemplateService"; File = "Services\TemplateService.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.ImageFinderService"; File = "Services\ImageFinderService.cs" },
+            @{ Name = "AssetProvenanceHelper.Dialogs.TwoChoiceDialog"; File = "Dialogs\TwoChoiceDialog.cs" }
+          )
+          foreach ($req in $requiredEntries) {
+            $found = $covXml.SelectNodes("//class") | Where-Object {
+              $_.name -eq $req.Name -and ($_.filename -eq $req.File -or $_.filename -like "*$($req.File)" -or $_.filename.Replace('/', '\') -like "*$($req.File)")
+            }
+            if (-not $found) {
+              Write-Error "Required production coverage entry missing: $($req.Name) / $($req.File)"
+              exit 1
+            }
+          }
+          Write-Host "All required production classes and source files verified in coverage report."
+          Copy-Item $covPath "artifacts/coverage/coverage.cobertura.xml" -Force
+          @{
+            Commit = $env:GITHUB_SHA
+            Timestamp = (Get-Date).ToString("o")
+            LinesValid = $linesValid
+            BranchesValid = $branchesValid
+            LineRate = $lineRate
+            BranchRate = $branchRate
+          } | ConvertTo-Json | Set-Content "artifacts/coverage/coverage-metadata.json"
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: artifacts/coverage/**

@@ -1,0 +1,37 @@
+name: Mutation Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: Mutation Tests
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.418'
+
+      - run: dotnet restore AssetProvenanceHelper.sln
+
+      - run: dotnet tool restore
+
+      - name: Run mutation tests
+        working-directory: tests/AssetProvenanceHelper.Tests
+        run: dotnet stryker
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: tests/AssetProvenanceHelper.Tests/StrykerOutput/**

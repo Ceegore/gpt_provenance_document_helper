@@ -1,0 +1,33 @@
+## .NET / C#
+bin/
+obj/
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+.vscode/
+
+## Build and publish outputs
+publish/
+[Bb]uild/
+[Aa]rtifacts/
+TestResults/
+*.trx
+coverage*.xml
+coverage*.json
+StrykerOutput/
+
+## Runtime generated files
+settings.json
+session.json
+logs/
+*.log
+*.tmp
+*.bak
+
+## OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
