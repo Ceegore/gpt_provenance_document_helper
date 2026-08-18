@@ -11,6 +11,7 @@ partial class MainForm
 {
     private IContainer? components = null;
 
+    private TableLayoutPanel pnlMainContent = null!;
     private Panel pnlHeader = null!;
     private PictureBox picLogo = null!;
     private Label lblHeaderTitle = null!;
@@ -38,6 +39,7 @@ partial class MainForm
     private Label lblReferenceDrop = null!;
     private Button btnRefreshReference = null!;
     private Button btnChooseReference = null!;
+    private Button btnDropReference = null!;
     private Button btnOpenDownloadsReference = null!;
     private Label lblReference = null!;
     private Button btnReference = null!;
@@ -49,6 +51,7 @@ partial class MainForm
     private Label lblMainDrop = null!;
     private Button btnRefreshMain = null!;
     private Button btnChooseMain = null!;
+    private Button btnDropMain = null!;
     private Button btnOpenDownloadsMain = null!;
     private TextBox txtPrompt = null!;
     private Panel pnlPromptHost = null!;
@@ -63,14 +66,6 @@ partial class MainForm
 
     private HelpOverlayControl helpOverlay = null!;
     private ToolTip _toolTip = null!;
-
-    // Legacy control references for test compatibility
-    private Label lblLatestImage = null!;
-    private Label lblLatestTimestamp = null!;
-    private Label lblManualSelection = null!;
-    private Button btnRefresh = null!;
-    private Button btnChooseFile = null!;
-    private Button btnOpenDownloads = null!;
 
     [ExcludeFromCodeCoverage]
     protected override void Dispose(bool disposing)
@@ -92,12 +87,12 @@ partial class MainForm
 
         Text = AppInfo.ProductName;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(820, 800);
-        Size = new Size(950, 920);
+        MinimumSize = new Size(960, 680);
+        Size = new Size(1100, 740);
         KeyPreview = true;
         AutoScroll = false;
 
-        var mainPanel = new TableLayoutPanel
+        pnlMainContent = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoScroll = false,
@@ -106,20 +101,20 @@ partial class MainForm
             RowCount = 5
         };
 
-        mainPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        mainPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Header
-        mainPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Settings
-        mainPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Current Asset
-        mainPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // Reference & Main Cards
-        mainPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Status Group
+        pnlMainContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pnlMainContent.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Header
+        pnlMainContent.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Settings
+        pnlMainContent.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Current Asset
+        pnlMainContent.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // Reference & Main Cards
+        pnlMainContent.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Status Group
 
-        BuildHeader(mainPanel);
-        BuildSettingsGroup(mainPanel);
-        BuildCurrentAssetGroup(mainPanel);
-        BuildCardsSection(mainPanel);
-        BuildStatusGroup(mainPanel);
+        BuildHeader(pnlMainContent);
+        BuildSettingsGroup(pnlMainContent);
+        BuildCurrentAssetGroup(pnlMainContent);
+        BuildCardsSection(pnlMainContent);
+        BuildStatusGroup(pnlMainContent);
 
-        Controls.Add(mainPanel);
+        Controls.Add(pnlMainContent);
 
         helpOverlay = new HelpOverlayControl();
         helpOverlay.Name = "helpOverlay";

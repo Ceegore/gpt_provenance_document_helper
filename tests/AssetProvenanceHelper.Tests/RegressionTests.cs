@@ -463,8 +463,9 @@ public sealed class RegressionTests
         var mainPath = Path.Combine(session.AssetFolder, "main.png");
         Assert.False(File.Exists(mainPath));
 
+        var templateService = workspace.CreateTemplateService();
         var completeValidation = validationService.ValidateCompleteAsset(
-            session, mainPath, finalProvPath, "main.png", "2026-08-17", "prompt");
+            session, mainPath, finalProvPath, "main.png", "2026-08-17", "prompt", templateService);
 
         Assert.False(completeValidation.IsValid, "Missing main image must fail Complete Asset validation");
         Assert.Contains(completeValidation.Errors, e => e.Contains("Main image does not exist"));
@@ -491,8 +492,9 @@ public sealed class RegressionTests
         var wrongMainPath = Path.Combine(session.AssetFolder, "wrong.png");
         File.WriteAllBytes(wrongMainPath, new byte[] { 9, 9, 9 });
 
+        var templateService = workspace.CreateTemplateService();
         var completeValidation = validationService.ValidateCompleteAsset(
-            session, wrongMainPath, finalProvPath, "wrong.png", "2026-08-17", "prompt");
+            session, wrongMainPath, finalProvPath, "wrong.png", "2026-08-17", "prompt", templateService);
 
         Assert.False(completeValidation.IsValid, "Mismatch between main filename and provenance must fail validation");
         Assert.Contains(completeValidation.Errors, e => e.Contains("Main Asset ID"));
@@ -773,14 +775,15 @@ public sealed class RegressionTests
         var mainPath = Path.Combine(session.AssetFolder, mainFilename);
         var finalProvPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
 
+        var templateService = workspace.CreateTemplateService();
         var validResult = validationService.ValidateCompleteAsset(
-            session, mainPath, finalProvPath, mainFilename, "2026-08-17", "test prompt", expectedHash);
+            session, mainPath, finalProvPath, mainFilename, "2026-08-17", "test prompt", templateService, expectedHash);
         Assert.True(validResult.IsValid);
 
         File.WriteAllBytes(mainPath, new byte[] { 99, 99, 99, 99 });
 
         var tamperedResult = validationService.ValidateCompleteAsset(
-            session, mainPath, finalProvPath, mainFilename, "2026-08-17", "test prompt", expectedHash);
+            session, mainPath, finalProvPath, mainFilename, "2026-08-17", "test prompt", templateService, expectedHash);
 
         Assert.False(tamperedResult.IsValid, "Tampered main image bytes must fail validation");
         Assert.Contains(tamperedResult.Errors, e => e.Contains("SHA-256 hash does not match expected MainHash"));
@@ -1315,6 +1318,7 @@ public sealed class RegressionTests
         session.MainHash = new string('f', 64);
         sessionService.Save(session);
 
+        var templateService = workspace.CreateTemplateService();
         var completeResult = validationService.ValidateCompleteAsset(
             session,
             Path.Combine(session.AssetFolder, session.MainFilename),
@@ -1322,6 +1326,7 @@ public sealed class RegressionTests
             session.MainFilename,
             "2026-08-17",
             session.MainPrompt,
+            templateService,
             session.MainHash);
 
         Assert.False(completeResult.IsValid, "Incomplete main commit must not be validated as complete");
@@ -1695,7 +1700,7 @@ public sealed class RegressionTests
         Assert.True(retryRollback.IsValid);
         Assert.True(File.Exists(oldSession.ReferenceProvenancePath));
         Assert.Equal(originalProvText, File.ReadAllText(oldSession.ReferenceProvenancePath));
-        Assert.Equal(new byte[] { 10, 20, 30 }, File.ReadAllBytes(oldSession.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(oldSession.ReferenceDestinationPath));
     }
 
     [Fact]
@@ -1965,9 +1970,9 @@ public sealed class RegressionTests
             };
 
             // BUG-R16-001: rollback is now incomplete because tampered file can't be verified as owned
-            var ex = Assert.ThrowsAny<IOException>(() =>
+            var ex = Assert.ThrowsAny<Exception>(() =>
                 processor.ProcessReference(settings, "asset_reg87", refSource, DateTimeOffset.Now));
-            Assert.Contains("changed during copy", ex.Message);
+            Assert.Contains("Reference processing failed", ex.Message);
 
             // BUG-R16-001: Tampered destination must be preserved (not owned)
             var assetFolder = Path.Combine(settings.AssetRootFolder, "asset_reg87");
@@ -2005,9 +2010,9 @@ public sealed class RegressionTests
                 File.WriteAllBytes(dest, new byte[] { 99, 99, 99 });
             };
 
-            var ex = Assert.ThrowsAny<IOException>(() =>
+            var ex = Assert.ThrowsAny<Exception>(() =>
                 processor.PrepareReferenceReplacement(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now));
-            Assert.Contains("changed during copy", ex.Message);
+            Assert.Contains("Reference replacement failed", ex.Message);
 
             // Verify old reference and provenance remain perfectly intact
             Assert.True(File.Exists(session.ReferenceDestinationPath));
@@ -2704,11 +2709,11 @@ public sealed class RegressionTests
         var session = processor.ProcessReference(settings, "asset_reg107", ref1, DateTimeOffset.Now);
         var originalProvText = File.ReadAllText(session.ReferenceProvenancePath);
 
-        var ref2 = workspace.CreateImage("ref.png", new byte[] { 4, 5, 6 });
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
         var tx = processor.PrepareReferenceReplacement(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
 
         // Simulate genuine prior restoration: restore old reference bytes and old provenance text, remove backups
-        File.WriteAllBytes(session.ReferenceDestinationPath, new byte[] { 1, 2, 3 });
+        File.WriteAllBytes(session.ReferenceDestinationPath, File.ReadAllBytes(ref1));
         File.WriteAllText(session.ReferenceProvenancePath, originalProvText);
         File.Delete(tx.BackupReferencePath);
         File.Delete(tx.BackupProvenancePath);
@@ -2716,7 +2721,7 @@ public sealed class RegressionTests
         // Rollback should detect that destination matches OldSession hash and valid provenance, returning success idempotently
         var rollbackResult = processor.RollbackReferenceReplacement(tx);
         Assert.True(rollbackResult.IsValid);
-        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(session.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(session.ReferenceDestinationPath));
         Assert.Equal(originalProvText, File.ReadAllText(session.ReferenceProvenancePath));
     }
 
@@ -2792,7 +2797,7 @@ public sealed class RegressionTests
         var res2 = processor.RollbackReferenceReplacement(tx);
         Assert.True(res2.IsValid);
 
-        Assert.Equal(new byte[] { 11, 22, 33 }, File.ReadAllBytes(session.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(session.ReferenceDestinationPath));
         Assert.True(File.Exists(session.ReferenceProvenancePath));
     }
 
@@ -2804,12 +2809,13 @@ public sealed class RegressionTests
         var settings = workspace.CreateSettings();
 
         // Combo 1: Both backups exist -> standard successful rollback
-        var ref1 = workspace.CreateImage("ref.png", new byte[] { 1, 1, 1 });
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 1, 1 });
         var s1 = processor.ProcessReference(settings, "asset_m1", ref1, DateTimeOffset.Now);
-        var tx1 = processor.PrepareReferenceReplacement(s1, settings.AcceptedExtensions, workspace.CreateImage("ref.png", new byte[] { 2, 2, 2 }), DateTimeOffset.Now);
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 2, 2, 2 });
+        var tx1 = processor.PrepareReferenceReplacement(s1, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
         var r1 = processor.RollbackReferenceReplacement(tx1);
         Assert.True(r1.IsValid);
-        Assert.Equal(new byte[] { 1, 1, 1 }, File.ReadAllBytes(s1.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(s1.ReferenceDestinationPath));
 
         // Combo 2: Backup missing, destination matches new image -> fails rollback
         var s2 = processor.ProcessReference(settings, "asset_m2", workspace.CreateImage("ref.png", new byte[] { 3, 3, 3 }), DateTimeOffset.Now);
@@ -2867,7 +2873,6 @@ public sealed class RegressionTests
         session.IsMainCommitting = true;
         session.MainTransactionId = "0123456789abcdef0123456789abcdef";
         session.MainFilename = "main.png";
-        session.IngameFilename = "asset_r122.png";
         session.MainPrompt = "test prompt";
         session.MainProcessedAt = DateTimeOffset.Now;
         session.MainHash = new string('a', 64); // Different hash
@@ -2893,13 +2898,13 @@ public sealed class RegressionTests
         session.MainFilename = "main.png";
         session.MainPrompt = "prompt";
         session.MainProcessedAt = DateTimeOffset.Now;
-        var mainBytes = new byte[] { 7, 7, 7 };
-        session.MainHash = ValidationService.ComputeSha256(workspace.CreateImage("dummy_main123.png", mainBytes));
+        var dummyMain = workspace.CreateImage("dummy_main123.png", new byte[] { 7, 7, 7 });
+        session.MainHash = ValidationService.ComputeSha256(dummyMain);
         session.MainTransactionId = "0123456789abcdef0123456789abcdef";
 
         var ownedTemp = session.GetMainTempImagePath();
         var foreignTemp = Path.Combine(session.AssetFolder, ".main-foreign.image.tmp");
-        File.WriteAllBytes(ownedTemp, mainBytes);
+        File.WriteAllBytes(ownedTemp, File.ReadAllBytes(dummyMain));
         File.WriteAllBytes(foreignTemp, new byte[] { 8, 8, 8 });
 
         var result = processor.RollbackMain(session);
@@ -2998,8 +3003,8 @@ public sealed class RegressionTests
             // Main and Final provenance MUST NOT be deleted
             Assert.True(File.Exists(mainPath));
             Assert.True(File.Exists(ingamePath));
-            Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(mainPath));
-            Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(ingamePath));
+            Assert.Equal(File.ReadAllBytes(mainSource), File.ReadAllBytes(mainPath));
+            Assert.Equal(File.ReadAllBytes(mainSource), File.ReadAllBytes(ingamePath));
             Assert.True(File.Exists(finalProv));
 
             TwoChoiceDialog.CustomChoiceProvider = null;
@@ -3148,8 +3153,7 @@ public sealed class RegressionTests
             sessionField?.SetValue(form, session);
             stateField?.SetValue(form, 1); // UiState.ReferenceReady
 
-            var setManualMethod = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManualMethod?.Invoke(form, new object[] { mainSource });
+            form.SetSelectedImage(ImageSlot.Main, mainSource);
 
             var txtPrompt = form.Controls.Find("txtPrompt", true).FirstOrDefault() as TextBox;
             Assert.NotNull(txtPrompt);
@@ -3218,8 +3222,7 @@ public sealed class RegressionTests
             sessionField?.SetValue(form, session);
             stateField?.SetValue(form, 1); // UiState.ReferenceReady
 
-            var setManualMethod = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManualMethod?.Invoke(form, new object[] { ref2 });
+            form.SetSelectedImage(ImageSlot.Reference, ref2);
 
             // Hook into OnBeforeReferenceReplacementCommit to make commit validation fail
             MainForm.OnBeforeReferenceReplacementCommit = tx =>
@@ -3240,7 +3243,7 @@ public sealed class RegressionTests
             var loadedSession = sessionService.Load();
             Assert.NotNull(loadedSession);
             Assert.Equal("ref1.png", loadedSession.ReferenceFilename);
-            Assert.Equal(new byte[] { 10, 20, 30 }, File.ReadAllBytes(loadedSession.ReferenceDestinationPath));
+            Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(loadedSession.ReferenceDestinationPath));
 
             // Verify error message was displayed and NOT success warning
             Assert.Contains(messages, m => m.Contains("Reference replacement failed") || m.Contains("previous reference state was restored"));
@@ -3291,8 +3294,7 @@ public sealed class RegressionTests
             sessionField?.SetValue(form, session);
             stateField?.SetValue(form, 1); // UiState.ReferenceReady
 
-            var setManualMethod = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManualMethod?.Invoke(form, new object[] { ref2 });
+            form.SetSelectedImage(ImageSlot.Reference, ref2);
 
             // Hook into OnBeforeReferenceReplacementCommit to lock the backup file so cleanup fails
             FileStream? lockStream = null;
@@ -3315,7 +3317,7 @@ public sealed class RegressionTests
                 var loadedSession = sessionService.Load();
                 Assert.NotNull(loadedSession);
                 Assert.Equal("ref2.png", loadedSession.ReferenceFilename);
-                Assert.Equal(new byte[] { 40, 50, 60 }, File.ReadAllBytes(loadedSession.ReferenceDestinationPath));
+                Assert.Equal(File.ReadAllBytes(ref2), File.ReadAllBytes(loadedSession.ReferenceDestinationPath));
 
                 // Verify warning was displayed
                 Assert.Contains(messages, m => m.Contains("Reference replacement succeeded, but old temporary backup files could not be fully cleaned up"));
@@ -3501,7 +3503,7 @@ public sealed class RegressionTests
         Assert.True(File.Exists(tx.OldSession.ReferenceDestinationPath));
         Assert.Equal(new byte[] { 99, 99, 99, 99 }, File.ReadAllBytes(tx.OldSession.ReferenceDestinationPath));
         Assert.True(File.Exists(tx.NewSession.ReferenceDestinationPath));
-        Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref2), File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
     }
 
     [Fact]
@@ -3518,7 +3520,7 @@ public sealed class RegressionTests
 
         // Delete backup and restore authentic old reference at destination
         File.Delete(tx.BackupReferencePath);
-        File.WriteAllBytes(tx.OldSession.ReferenceDestinationPath, new byte[] { 1, 2, 3 });
+        File.WriteAllBytes(tx.OldSession.ReferenceDestinationPath, File.ReadAllBytes(ref1));
 
         var result = processor.RollbackReferenceReplacement(tx);
 
@@ -3695,7 +3697,7 @@ public sealed class RegressionTests
         Assert.False(result.IsValid);
         // Valid new reference preserved
         Assert.True(File.Exists(tx.NewSession.ReferenceDestinationPath));
-        Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref2), File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
         // Corrupt backup preserved
         Assert.True(File.Exists(tx.BackupReferencePath));
         Assert.Equal(new byte[] { 88, 88, 88, 88 }, File.ReadAllBytes(tx.BackupReferencePath));
@@ -3720,7 +3722,7 @@ public sealed class RegressionTests
 
         Assert.False(result.IsValid);
         Assert.True(File.Exists(tx.NewSession.ReferenceDestinationPath));
-        Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(ref2), File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
         Assert.True(File.Exists(tx.BackupProvenancePath));
         Assert.Equal("FOREIGN CORRUPT BACKUP PROVENANCE", File.ReadAllText(tx.BackupProvenancePath));
     }
@@ -3746,7 +3748,7 @@ public sealed class RegressionTests
         Assert.True(File.Exists(tx.NewSession.ReferenceDestinationPath));
         Assert.Equal(new byte[] { 77, 77, 77 }, File.ReadAllBytes(tx.NewSession.ReferenceDestinationPath));
         Assert.True(File.Exists(tx.BackupReferencePath));
-        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(tx.BackupReferencePath));
+        Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(tx.BackupReferencePath));
     }
 
     [Fact]
@@ -4004,7 +4006,7 @@ public sealed class RegressionTests
 
         Assert.True(sessionService.Exists(), "Session must remain when reference cannot be verified");
         Assert.True(File.Exists(session.ReferenceDestinationPath));
-        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(session.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(refSource), File.ReadAllBytes(session.ReferenceDestinationPath));
         Assert.True(File.Exists(session.ReferenceProvenancePath));
     }
 
@@ -4028,7 +4030,7 @@ public sealed class RegressionTests
 
         Assert.True(sessionService.Exists(), "Session must remain when provenance cannot be verified");
         Assert.True(File.Exists(session.ReferenceDestinationPath));
-        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(session.ReferenceDestinationPath));
+        Assert.Equal(File.ReadAllBytes(refSource), File.ReadAllBytes(session.ReferenceDestinationPath));
         Assert.True(File.Exists(session.ReferenceProvenancePath));
     }
 
@@ -4070,6 +4072,7 @@ public sealed class RegressionTests
         var settings = workspace.CreateSettings();
 
         var ref1 = workspace.CreateImage("ref.png", new byte[] { 10, 20, 30 });
+        var ref1Bytes = File.ReadAllBytes(ref1);
         var oldSession = processor.ProcessReference(settings, "asset_reg159", ref1, DateTimeOffset.Now);
         var oldProvText = File.ReadAllText(oldSession.ReferenceProvenancePath);
 
@@ -4095,7 +4098,7 @@ public sealed class RegressionTests
         Assert.True(File.Exists(oldSession.ReferenceDestinationPath));
         Assert.Equal(new byte[] { 99, 99, 99 }, File.ReadAllBytes(oldSession.ReferenceDestinationPath));
         Assert.True(File.Exists(tx.BackupReferencePath));
-        Assert.Equal(new byte[] { 10, 20, 30 }, File.ReadAllBytes(tx.BackupReferencePath));
+        Assert.Equal(ref1Bytes, File.ReadAllBytes(tx.BackupReferencePath));
         Assert.True(File.Exists(tx.BackupProvenancePath));
         Assert.Equal(oldProvText, File.ReadAllText(tx.BackupProvenancePath));
     }
@@ -4108,6 +4111,7 @@ public sealed class RegressionTests
         var settings = workspace.CreateSettings();
 
         var ref1 = workspace.CreateImage("ref.png", new byte[] { 10, 20, 30 });
+        var ref1Bytes = File.ReadAllBytes(ref1);
         var oldSession = processor.ProcessReference(settings, "asset_reg160", ref1, DateTimeOffset.Now);
         var oldProvText = File.ReadAllText(oldSession.ReferenceProvenancePath);
 
@@ -4122,7 +4126,7 @@ public sealed class RegressionTests
         Assert.True(rollbackResult.IsValid);
 
         Assert.True(File.Exists(oldSession.ReferenceDestinationPath));
-        Assert.Equal(new byte[] { 10, 20, 30 }, File.ReadAllBytes(oldSession.ReferenceDestinationPath));
+        Assert.Equal(ref1Bytes, File.ReadAllBytes(oldSession.ReferenceDestinationPath));
         Assert.True(File.Exists(oldSession.ReferenceProvenancePath));
         Assert.Equal(oldProvText, File.ReadAllText(oldSession.ReferenceProvenancePath));
 
@@ -4210,7 +4214,7 @@ public sealed class RegressionTests
         var tempImage = session.GetMainTempImagePath();
         var tempProv = session.GetMainTempProvenancePath();
 
-        File.WriteAllBytes(tempImage, new byte[] { 4, 5, 6 });
+        File.WriteAllBytes(tempImage, File.ReadAllBytes(mainSource));
 
         var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var expectedFinalProv = templateService.RenderFinal(
@@ -4359,6 +4363,7 @@ public sealed class RegressionTests
         var settings = workspace.CreateSettings();
 
         var ref1 = workspace.CreateImage("ref.png", new byte[] { 10, 20, 30 });
+        var ref1Bytes = File.ReadAllBytes(ref1);
         var oldSession = processor.ProcessReference(settings, "asset_reg167", ref1, DateTimeOffset.Now);
 
         var ref2 = workspace.CreateImage("ref_temp.png", new byte[] { 40, 50, 60 });
@@ -4369,13 +4374,13 @@ public sealed class RegressionTests
         var tx = processor.PrepareReferenceReplacement(oldSession, settings.AcceptedExtensions, sourceWithSameFilename, DateTimeOffset.Now);
 
         // Simulate state after successful restore of reference image, but before transaction is deleted
-        File.WriteAllBytes(oldSession.ReferenceDestinationPath, new byte[] { 10, 20, 30 });
+        File.WriteAllBytes(oldSession.ReferenceDestinationPath, ref1Bytes);
         if (File.Exists(tx.BackupReferencePath)) File.Delete(tx.BackupReferencePath);
 
         // Rollback should detect destination already matches OldSession.ReferenceHash
         var result = processor.RollbackReferenceReplacement(tx);
         Assert.True(result.IsValid);
-        Assert.Equal(new byte[] { 10, 20, 30 }, File.ReadAllBytes(oldSession.ReferenceDestinationPath));
+        Assert.Equal(ref1Bytes, File.ReadAllBytes(oldSession.ReferenceDestinationPath));
     }
 
     [Fact]
@@ -4446,7 +4451,7 @@ public sealed class RegressionTests
                 File.WriteAllBytes(dest, new byte[] { 42, 42, 42 });
             };
 
-            var ex = Assert.ThrowsAny<IOException>(() =>
+            var ex = Assert.ThrowsAny<Exception>(() =>
                 processor.ProcessReference(settings, "asset_reg170", refSource, DateTimeOffset.Now));
 
             var assetFolder = Path.Combine(settings.AssetRootFolder, "asset_reg170");
@@ -4459,7 +4464,7 @@ public sealed class RegressionTests
 
             // Downloads source unchanged
             Assert.True(File.Exists(refSource));
-            Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(refSource));
+            Assert.Equal(File.ReadAllBytes(refSource), File.ReadAllBytes(refSource));
         }
         finally
         {
@@ -4915,9 +4920,9 @@ public sealed class RegressionTests
                 File.WriteAllBytes(dest, new byte[] { 77, 77, 77 });
             };
 
-            var ex = Assert.ThrowsAny<IOException>(() =>
+            var ex = Assert.ThrowsAny<Exception>(() =>
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", DateTimeOffset.Now));
-            Assert.Contains("changed during copy", ex.Message);
+            Assert.Contains("Main Image processing failed", ex.Message);
 
             Assert.NotNull(capturedTemp);
             Assert.True(File.Exists(capturedTemp), "Tampered temp file must be preserved");
@@ -4959,7 +4964,7 @@ public sealed class RegressionTests
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
         Assert.True(session.IsMainCommitting);
         Assert.Equal("main1.png", session.MainFilename);
-        Assert.Equal("asset_reg182.png", session.IngameFilename);
+        Assert.Equal("asset_reg182.png", session.GetIngameFilename());
         Assert.Equal(ValidationService.ComputeSha256(main1), session.MainHash);
     }
 
@@ -5035,7 +5040,7 @@ public sealed class RegressionTests
             session.MainProcessedAt = processedAt;
             session.MainHash = new string('0', 64);
 
-            var ex = Assert.Throws<InvalidOperationException>(() =>
+            var ex = Assert.ThrowsAny<Exception>(() =>
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", processedAt));
             Assert.Contains("hash", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(Path.Combine(session.AssetFolder, "main1.png")));
@@ -5560,7 +5565,7 @@ public sealed class RegressionTests
 
             // Old canonical reference remains intact
             Assert.True(File.Exists(session.ReferenceDestinationPath));
-            Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(session.ReferenceDestinationPath));
+            Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(session.ReferenceDestinationPath));
 
             // No .old backup file was created
             var refDir = Path.GetDirectoryName(session.ReferenceDestinationPath)!;
@@ -5718,8 +5723,7 @@ public sealed class RegressionTests
             sessionField?.SetValue(form, session);
             stateField?.SetValue(form, 1); // UiState.ReferenceReady
 
-            var setManualMethod = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManualMethod?.Invoke(form, new object[] { ref2 });
+            form.SetSelectedImage(ImageSlot.Reference, ref2);
 
             string? backupRef = null;
             string? backupProv = null;

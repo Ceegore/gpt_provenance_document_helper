@@ -487,8 +487,7 @@ public class MainFormUiTests
             var txtFolder = form.Controls.Find("txtAssetFolderName", true).FirstOrDefault() as TextBox;
             txtFolder!.Text = "cancel_asset";
 
-            var refreshMethod = typeof(MainForm).GetMethod("RefreshLatestImage", BindingFlags.NonPublic | BindingFlags.Instance);
-            refreshMethod?.Invoke(form, null);
+            form.RefreshImageSelection(ImageSlot.Reference);
 
             var handleRefMethod = typeof(MainForm).GetMethod("HandleReference", BindingFlags.NonPublic | BindingFlags.Instance);
             handleRefMethod?.Invoke(form, null);
@@ -609,12 +608,12 @@ public class MainFormUiTests
                 sessionService);
 
             var dataObj = new DataObject(DataFormats.FileDrop, new[] { droppedFile });
-            var dragEnterMethod = typeof(MainForm).GetMethod("ManualSelection_DragEnter", BindingFlags.NonPublic | BindingFlags.Instance);
-            var dragDropMethod = typeof(MainForm).GetMethod("ManualSelection_DragDrop", BindingFlags.NonPublic | BindingFlags.Instance);
+            var dragEnterMethod = typeof(MainForm).GetMethod("ImageDrop_DragEnter", BindingFlags.NonPublic | BindingFlags.Instance);
+            var dragDropMethod = typeof(MainForm).GetMethod("ImageDrop_DragDrop", BindingFlags.NonPublic | BindingFlags.Instance);
 
             var dragEventArgs = new DragEventArgs(dataObj, 0, 0, 0, DragDropEffects.Copy, DragDropEffects.Copy);
             dragEnterMethod?.Invoke(form, new object[] { form, dragEventArgs });
-            dragDropMethod?.Invoke(form, new object[] { form, dragEventArgs });
+            dragDropMethod?.Invoke(form, new object[] { ImageSlot.Reference, dragEventArgs });
 
             var selectedImage = form.GetSelectedImage(ImageSlot.Reference);
             Assert.Equal(droppedFile, selectedImage);

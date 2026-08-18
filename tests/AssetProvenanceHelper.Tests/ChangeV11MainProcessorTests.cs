@@ -31,7 +31,7 @@ public sealed class ChangeV11MainProcessorTests
         Assert.Equal(Path.Combine(workspace.Assets, "hero_asset"), session.AssetFolder);
         Assert.True(session.IsMainCommitting);
         Assert.Equal("hero.png", session.MainFilename);
-        Assert.Equal("hero_asset.png", session.IngameFilename);
+        Assert.Equal("hero_asset.png", session.GetIngameFilename());
         Assert.Equal("A heroic knight", session.MainPrompt);
         Assert.Equal(processedAt, session.MainProcessedAt);
         Assert.False(string.IsNullOrEmpty(session.MainHash));
@@ -153,7 +153,6 @@ public sealed class ChangeV11MainProcessorTests
 
         session.IsMainCommitting = true;
         session.MainFilename = "ChatGPT main.png";
-        session.IngameFilename = "onboarding1.png";
         session.MainPrompt = "Reference-based prompt";
         session.MainProcessedAt = processedAt;
         session.MainHash = processor.ComputeSha256(mainSource);
@@ -234,7 +233,6 @@ public sealed class ChangeV11MainProcessorTests
 
         session.IsMainCommitting = true;
         session.MainFilename = "main.png";
-        session.IngameFilename = "preserve_ref.png";
         session.MainPrompt = "Prompt";
         session.MainProcessedAt = processedAt;
         session.MainHash = processor.ComputeSha256(mainSource);

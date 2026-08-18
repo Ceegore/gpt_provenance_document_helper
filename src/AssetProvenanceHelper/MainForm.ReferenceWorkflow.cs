@@ -40,11 +40,30 @@ partial class MainForm
                 }
             }
 
-            createdSession = _assetProcessorService.ProcessReference(
+            var now = DateTimeOffset.Now;
+            var preparedSession = _assetProcessorService.CreateReferenceSession(
                 settings,
                 folderName,
                 sourceImage,
-                DateTimeOffset.Now);
+                now);
+
+            try
+            {
+                _sessionService.Save(preparedSession);
+            }
+            catch (Exception savePrepEx)
+            {
+                ShowError(
+                    "Could not persist reference creation session journal. Operation was aborted.",
+                    savePrepEx);
+                return;
+            }
+
+            createdSession = _assetProcessorService.ProcessReference(
+                preparedSession,
+                settings,
+                sourceImage,
+                now);
 
             try
             {
@@ -56,14 +75,28 @@ partial class MainForm
 
                 if (!rollback.IsValid)
                 {
-                    throw new IOException(
-                        "Could not save session and reference rollback was incomplete."
-                        + Environment.NewLine
+                    ShowMessageBox(
+                        "CRITICAL: Reference files were created, the recovery journal could not be saved, and rollback was incomplete. Close the application and inspect the reported paths before continuing.\n\n"
                         + string.Join(Environment.NewLine, rollback.Errors),
-                        saveException);
+                        "Critical Reference Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+
+                    Close();
+                    return;
                 }
 
-                throw;
+                try
+                {
+                    _sessionService.Delete();
+                }
+                catch
+                {
+                    // Ignore delete failure during rollback of uncommitted session
+                }
+
+                ShowError("Reference session could not be saved after creation.", saveException);
+                return;
             }
 
             _currentSession = createdSession;
@@ -80,6 +113,10 @@ partial class MainForm
         }
         catch (Exception ex)
         {
+            if (createdSession != null && createdSession.ReferenceCommitPhase == ReferenceCommitPhase.Prepared)
+            {
+                try { _sessionService.Delete(); } catch { }
+            }
             ShowError("Reference processing failed.", ex);
         }
     }
@@ -131,11 +168,21 @@ partial class MainForm
 
         try
         {
+            var now = DateTimeOffset.Now;
             transaction = _assetProcessorService.PrepareReferenceReplacement(
                 _currentSession,
                 _settings.AcceptedExtensions,
                 source,
-                DateTimeOffset.Now);
+                now);
+
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.Prepared));
+
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.OldBackedUp));
+
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.NewPromoted));
 
             try
             {
@@ -158,14 +205,21 @@ partial class MainForm
                     return;
                 }
 
+                _sessionService.DeleteReplacementJournal();
+
                 throw new IOException(
                     "Could not save replacement session. The previous reference was restored.",
                     saveException);
             }
 
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.SessionSwitched));
+
             OnBeforeReferenceReplacementCommit?.Invoke(transaction);
 
             var cleanup = _assetProcessorService.CommitReferenceReplacement(transaction);
+
+            _sessionService.DeleteReplacementJournal();
 
             if (!cleanup.IsValid)
             {
@@ -231,10 +285,12 @@ partial class MainForm
                 SetSelectedImage(ImageSlot.Reference, null);
                 SetSelectedImage(ImageSlot.Main, null);
                 txtPrompt.Clear();
+                ClearValidationVisuals();
 
                 AddStatus($"Reference replaced: {_currentSession.ReferenceFilename}");
                 AddStatus("Reference provenance updated.");
                 AddStatus("Reference session updated.");
+                AddStatus("Main candidate and prompt cleared because the Reference changed.");
 
                 ShowMessageBox(
                     "Reference replacement succeeded, but old temporary backup files could not be fully cleaned up.\n\n"
@@ -252,15 +308,21 @@ partial class MainForm
             SetSelectedImage(ImageSlot.Reference, null);
             SetSelectedImage(ImageSlot.Main, null);
             txtPrompt.Clear();
+            ClearValidationVisuals();
 
             AddStatus($"Reference replaced: {_currentSession.ReferenceFilename}");
             AddStatus("Reference provenance updated.");
             AddStatus("Reference session updated.");
+            AddStatus("Main candidate and prompt cleared because the Reference changed.");
 
             ApplyState();
         }
         catch (Exception ex)
         {
+            if (transaction != null && !transaction.IsCommitted)
+            {
+                try { _sessionService.DeleteReplacementJournal(); } catch { }
+            }
             ShowError("Reference replacement failed.", ex);
         }
     }

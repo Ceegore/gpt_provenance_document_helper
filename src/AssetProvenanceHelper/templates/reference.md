@@ -28,7 +28,7 @@ No third-party reference image or other third-party visual source material is kn
 
 Prompt retained: no\
 Generation conversation retained: no\
-Reference file retained: no
+Reference file retained: yes
 
 Intended use:\
 Internal reference/input for further AI-assisted asset generation for the commercial game.

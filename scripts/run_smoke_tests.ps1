@@ -55,8 +55,8 @@ $workDir = Split-Path -Parent $absExePath
 Write-Host "Testing process startup and window creation of $absExePath ..."
 $proc = Start-Process -FilePath $absExePath -WorkingDirectory $workDir -PassThru
 
-# Wait up to 5 seconds for main window to appear
-$timeoutMs = 5000
+# Wait up to 15 seconds for main window to appear
+$timeoutMs = 15000
 $elapsedMs = 0
 $windowTitle = ""
 $hasWindow = $false
@@ -99,6 +99,20 @@ if ($windowTitle -ne $expectedTitle) {
 }
 
 Write-Host "Process running (PID: $($proc.Id)), Main Window Title: '$windowTitle'"
+
+# Verify application icon extraction / presence
+$iconVerified = $false
+try {
+    Add-Type -AssemblyName System.Drawing
+    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($absExePath)
+    if ($icon -ne $null -and $icon.Width -gt 0) {
+        $iconVerified = $true
+        Write-Host "Application icon extracted and verified: $($icon.Width)x$($icon.Height)"
+        $icon.Dispose()
+    }
+} catch {
+    Write-Warning "Could not verify application icon: $_"
+}
 
 $gracefulShutdown = $false
 # Attempt graceful shutdown
@@ -164,6 +178,7 @@ $smokeResults = [ordered]@{
     ProcessStartupVerified = $true
     MainWindowCreated = $hasWindow
     MainWindowTitle = $windowTitle
+    IconVerified = $iconVerified
     GracefulShutdownVerified = $gracefulShutdown
     Status = "PASS"
 }

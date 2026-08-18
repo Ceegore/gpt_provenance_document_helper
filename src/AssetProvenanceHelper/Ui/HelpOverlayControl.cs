@@ -92,6 +92,8 @@ public class HelpOverlayControl : UserControl
             Math.Max(10, (ClientSize.Height - _contentPanel.Height) / 2));
     }
 
+    public event EventHandler? CloseRequested;
+
     public void ShowOverlay()
     {
         Visible = true;
@@ -103,6 +105,7 @@ public class HelpOverlayControl : UserControl
     public void HideOverlay()
     {
         Visible = false;
+        CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
     public void FocusCloseButton()

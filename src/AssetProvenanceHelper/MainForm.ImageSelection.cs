@@ -57,20 +57,6 @@ partial class MainForm
                 _toolTip.SetToolTip(lblReferenceSelectedImage, null);
             }
 
-            // Also update legacy labels if present for backwards compatibility in tests
-            if (lblLatestImage != null)
-            {
-                lblLatestImage.Text = hasFile ? Path.GetFileName(path!) : "No image found.";
-            }
-            if (lblLatestTimestamp != null)
-            {
-                lblLatestTimestamp.Text = hasFile ? $"Modified: {File.GetLastWriteTime(path!):yyyy-MM-dd HH:mm:ss}" : "Modified: -";
-            }
-            if (lblManualSelection != null)
-            {
-                lblManualSelection.Text = hasFile ? $"Manual selection: {path}" : "Manual selection: none";
-            }
-
             ClearReferenceValidationVisuals();
         }
         else if (slot == ImageSlot.Main)
@@ -113,7 +99,20 @@ partial class MainForm
             AcceptedExtensions = _settings.AcceptedExtensions
         };
 
-        var latest = _imageFinderService.FindLatestImage(settings);
+        string? latest;
+        try
+        {
+            latest = _imageFinderService.FindLatestImage(settings);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            HighlightField(pnlDownloadFolderHost, true);
+            txtDownloadFolder.Focus();
+            AddStatus($"Error scanning image download folder: {ex.Message}");
+            ShowError($"Could not scan image download folder '{downloadFolder}'.", ex);
+            return;
+        }
+
         if (latest is null)
         {
             SetSelectedImage(slot, null);
@@ -221,41 +220,5 @@ partial class MainForm
         {
             ShowError("Could not use dropped image.", ex);
         }
-    }
-
-    // Legacy method wrappers for backwards compatibility
-    private void RefreshLatestImage()
-    {
-        RefreshImageSelection(ImageSlot.Reference);
-    }
-
-    private string? ResolveImageSelection()
-    {
-        return GetSelectedImage(ImageSlot.Reference);
-    }
-
-    private void ChooseFile()
-    {
-        ChooseImageFile(ImageSlot.Reference);
-    }
-
-    private void SetManualSelection(string path)
-    {
-        SetSelectedImage(ImageSlot.Reference, path);
-    }
-
-    private void ClearManualSelection()
-    {
-        SetSelectedImage(ImageSlot.Reference, null);
-    }
-
-    private void ManualSelection_DragEnter(object? sender, DragEventArgs e)
-    {
-        ImageDrop_DragEnter(sender, e);
-    }
-
-    private void ManualSelection_DragDrop(object? sender, DragEventArgs e)
-    {
-        ImageDrop_DragDrop(ImageSlot.Reference, e);
     }
 }

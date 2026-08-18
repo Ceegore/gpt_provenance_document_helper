@@ -14,6 +14,9 @@ public sealed class SessionService
     internal static Action<CancelPhase, AssetSession>? OnCancelPhaseSavingHook;
 
     [ThreadStatic]
+    internal static Action<ReferenceReplacementPhase, ReferenceReplacementJournal>? OnReplacementPhaseSavingHook;
+
+    [ThreadStatic]
     internal static Action? OnBeforeFolderCleanupHook;
 
     private readonly string _sessionPath;
@@ -602,7 +605,7 @@ public sealed class SessionService
                 var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService);
                 if (!provValidation.IsValid)
                 {
-                    if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+                    if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
                     {
                         throw new IOException($"Could not verify reference provenance ownership before cancellation: {string.Join("; ", provValidation.Errors)}");
                     }
@@ -681,7 +684,7 @@ public sealed class SessionService
                     var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService);
                     if (!provValidation.IsValid)
                     {
-                        if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+                        if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
                         {
                             throw new IOException($"Could not verify reference provenance ownership in recovery phase '{session.CancelPhase}': {string.Join("; ", provValidation.Errors)}");
                         }
@@ -694,7 +697,7 @@ public sealed class SessionService
                     var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProv, _templateService);
                     if (!provValidation.IsValid)
                     {
-                        if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+                        if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
                         {
                             throw new IOException($"Could not verify cancel-temp reference provenance ownership in recovery phase '{session.CancelPhase}': {string.Join("; ", provValidation.Errors)}");
                         }
@@ -729,7 +732,7 @@ public sealed class SessionService
                     var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProv, _templateService);
                     if (!provValidation.IsValid)
                     {
-                        if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+                        if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
                         {
                             throw new IOException($"Could not verify temporary canceling reference provenance '{tempProv}': {string.Join("; ", provValidation.Errors)}");
                         }
@@ -738,6 +741,92 @@ public sealed class SessionService
                     }
                 }
             }
+        }
+    }
+
+    public string ReplacementJournalPath =>
+        Path.Combine(
+            Path.GetDirectoryName(_sessionPath) ?? "",
+            AppConstants.ReferenceReplacementFileName);
+
+    public bool ReplacementJournalExists()
+    {
+        return File.Exists(ReplacementJournalPath);
+    }
+
+    public ReferenceReplacementJournal? LoadReplacementJournal()
+    {
+        if (!File.Exists(ReplacementJournalPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(ReplacementJournalPath, Encoding.UTF8);
+            var journal = JsonSerializer.Deserialize<ReferenceReplacementJournal>(json, _jsonOptions);
+            if (journal is null)
+            {
+                throw new InvalidDataException("reference-replacement.json could not be deserialized.");
+            }
+            return journal;
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException($"Could not parse replacement journal '{ReplacementJournalPath}'.", ex);
+        }
+    }
+
+    public void SaveReplacementJournal(ReferenceReplacementJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+
+        var directory = Path.GetDirectoryName(ReplacementJournalPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var json = JsonSerializer.Serialize(journal, _jsonOptions);
+        var tempPath = ReplacementJournalPath + $".{Guid.NewGuid():N}.tmp";
+
+        try
+        {
+            OnReplacementPhaseSavingHook?.Invoke(journal.Phase, journal);
+
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            {
+                writer.Write(json);
+                writer.Flush();
+                stream.Flush(true);
+            }
+
+            File.Move(tempPath, ReplacementJournalPath, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Preserve original exception
+            }
+
+            throw;
+        }
+    }
+
+    public void DeleteReplacementJournal()
+    {
+        if (File.Exists(ReplacementJournalPath))
+        {
+            File.Delete(ReplacementJournalPath);
         }
     }
 }

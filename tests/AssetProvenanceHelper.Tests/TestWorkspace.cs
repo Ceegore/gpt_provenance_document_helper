@@ -91,6 +91,41 @@ public sealed class TestWorkspace : IDisposable
         };
     }
 
+    public static byte[] GetValidImageBytesForExtension(string filename)
+    {
+        var ext = Path.GetExtension(filename).ToLowerInvariant();
+        return ext switch
+        {
+            ".png" => new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D },
+            ".jpg" or ".jpeg" => new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46 },
+            ".webp" => new byte[] { (byte)'R', (byte)'I', (byte)'F', (byte)'F', 0x24, 0x00, 0x00, 0x00, (byte)'W', (byte)'E', (byte)'B', (byte)'P' },
+            _ => new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }
+        };
+    }
+
+    public static byte[] EnsureMagicBytes(string filename, byte[] payload)
+    {
+        var magic = GetValidImageBytesForExtension(filename);
+        if (payload.Length >= magic.Length)
+        {
+            var match = true;
+            for (int i = 0; i < magic.Length; i++)
+            {
+                if (payload[i] != magic[i])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return payload;
+        }
+
+        var result = new byte[magic.Length + payload.Length];
+        Buffer.BlockCopy(magic, 0, result, 0, magic.Length);
+        Buffer.BlockCopy(payload, 0, result, magic.Length, payload.Length);
+        return result;
+    }
+
     public string CreateImage(
         string filename,
         byte[]? contents = null)
@@ -100,16 +135,29 @@ public sealed class TestWorkspace : IDisposable
                 Downloads,
                 filename);
 
+        var bytes = contents is not null
+            ? EnsureMagicBytes(filename, contents)
+            : GetValidImageBytesForExtension(filename);
+
         File.WriteAllBytes(
             path,
-            contents
-            ?? new byte[]
-            {
-                1,
-                2,
-                3,
-                4
-            });
+            bytes);
+
+        return path;
+    }
+
+    public string CreateRawFile(
+        string filename,
+        byte[] contents)
+    {
+        var path =
+            Path.Combine(
+                Downloads,
+                filename);
+
+        File.WriteAllBytes(
+            path,
+            contents);
 
         return path;
     }

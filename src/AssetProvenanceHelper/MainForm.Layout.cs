@@ -2,6 +2,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.Windows.Forms;
+using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Ui;
 
 namespace AssetProvenanceHelper;
@@ -301,11 +302,18 @@ partial class MainForm
         btnRefreshReference.Name = "btnRefreshReference";
         btnChooseReference = CreateButton("Choose File...");
         btnChooseReference.Name = "btnChooseReference";
+        btnDropReference = CreateButton("Drop File");
+        btnDropReference.Name = "btnDropReference";
+        btnDropReference.AllowDrop = true;
+        btnDropReference.DragEnter += (s, e) => ImageDrop_DragEnter(s, e);
+        btnDropReference.DragDrop += (s, e) => ImageDrop_DragDrop(ImageSlot.Reference, e);
+        _toolTip.SetToolTip(btnDropReference, "Drop an image file here to select it as the Reference candidate.");
         btnOpenDownloadsReference = CreateButton("Open Downloads");
         btnOpenDownloadsReference.Name = "btnOpenDownloadsReference";
 
         refButtons.Controls.Add(btnRefreshReference);
         refButtons.Controls.Add(btnChooseReference);
+        refButtons.Controls.Add(btnDropReference);
         refButtons.Controls.Add(btnOpenDownloadsReference);
 
         lblReference = new Label
@@ -404,11 +412,18 @@ partial class MainForm
         btnRefreshMain.Name = "btnRefreshMain";
         btnChooseMain = CreateButton("Choose File...");
         btnChooseMain.Name = "btnChooseMain";
+        btnDropMain = CreateButton("Drop File");
+        btnDropMain.Name = "btnDropMain";
+        btnDropMain.AllowDrop = true;
+        btnDropMain.DragEnter += (s, e) => ImageDrop_DragEnter(s, e);
+        btnDropMain.DragDrop += (s, e) => ImageDrop_DragDrop(ImageSlot.Main, e);
+        _toolTip.SetToolTip(btnDropMain, "Drop an image file here to select it as the Main candidate.");
         btnOpenDownloadsMain = CreateButton("Open Downloads");
         btnOpenDownloadsMain.Name = "btnOpenDownloadsMain";
 
         mainButtons.Controls.Add(btnRefreshMain);
         mainButtons.Controls.Add(btnChooseMain);
+        mainButtons.Controls.Add(btnDropMain);
         mainButtons.Controls.Add(btnOpenDownloadsMain);
 
         var promptContainer = new TableLayoutPanel
@@ -472,14 +487,6 @@ partial class MainForm
         pnlCardsContainer.Controls.Add(grpMain, 1, 0);
 
         root.Controls.Add(pnlCardsContainer, 0, 3);
-
-        // Assign legacy aliases
-        btnRefresh = btnRefreshReference;
-        btnChooseFile = btnChooseReference;
-        btnOpenDownloads = btnOpenDownloadsReference;
-        lblLatestImage = lblReferenceSelectedImage;
-        lblLatestTimestamp = lblReferenceTimestamp;
-        lblManualSelection = lblReferenceDrop;
     }
 
     [ExcludeFromCodeCoverage]
@@ -511,7 +518,7 @@ partial class MainForm
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
             Dock = DockStyle.Fill,
-            Height = 110
+            Height = 85
         };
 
         var actionButtons = new FlowLayoutPanel

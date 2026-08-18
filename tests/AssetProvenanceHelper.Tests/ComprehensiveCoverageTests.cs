@@ -631,18 +631,20 @@ public class ComprehensiveCoverageTests
         var finalProv = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
         var mainDest = Path.Combine(session.AssetFolder, mainFilename);
 
+        var templateService = workspace.CreateTemplateService();
+
         // 1. Unreadable final provenance file
         using (var lockStream = new FileStream(finalProv, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
         {
-            var r1 = service.ValidateCompleteAsset(session, mainDest, finalProv, mainFilename, "2026-01-01", "main prompt", session.MainHash);
+            var r1 = service.ValidateCompleteAsset(session, mainDest, finalProv, mainFilename, "2026-01-01", "main prompt", templateService, session.MainHash);
             Assert.False(r1.IsValid);
-            Assert.Contains(r1.Errors, e => e.Contains("Could not read final provenance"));
+            Assert.Contains(r1.Errors, e => e.Contains("Could not read final provenance") || e.Contains("Could not compute final provenance hash"));
         }
 
         // 2. Unreadable main image file for hash verification
         using (var lockStream = new FileStream(mainDest, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
         {
-            var r2 = service.ValidateCompleteAsset(session, mainDest, finalProv, mainFilename, "2026-01-01", "main prompt", session.MainHash);
+            var r2 = service.ValidateCompleteAsset(session, mainDest, finalProv, mainFilename, "2026-01-01", "main prompt", templateService, session.MainHash);
             Assert.False(r2.IsValid);
             Assert.Contains(r2.Errors, e => e.Contains("Could not compute Main image SHA-256 hash"));
         }
@@ -1451,8 +1453,8 @@ public class ComprehensiveCoverageTests
                 workspace.CreateAssetProcessor(),
                 workspace.CreateSessionService());
 
-            var dragEnterMethod = typeof(MainForm).GetMethod("ManualSelection_DragEnter", BindingFlags.NonPublic | BindingFlags.Instance);
-            var dragDropMethod = typeof(MainForm).GetMethod("ManualSelection_DragDrop", BindingFlags.NonPublic | BindingFlags.Instance);
+            var dragEnterMethod = typeof(MainForm).GetMethod("ImageDrop_DragEnter", BindingFlags.NonPublic | BindingFlags.Instance);
+            var dragDropMethod = typeof(MainForm).GetMethod("ImageDrop_DragDrop", BindingFlags.NonPublic | BindingFlags.Instance);
             Assert.NotNull(dragEnterMethod);
             Assert.NotNull(dragDropMethod);
 
@@ -1465,7 +1467,7 @@ public class ComprehensiveCoverageTests
             dragEnterMethod.Invoke(form, new object[] { form, dragEvent });
             Assert.Equal(DragDropEffects.Copy, dragEvent.Effect);
 
-            dragDropMethod.Invoke(form, new object[] { form, dragEvent });
+            dragDropMethod.Invoke(form, new object[] { ImageSlot.Reference, dragEvent });
             Assert.Equal(img, form.GetSelectedImage(ImageSlot.Reference));
 
             // Non-file DataObject
@@ -1511,8 +1513,7 @@ public class ComprehensiveCoverageTests
             btnOpenAssetFolder.PerformClick();
 
             // Clear manual selection
-            var clearMethod = typeof(MainForm).GetMethod("ClearManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            clearMethod?.Invoke(form, null);
+            form.SetSelectedImage(ImageSlot.Reference, null);
 
             // Status helpers
             var addStatusMethod = typeof(MainForm).GetMethod("AddStatus", BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string) }, null);
@@ -1582,20 +1583,17 @@ public class ComprehensiveCoverageTests
             browseAssetMethod.Invoke(form, null);
 
             // 3. ChooseFile - valid, invalid, and cancelled
-            var chooseFileMethod = typeof(MainForm).GetMethod("ChooseFile", BindingFlags.NonPublic | BindingFlags.Instance);
-            Assert.NotNull(chooseFileMethod);
-
             var validImg = workspace.CreateImage("choose.png", new byte[] { 1, 2, 3 });
             MainForm.OpenFileDialogProvider = (owner, initial) => validImg;
-            chooseFileMethod.Invoke(form, null);
+            form.ChooseImageFile(ImageSlot.Reference);
 
             var invalidImg = Path.Combine(workspace.Downloads, "bad.xyz");
             File.WriteAllBytes(invalidImg, new byte[] { 1, 2, 3 });
             MainForm.OpenFileDialogProvider = (owner, initial) => invalidImg;
-            chooseFileMethod.Invoke(form, null);
+            form.ChooseImageFile(ImageSlot.Reference);
 
             MainForm.OpenFileDialogProvider = (owner, initial) => null;
-            chooseFileMethod.Invoke(form, null);
+            form.ChooseImageFile(ImageSlot.Reference);
 
             // 4. OpenDownloads - exists and does not exist
             var openDownloadsMethod = typeof(MainForm).GetMethod("OpenDownloads", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -1730,8 +1728,7 @@ public class ComprehensiveCoverageTests
 
             // No usable image found
             txtFolderName.Text = "valid_folder";
-            var clearManual = typeof(MainForm).GetMethod("ClearManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            clearManual?.Invoke(form, null);
+            form.SetSelectedImage(ImageSlot.Reference, null);
             handleRefMethod.Invoke(form, null);
 
             // Existing destination folder - user cancels
@@ -1739,8 +1736,7 @@ public class ComprehensiveCoverageTests
             Directory.CreateDirectory(existingTarget);
             txtFolderName.Text = "existing_folder";
             var validImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
-            var setManual = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManual?.Invoke(form, new object[] { validImg });
+            form.SetSelectedImage(ImageSlot.Reference, validImg);
 
             TwoChoiceDialog.CustomChoiceProvider = (owner, title, msg, p, s) => false; // Cancel
             handleRefMethod.Invoke(form, null);
@@ -1848,8 +1844,7 @@ public class ComprehensiveCoverageTests
             // 4. Invalid source image
             var invalidSource = Path.Combine(workspace.Downloads, "bad_ext.xyz");
             File.WriteAllBytes(invalidSource, new byte[] { 1, 2, 3 });
-            var setManual = typeof(MainForm).GetMethod("SetManualSelection", BindingFlags.NonPublic | BindingFlags.Instance);
-            setManual?.Invoke(form, new object[] { invalidSource });
+            form.SetSelectedImage(ImageSlot.Main, invalidSource);
             handleMainMethod.Invoke(form, null);
 
             // 5. Valid image, prompt empty -> Rejected without auto-paste

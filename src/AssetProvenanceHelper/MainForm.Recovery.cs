@@ -11,6 +11,8 @@ partial class MainForm
 {
     private void RecoverSessionOnStartup()
     {
+        RecoverReferenceReplacementJournalIfPresent();
+
         if (!_sessionService.Exists())
         {
             return;
@@ -137,6 +139,7 @@ partial class MainForm
             mainFilename,
             mainDateStr,
             session.MainPrompt ?? string.Empty,
+            _templateService,
             session.MainHash);
 
         if (completeValidation.IsValid)
@@ -220,6 +223,90 @@ partial class MainForm
 
     private void RecoverReferenceAssistedSession(AssetSession session)
     {
+        if (session.ReferenceCommitPhase == ReferenceCommitPhase.Prepared)
+        {
+            var exactOutput = _validationService.ValidateExactReferenceOutput(session, _templateService);
+            if (exactOutput.IsValid)
+            {
+                session.ReferenceCommitPhase = ReferenceCommitPhase.None;
+                session.ReferenceTransactionId = null;
+                try
+                {
+                    _sessionService.Save(session);
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Could not update recovered reference session.", ex);
+                    Close();
+                    return;
+                }
+
+                _currentSession = session;
+                _state = UiState.ReferenceReady;
+                txtAssetRoot.Text = session.AssetRootFolder;
+                txtAssetFolderName.Text = session.AssetFolderName;
+                lblReference.Text = $"Saved reference: {session.ReferenceFilename}";
+                SetSelectedImage(ImageSlot.Reference, null);
+                SetSelectedImage(ImageSlot.Main, null);
+                AddStatus($"Interrupted Reference creation for '{session.AssetFolderName}' was completed and recovered.");
+                ApplyState();
+                return;
+            }
+
+            var refExists = File.Exists(session.ReferenceDestinationPath);
+            var provExists = File.Exists(session.ReferenceProvenancePath);
+
+            if (!refExists && !provExists)
+            {
+                try
+                {
+                    _sessionService.Delete();
+                    AddStatus($"Unfinished Reference creation journal for '{session.AssetFolderName}' removed.");
+                    _currentSession = null;
+                    _state = UiState.Idle;
+                    ApplyState();
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Could not delete reference creation journal.", ex);
+                    Close();
+                    return;
+                }
+            }
+
+            var rollback = _assetProcessorService.RollbackReference(session);
+            if (rollback.IsValid)
+            {
+                try
+                {
+                    _sessionService.Delete();
+                    AddStatus($"Unfinished Reference creation for '{session.AssetFolderName}' was rolled back.");
+                    _currentSession = null;
+                    _state = UiState.Idle;
+                    ApplyState();
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Could not delete reference journal after rollback.", ex);
+                    Close();
+                    return;
+                }
+            }
+            else
+            {
+                ShowMessageBox(
+                    "CRITICAL: Unfinished Reference creation could not be safely rolled back.\n\n"
+                    + string.Join(Environment.NewLine, rollback.Errors),
+                    "Critical Reference Recovery Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                Close();
+                return;
+            }
+        }
+
         if (session.IsMainCommitting && !string.IsNullOrWhiteSpace(session.MainFilename))
         {
             var refBaselineValidation = _validationService.ValidateReferenceOutput(session);
@@ -266,6 +353,7 @@ partial class MainForm
                 session.MainFilename,
                 mainDateStr,
                 session.MainPrompt ?? string.Empty,
+                _templateService,
                 session.MainHash);
 
             if (completeValidation.IsValid)
@@ -392,5 +480,171 @@ partial class MainForm
 
         AddStatus($"Resumed reference session for '{session.AssetFolderName}'.");
         ApplyState();
+    }
+
+    private void RecoverReferenceReplacementJournalIfPresent()
+    {
+        if (!_sessionService.ReplacementJournalExists())
+        {
+            return;
+        }
+
+        ReferenceReplacementJournal? journal;
+        try
+        {
+            journal = _sessionService.LoadReplacementJournal();
+        }
+        catch (Exception ex)
+        {
+            ShowMessageBox(
+                "CRITICAL: The replacement journal could not be read.\n\n" + ex.Message,
+                "Critical Replacement Recovery Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            Close();
+            return;
+        }
+
+        if (journal is null)
+        {
+            _sessionService.DeleteReplacementJournal();
+            return;
+        }
+
+        try
+        {
+            switch (journal.Phase)
+            {
+                case ReferenceReplacementPhase.Prepared:
+                    if (File.Exists(journal.TempNewReferencePath))
+                    {
+                        File.Delete(journal.TempNewReferencePath);
+                    }
+                    if (File.Exists(journal.TempNewProvenancePath))
+                    {
+                        File.Delete(journal.TempNewProvenancePath);
+                    }
+                    _sessionService.DeleteReplacementJournal();
+                    AddStatus("Unfinished reference replacement (Phase Prepared) was rolled back.");
+                    break;
+
+                case ReferenceReplacementPhase.OldBackedUp:
+                    if (File.Exists(journal.BackupProvenancePath))
+                    {
+                        var provValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
+                            journal.OldSession,
+                            journal.BackupProvenancePath,
+                            _templateService);
+
+                        if (!provValidation.IsValid)
+                        {
+                            throw new InvalidDataException(
+                                $"Backup reference provenance does not match old session state: {string.Join("; ", provValidation.Errors)}");
+                        }
+
+                        File.Move(journal.BackupProvenancePath, journal.OldSession.ReferenceProvenancePath, overwrite: true);
+                    }
+
+                    if (File.Exists(journal.BackupReferencePath))
+                    {
+                        var hash = ValidationService.ComputeSha256(journal.BackupReferencePath);
+                        if (!string.Equals(hash, journal.OldSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidDataException(
+                                "Backup reference image hash does not match old session state.");
+                        }
+
+                        File.Move(journal.BackupReferencePath, journal.OldSession.ReferenceDestinationPath, overwrite: true);
+                    }
+
+                    if (File.Exists(journal.TempNewReferencePath))
+                    {
+                        File.Delete(journal.TempNewReferencePath);
+                    }
+                    if (File.Exists(journal.TempNewProvenancePath))
+                    {
+                        File.Delete(journal.TempNewProvenancePath);
+                    }
+
+                    _sessionService.Save(journal.OldSession);
+                    _sessionService.DeleteReplacementJournal();
+                    AddStatus("Interrupted reference replacement (Phase OldBackedUp) was restored to previous reference.");
+                    break;
+
+                case ReferenceReplacementPhase.NewPromoted:
+                    var currentSession = _sessionService.Exists() ? _sessionService.Load() : null;
+                    var sessionSwitched = currentSession != null &&
+                        string.Equals(currentSession.ReferenceFilename, journal.NewSession.ReferenceFilename, StringComparison.Ordinal);
+
+                    if (sessionSwitched)
+                    {
+                        var exactNew = _validationService.ValidateExactReferenceOutput(journal.NewSession, _templateService);
+                        if (!exactNew.IsValid)
+                        {
+                            throw new InvalidDataException("New reference files are invalid or modified: " + string.Join("; ", exactNew.Errors));
+                        }
+
+                        if (File.Exists(journal.BackupReferencePath)) File.Delete(journal.BackupReferencePath);
+                        if (File.Exists(journal.BackupProvenancePath)) File.Delete(journal.BackupProvenancePath);
+
+                        _sessionService.DeleteReplacementJournal();
+                        AddStatus("Interrupted reference replacement (Phase NewPromoted) completed.");
+                    }
+                    else
+                    {
+                        var oldProvValid = _validationService.ValidateExactReferenceProvenanceOwnership(
+                            journal.OldSession,
+                            journal.BackupProvenancePath,
+                            _templateService);
+
+                        if (!oldProvValid.IsValid)
+                        {
+                            throw new InvalidDataException("Backup reference provenance is corrupted or modified.");
+                        }
+
+                        if (File.Exists(journal.NewSession.ReferenceProvenancePath))
+                        {
+                            File.Delete(journal.NewSession.ReferenceProvenancePath);
+                        }
+                        if (File.Exists(journal.NewSession.ReferenceDestinationPath))
+                        {
+                            File.Delete(journal.NewSession.ReferenceDestinationPath);
+                        }
+
+                        File.Move(journal.BackupProvenancePath, journal.OldSession.ReferenceProvenancePath, overwrite: true);
+                        File.Move(journal.BackupReferencePath, journal.OldSession.ReferenceDestinationPath, overwrite: true);
+
+                        _sessionService.Save(journal.OldSession);
+                        _sessionService.DeleteReplacementJournal();
+                        AddStatus("Interrupted reference replacement (Phase NewPromoted) was rolled back to previous reference.");
+                    }
+                    break;
+
+                case ReferenceReplacementPhase.SessionSwitched:
+                    var exactValidation = _validationService.ValidateExactReferenceOutput(journal.NewSession, _templateService);
+                    if (!exactValidation.IsValid)
+                    {
+                        throw new InvalidDataException("New reference files are invalid or modified: " + string.Join("; ", exactValidation.Errors));
+                    }
+
+                    if (File.Exists(journal.BackupReferencePath)) File.Delete(journal.BackupReferencePath);
+                    if (File.Exists(journal.BackupProvenancePath)) File.Delete(journal.BackupProvenancePath);
+
+                    _sessionService.DeleteReplacementJournal();
+                    AddStatus("Interrupted reference replacement (Phase SessionSwitched) cleanup completed.");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowMessageBox(
+                "CRITICAL: Failed to recover interrupted reference replacement.\n\n"
+                + ex.Message
+                + "\n\nReplacement journal was preserved.",
+                "Critical Replacement Recovery Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            Close();
+        }
     }
 }

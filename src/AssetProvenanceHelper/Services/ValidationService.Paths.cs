@@ -27,9 +27,39 @@ public sealed partial class ValidationService
             Path.GetFullPath(path));
     }
 
+    private static bool IsSafeFilename(string? filename) =>
+        !string.IsNullOrWhiteSpace(filename)
+        && string.Equals(
+            Path.GetFileName(filename),
+            filename,
+            StringComparison.Ordinal);
+
+    private static void RequireExactParent(
+        string path,
+        string expectedParent,
+        string description,
+        ICollection<string> errors)
+    {
+        try
+        {
+            var normalized = NormalizePath(path);
+            var parent = Path.GetDirectoryName(normalized);
+
+            if (parent is null || !PathsEqual(parent, expectedParent))
+            {
+                errors.Add(
+                    $"{description} is not inside the expected directory '{expectedParent}'.");
+            }
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"{description} path is invalid: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// Validates that the session paths are strictly confined to the trusted AssetRootFolder
-    /// and that neither the root nor the asset folder nor the reference folder is a reparse point.
+    /// and that neither the root nor the asset folder nor the reference folder nor the ingame folder is a reparse point.
     /// </summary>
     public static ValidationResult ValidateSessionPathsForDestructiveOperation(
         AssetSession session)
@@ -41,6 +71,8 @@ public sealed partial class ValidationService
             return ValidationResult.Failure(
                 "Session contains insufficient path information for safe operation.");
         }
+
+        var errors = new List<string>();
 
         var normalizedRoot =
             NormalizePath(session.AssetRootFolder);
@@ -59,8 +91,7 @@ public sealed partial class ValidationService
                 actualAssetFolder,
                 StringComparison.OrdinalIgnoreCase))
         {
-            return ValidationResult.Failure(
-                "Session AssetFolder does not match AssetRootFolder + AssetFolderName.");
+            errors.Add("Session AssetFolder does not match AssetRootFolder + AssetFolderName.");
         }
 
         var actualAssetParent =
@@ -69,79 +100,176 @@ public sealed partial class ValidationService
         if (actualAssetParent is null ||
             !PathsEqual(actualAssetParent, normalizedRoot))
         {
-            return ValidationResult.Failure(
-                "Session AssetFolder is not a direct child of AssetRootFolder.");
+            errors.Add("Session AssetFolder is not a direct child of AssetRootFolder.");
         }
 
         if (IsReparsePoint(session.AssetRootFolder))
         {
-            return ValidationResult.Failure(
-                "Session path is a reparse point (junction or symbolic link) and cannot be operated on safely.");
+            errors.Add("Session path is a reparse point (junction or symbolic link) and cannot be operated on safely.");
         }
 
         if (Directory.Exists(session.AssetFolder) && IsReparsePoint(session.AssetFolder))
         {
-            return ValidationResult.Failure(
-                "Session path is a reparse point (junction or symbolic link) and cannot be operated on safely.");
+            errors.Add("Session path is a reparse point (junction or symbolic link) and cannot be operated on safely.");
         }
 
-        if (session.WorkflowMode == AssetWorkflowMode.NoReference)
-        {
-            return ValidationResult.Success();
-        }
-
-        if (string.IsNullOrWhiteSpace(session.ReferenceFilename))
-        {
-            return ValidationResult.Failure(
-                "Session contains insufficient path information for safe operation.");
-        }
-
-        if (!string.Equals(
-                Path.GetFileName(session.ReferenceFilename),
-                session.ReferenceFilename,
-                StringComparison.Ordinal))
-        {
-            return ValidationResult.Failure(
-                "ReferenceFilename contains an unsafe path.");
-        }
-
-        var referenceFolder =
+        var ingameFolder =
             NormalizePath(
                 Path.Combine(
-                    session.AssetFolder,
-                    AppConstants.ReferenceFolderName));
+                    actualAssetFolder,
+                    AppConstants.IngameFolderName));
 
-        if (Directory.Exists(referenceFolder) && IsReparsePoint(referenceFolder))
+        if (Directory.Exists(ingameFolder) && IsReparsePoint(ingameFolder))
         {
-            return ValidationResult.Failure(
-                "Reference folder is a reparse point and cannot be operated on safely.");
+            errors.Add("Session ingame folder is a reparse point and cannot be operated on safely.");
         }
 
-        // BUG-R4-005: Strictly verify ReferenceDestinationPath and ReferenceProvenancePath
-        var expectedReferencePath =
-            NormalizePath(
-                Path.Combine(
+        if (session.IsMainCommitting)
+        {
+            if (!IsSafeFilename(session.MainFilename))
+            {
+                errors.Add("Session MainFilename is unsafe.");
+            }
+            else
+            {
+                var rootMain =
+                    NormalizePath(
+                        Path.Combine(
+                            actualAssetFolder,
+                            session.MainFilename!));
+
+                RequireExactParent(
+                    rootMain,
+                    actualAssetFolder,
+                    "Root Main image",
+                    errors);
+
+                var finalProvenance =
+                    NormalizePath(
+                        Path.Combine(
+                            actualAssetFolder,
+                            AppConstants.FinalProvenanceFileName));
+
+                RequireExactParent(
+                    finalProvenance,
+                    actualAssetFolder,
+                    "Final provenance",
+                    errors);
+
+                var ingameFilename =
+                    AssetNaming.BuildIngameFilename(
+                        session.AssetFolderName,
+                        session.MainFilename!);
+
+                var ingamePath =
+                    NormalizePath(
+                        Path.Combine(
+                            ingameFolder,
+                            ingameFilename));
+
+                RequireExactParent(
+                    ingamePath,
+                    ingameFolder,
+                    "Ingame image",
+                    errors);
+
+                var tempMain = session.GetMainTempImagePath();
+                var tempProv = session.GetMainTempProvenancePath();
+                var tempIngame = session.GetMainTempIngamePath();
+
+                if (!string.IsNullOrWhiteSpace(tempMain))
+                {
+                    RequireExactParent(
+                        tempMain,
+                        actualAssetFolder,
+                        "Temporary Main image",
+                        errors);
+                }
+
+                if (!string.IsNullOrWhiteSpace(tempProv))
+                {
+                    RequireExactParent(
+                        tempProv,
+                        actualAssetFolder,
+                        "Temporary Main provenance",
+                        errors);
+                }
+
+                if (!string.IsNullOrWhiteSpace(tempIngame))
+                {
+                    RequireExactParent(
+                        tempIngame,
+                        ingameFolder,
+                        "Temporary ingame image",
+                        errors);
+                }
+            }
+        }
+
+        if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted)
+        {
+            if (string.IsNullOrWhiteSpace(session.ReferenceFilename))
+            {
+                errors.Add("Session contains insufficient path information for safe operation.");
+            }
+            else
+            {
+                if (!IsSafeFilename(session.ReferenceFilename))
+                {
+                    errors.Add("ReferenceFilename contains an unsafe path.");
+                }
+
+                var referenceFolder =
+                    NormalizePath(
+                        Path.Combine(
+                            actualAssetFolder,
+                            AppConstants.ReferenceFolderName));
+
+                if (Directory.Exists(referenceFolder) && IsReparsePoint(referenceFolder))
+                {
+                    errors.Add("Reference folder is a reparse point and cannot be operated on safely.");
+                }
+
+                var expectedReferencePath =
+                    NormalizePath(
+                        Path.Combine(
+                            referenceFolder,
+                            session.ReferenceFilename));
+
+                var expectedProvenancePath =
+                    NormalizePath(
+                        Path.Combine(
+                            referenceFolder,
+                            AppConstants.ReferenceProvenanceFileName));
+
+                RequireExactParent(
+                    expectedReferencePath,
                     referenceFolder,
-                    session.ReferenceFilename));
+                    "Reference image",
+                    errors);
 
-        var expectedProvenancePath =
-            NormalizePath(
-                Path.Combine(
+                RequireExactParent(
+                    expectedProvenancePath,
                     referenceFolder,
-                    AppConstants.ReferenceProvenanceFileName));
+                    "Reference provenance",
+                    errors);
 
-        if (!PathsEqual(expectedReferencePath, session.ReferenceDestinationPath))
-        {
-            return ValidationResult.Failure(
-                "Session ReferenceDestinationPath is inconsistent with expected asset reference location.");
+                if (!string.IsNullOrWhiteSpace(session.ReferenceDestinationPath) &&
+                    !PathsEqual(expectedReferencePath, session.ReferenceDestinationPath))
+                {
+                    errors.Add("Session ReferenceDestinationPath is inconsistent with expected asset reference location.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(session.ReferenceProvenancePath) &&
+                    !PathsEqual(expectedProvenancePath, session.ReferenceProvenancePath))
+                {
+                    errors.Add("Session ReferenceProvenancePath is inconsistent with expected asset provenance location.");
+                }
+            }
         }
 
-        if (!PathsEqual(expectedProvenancePath, session.ReferenceProvenancePath))
-        {
-            return ValidationResult.Failure(
-                "Session ReferenceProvenancePath is inconsistent with expected asset provenance location.");
-        }
-
-        return ValidationResult.Success();
+        return errors.Count == 0
+            ? ValidationResult.Success()
+            : ValidationResult.Failure(errors);
     }
 }

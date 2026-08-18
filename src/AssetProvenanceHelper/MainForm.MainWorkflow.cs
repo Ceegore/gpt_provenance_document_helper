@@ -1,5 +1,6 @@
 #nullable enable
 using System.Diagnostics;
+using System.Globalization;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Dialogs;
 using AssetProvenanceHelper.Models;
@@ -75,6 +76,7 @@ partial class MainForm
                 processedAt);
 
             _sessionService.Save(session);
+            AddStatus("No-reference Main session saved.");
         }
         catch (Exception ex)
         {
@@ -102,6 +104,19 @@ partial class MainForm
             return;
         }
 
+        var referenceValidation =
+            _validationService.ValidateExactReferenceOutput(
+                session,
+                _templateService);
+
+        if (!referenceValidation.IsValid)
+        {
+            ShowValidationError(
+                "Reference provenance is inconsistent or modified",
+                referenceValidation);
+            return;
+        }
+
         string sourceImageHash;
         try
         {
@@ -109,16 +124,23 @@ partial class MainForm
         }
         catch (Exception ex)
         {
-            ShowError("Could not read the selected Main image.", ex);
+            ShowError("Failed to compute hash for main source image.", ex);
             return;
         }
 
         var mainFilename = Path.GetFileName(sourceImage);
-        var ingameFilename = AssetNaming.BuildIngameFilename(session.AssetFolderName, sourceImage);
+        var dateStr = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var finalProv = _templateService.RenderFinal(
+            mainFilename,
+            session.ReferenceFilename,
+            session.ProjectName,
+            dateStr,
+            prompt);
+        var mainProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(finalProv))).ToLowerInvariant();
 
         session.IsMainCommitting = true;
         session.MainFilename = mainFilename;
-        session.IngameFilename = ingameFilename;
+        session.MainProvenanceHash = mainProvHash;
         session.MainPrompt = prompt;
         session.MainProcessedAt = processedAt;
         session.MainHash = sourceImageHash;
@@ -197,6 +219,7 @@ partial class MainForm
             ClearValidationVisuals();
 
             AddStatus($"Main image copied: {committedFilename}");
+            AddStatus("Ingame copy created.");
             AddStatus("Final provenance created.");
             AddStatus("Asset completed.");
 
@@ -220,39 +243,111 @@ partial class MainForm
         }
         catch (Exception ex)
         {
-            if (session.WorkflowMode == AssetWorkflowMode.NoReference)
+            var isNoReference = session.WorkflowMode == AssetWorkflowMode.NoReference;
+            if (TryReconcileFailedMainCommit(session, isNoReference))
             {
-                // Clean failure for NoReference deletes temporary session record
-                try
-                {
-                    _sessionService.Delete();
-                }
-                catch
-                {
-                    // Non-critical session cleanup error
-                }
-                _currentSession = null;
+                ShowError("Main Image processing failed.", ex);
+            }
+        }
+    }
+
+    private bool TryReconcileFailedMainCommit(
+        AssetSession session,
+        bool noReferenceMode)
+    {
+        ValidationResult rollback;
+
+        try
+        {
+            rollback =
+                _assetProcessorService.RollbackMain(
+                    session,
+                    session.MainFilename);
+        }
+        catch (Exception ex)
+        {
+            ShowError(
+                "CRITICAL: Failed Main transaction could not be safely reconciled.",
+                ex);
+            Close();
+            return false;
+        }
+
+        if (!rollback.IsValid)
+        {
+            var rootMainPath = Path.Combine(session.AssetFolder, session.MainFilename ?? "");
+            var finalProvPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
+            var ingamePath = session.GetIngameImagePath();
+            var tempMain = session.GetMainTempImagePath();
+            var tempIngame = session.GetMainTempIngamePath();
+            var tempProv = session.GetMainTempProvenancePath();
+
+            var noArtifactsCreated =
+                !File.Exists(finalProvPath) &&
+                (string.IsNullOrWhiteSpace(ingamePath) || !File.Exists(ingamePath)) &&
+                (string.IsNullOrWhiteSpace(tempMain) || !File.Exists(tempMain)) &&
+                (string.IsNullOrWhiteSpace(tempIngame) || !File.Exists(tempIngame)) &&
+                (string.IsNullOrWhiteSpace(tempProv) || !File.Exists(tempProv));
+
+            if (noArtifactsCreated && File.Exists(rootMainPath))
+            {
+                // The commit failed before copying because destination already existed with foreign content.
+                // We safely preserve the foreign file and reset the aborted transaction state.
+                session.ResetMainCommitMetadata();
+                rollback = ValidationResult.Success();
             }
             else
             {
-                // Reference-assisted reset committing state
-                session.ResetMainCommitMetadata();
-                try
-                {
-                    _sessionService.Save(session);
-                }
-                catch (Exception saveEx)
-                {
-                    ShowError(
-                        "CRITICAL: Main Image processing failed, but updated session could not be saved.",
-                        saveEx);
-                    Close();
-                    return;
-                }
-            }
+                ShowMessageBox(
+                    "CRITICAL: Failed Main transaction could not be fully rolled back.\n\n"
+                    + string.Join(Environment.NewLine, rollback.Errors),
+                    "Critical Main rollback error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
 
-            ShowError("Main Image processing failed.", ex);
+                Close();
+                return false;
+            }
+        }
+
+        if (!noReferenceMode)
+        {
+            try
+            {
+                _sessionService.Save(session);
+                _currentSession = session;
+                _state = UiState.ReferenceReady;
+                ApplyState();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ShowError(
+                    "CRITICAL: Main rollback succeeded, but the restored Reference session could not be saved.",
+                    ex);
+                Close();
+                return false;
+            }
+        }
+
+        try
+        {
+            _sessionService.Delete();
+            _currentSession = null;
+            _state = UiState.Idle;
             ApplyState();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Do not save the reset in-memory NoReference object. The durable
+            // journal still contains the active transaction and is the only
+            // reliable recovery authority for the next startup.
+            ShowError(
+                "CRITICAL: Main outputs were rolled back, but the no-reference session journal could not be removed.",
+                ex);
+            Close();
+            return false;
         }
     }
 

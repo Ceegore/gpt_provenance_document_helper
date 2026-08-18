@@ -88,9 +88,11 @@ public sealed class EndToEndTests
         Assert.Contains(prompt, finalProvContent);
         Assert.Contains("2026-08-17", finalProvContent);
 
+        var templateService = workspace.CreateTemplateService();
+
         // Step 10: Verify the complete asset passes validation
         var completeValidation = validationService.ValidateCompleteAsset(
-            session, mainDestPath, finalProvPath, mainFilename, "2026-08-17", prompt);
+            session, mainDestPath, finalProvPath, mainFilename, "2026-08-17", prompt, templateService);
         Assert.True(completeValidation.IsValid, string.Join(", ", completeValidation.Errors));
     }
 
@@ -278,7 +280,7 @@ public sealed class EndToEndTests
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.Equal("main.webp", mainFilename);
-        Assert.Equal("webp_asset.webp", session.IngameFilename);
+        Assert.Equal("webp_asset.webp", session.GetIngameFilename());
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main.webp")));
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "webp_asset.webp")));
     }
@@ -301,7 +303,7 @@ public sealed class EndToEndTests
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.Equal("main.jpg", mainFilename);
-        Assert.Equal("jpeg_asset.jpg", session.IngameFilename);
+        Assert.Equal("jpeg_asset.jpg", session.GetIngameFilename());
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main.jpg")));
         Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.IngameFolderName, "jpeg_asset.jpg")));
     }
@@ -450,7 +452,7 @@ public sealed class EndToEndTests
 
         // Verify the new reference file has the new content
         var destBytes = File.ReadAllBytes(transaction.NewSession.ReferenceDestinationPath);
-        Assert.Equal(new byte[] { 2 }, destBytes);
+        Assert.Equal(File.ReadAllBytes(ref2), destBytes);
     }
 
     // ──────────────────────────────────────────────────────

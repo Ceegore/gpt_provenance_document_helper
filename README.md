@@ -27,13 +27,13 @@ When committing assets, the tool organizes files under your configured **Asset R
 ```text
 <AssetRootFolder>/
 └── <AssetName>/
-    ├── <sourceMainFilename>.<ext>         # Main generation (original source filename preserved)
-    ├── final.md                          # Provenance document linking reference + main metadata
+    ├── <sourceMainFilename>.<ext>                      # Main generation (original source filename preserved)
+    ├── license.txt — Final AI-Generated Asset.md       # Provenance document linking reference + main metadata
     ├── ingame/
-    │   └── <AssetName>.<ext>             # Canonical ingame copy named after the asset
+    │   └── <AssetName>.<ext>                          # Canonical ingame copy named after the asset
     └── reference/
-        ├── <sourceReferenceFilename>.<ext> # Reference image (original source filename preserved)
-        └── reference.md                  # Reference metadata and prompt record
+        ├── <sourceReferenceFilename>.<ext>              # Reference image (original source filename preserved)
+        └── license.txt — AI Reference Asset.md         # Reference metadata and prompt record
 ```
 
 ### 2. No Reference Mode Workflow
@@ -41,10 +41,10 @@ When committing assets, the tool organizes files under your configured **Asset R
 ```text
 <AssetRootFolder>/
 └── <AssetName>/
-    ├── <sourceMainFilename>.<ext>         # Main generation (original source filename preserved)
-    ├── final_no_reference.md             # Provenance document for standalone generation
+    ├── <sourceMainFilename>.<ext>                      # Main generation (original source filename preserved)
+    ├── license.txt — Final AI-Generated Asset.md       # Provenance document for standalone generation
     └── ingame/
-        └── <AssetName>.<ext>             # Canonical ingame copy named after the asset
+        └── <AssetName>.<ext>                          # Canonical ingame copy named after the asset
 ```
 
 > **Note**: Both the root `<sourceMainFilename>.<ext>` and `ingame/<AssetName>.<ext>` share identical SHA-256 hashes upon creation.
@@ -55,7 +55,7 @@ When committing assets, the tool organizes files under your configured **Asset R
 
 1. **Image Download Folder** *(Optional)*:
    - Path to your browser/ChatGPT downloads folder.
-   - If left empty or unset, you can freely browse (`Choose...`) or drag-and-drop images directly onto the Reference or Main card drop areas.
+   - If left empty or unset, you can freely browse (`Choose File...`) or drag-and-drop images directly onto the Reference or Main card drop areas / buttons.
 2. **Asset Root Folder** *(Required)*:
    - The root destination directory where asset folders are created (e.g. `D:\Projects\GameAssets`).
 3. **Asset Name** *(Required)*:
@@ -71,10 +71,9 @@ When committing assets, the tool organizes files under your configured **Asset R
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Ctrl + R` | Commit Reference Image (Reference Workflow) |
-| `Ctrl + M` | Commit Main Image (both Reference and No Reference modes) |
+| `Ctrl + R` | Process Reference (Idle mode) / Replace Reference (ReferenceReady mode) |
+| `Ctrl + M` | Process Main Image (both Reference-assisted and No-reference modes) |
 | `Ctrl + O` | Open Destination Asset Folder |
-| `Ctrl + Q` / `Alt + F4` | Exit Application |
 | `F1` / `?` | Toggle Help Overlay |
 | `Esc` | Close Help Overlay |
 

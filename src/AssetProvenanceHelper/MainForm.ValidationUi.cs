@@ -44,20 +44,35 @@ partial class MainForm
         if (_pulsingButton == btnReference)
         {
             StopCtaPulse();
+            btnReference.BackColor = UiTheme.ReferenceAccent;
         }
-        btnReference.BackColor = UiTheme.ReferenceAccent;
     }
 
     internal void ClearMainValidationVisuals()
     {
         HighlightField(pnlMainImageHost, false);
-        HighlightField(pnlPromptHost, false);
-        if (_pulsingButton == btnMainImage)
+        if (_pulsingButton == btnMainImage && !IsPromptInvalid())
         {
             StopCtaPulse();
+            btnMainImage.BackColor = UiTheme.MainAccent;
         }
-        btnMainImage.BackColor = UiTheme.MainAccent;
     }
+
+    internal void ClearPromptValidation()
+    {
+        HighlightField(pnlPromptHost, false);
+        if (_pulsingButton == btnMainImage && !IsMainImageInvalid())
+        {
+            StopCtaPulse();
+            btnMainImage.BackColor = UiTheme.MainAccent;
+        }
+    }
+
+    private bool IsPromptInvalid() =>
+        pnlPromptHost?.BackColor == UiTheme.Error;
+
+    private bool IsMainImageInvalid() =>
+        pnlMainImageHost?.BackColor == UiTheme.Error;
 
     internal bool ValidateRefreshUi(ImageSlot slot)
     {
@@ -82,7 +97,7 @@ partial class MainForm
         var assetRoot = txtAssetRoot.Text;
         var rootValidation = _validationService.ValidateAssetRootFolder(assetRoot);
         var assetName = txtAssetFolderName.Text;
-        var nameValidation = _validationService.ValidateAssetFolderName(assetName);
+        var nameValidation = _validationService.ValidateAssetName(assetName, _settings.AcceptedExtensions);
         var refImage = GetSelectedImage(ImageSlot.Reference);
         var templateValidation = _templateService.ValidateTemplates();
 
@@ -148,7 +163,7 @@ partial class MainForm
             var assetRoot = txtAssetRoot.Text;
             var rootValidation = _validationService.ValidateAssetRootFolder(assetRoot);
             var assetName = txtAssetFolderName.Text;
-            var nameValidation = _validationService.ValidateAssetFolderName(assetName);
+            var nameValidation = _validationService.ValidateAssetName(assetName, _settings.AcceptedExtensions);
 
             if (!rootValidation.IsValid)
             {

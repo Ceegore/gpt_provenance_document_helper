@@ -114,11 +114,15 @@ public sealed partial class AssetProcessorService
         }
 
         var sourceHash = ComputeSha256(sourceImagePath);
+        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var projectLabel = AssetNaming.DeriveProjectLabel(settings.AssetRootFolder);
+        var provenance = _templateService.RenderFinalNoReference(mainFilename, projectLabel, generationDate, prompt);
+        var provHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant();
 
         return new AssetSession
         {
             WorkflowMode = AssetWorkflowMode.NoReference,
-            ProjectName = AssetNaming.DeriveProjectLabel(settings.AssetRootFolder),
+            ProjectName = projectLabel,
             AssetRootFolder = settings.AssetRootFolder,
             AssetFolderName = assetName,
             AssetFolder = assetFolder,
@@ -133,7 +137,7 @@ public sealed partial class AssetProcessorService
             WasIngameFolderCreatedByTool = !Directory.Exists(ingameFolder),
             IsMainCommitting = true,
             MainFilename = mainFilename,
-            IngameFilename = ingameFilename,
+            MainProvenanceHash = provHash,
             MainPrompt = prompt,
             MainProcessedAt = processedAt,
             MainHash = sourceHash,
@@ -148,19 +152,6 @@ public sealed partial class AssetProcessorService
         string prompt,
         DateTimeOffset processedAt)
     {
-        var sessionValidation =
-            _validationService
-                .ValidateSession(
-                    session);
-
-        if (!sessionValidation.IsValid)
-        {
-            throw new InvalidDataException(
-                string.Join(
-                    Environment.NewLine,
-                    sessionValidation.Errors));
-        }
-
         if (string.IsNullOrWhiteSpace(prompt))
         {
             throw new ArgumentException(
@@ -182,6 +173,51 @@ public sealed partial class AssetProcessorService
                     imageValidation.Errors));
         }
 
+        if (!session.IsMainCommitting)
+        {
+            session.IsMainCommitting = true;
+            session.MainFilename = !string.IsNullOrWhiteSpace(session.MainFilename) ? session.MainFilename : Path.GetFileName(sourceImagePath);
+            session.MainPrompt = !string.IsNullOrWhiteSpace(session.MainPrompt) ? session.MainPrompt : prompt;
+            session.MainProcessedAt = session.MainProcessedAt ?? processedAt;
+            session.MainHash = !string.IsNullOrWhiteSpace(session.MainHash) ? session.MainHash : ComputeSha256(sourceImagePath);
+            session.MainTransactionId = !string.IsNullOrWhiteSpace(session.MainTransactionId) ? session.MainTransactionId : Guid.NewGuid().ToString("N");
+            var genDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var projLabel = session.ProjectName;
+            var provText = session.WorkflowMode == AssetWorkflowMode.NoReference
+                ? _templateService.RenderFinalNoReference(session.MainFilename, projLabel, genDate, prompt)
+                : _templateService.RenderFinal(session.MainFilename, session.ReferenceFilename, projLabel, genDate, prompt);
+            session.MainProvenanceHash = !string.IsNullOrWhiteSpace(session.MainProvenanceHash) ? session.MainProvenanceHash : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provText))).ToLowerInvariant();
+        }
+
+        if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted)
+        {
+            var referenceValidation =
+                _validationService.ValidateExactReferenceOutput(
+                    session,
+                    _templateService);
+
+            if (!referenceValidation.IsValid)
+            {
+                throw new InvalidDataException(
+                    string.Join(
+                        Environment.NewLine,
+                        referenceValidation.Errors));
+            }
+        }
+
+        var sessionValidation =
+            _validationService
+                .ValidateSession(
+                    session);
+
+        if (!sessionValidation.IsValid)
+        {
+            throw new InvalidDataException(
+                string.Join(
+                    Environment.NewLine,
+                    sessionValidation.Errors));
+        }
+
         var mainFilename =
             Path.GetFileName(
                 sourceImagePath);
@@ -191,34 +227,23 @@ public sealed partial class AssetProcessorService
                 session.AssetFolderName,
                 sourceImagePath);
 
-        // BUG-R18-002 & BUG-R19-003: Bind active Main transaction journal metadata to call arguments with exact representation before writes
-        if (session.IsMainCommitting)
+        if (!string.Equals(session.MainFilename, mainFilename, StringComparison.Ordinal))
         {
-            if (!string.Equals(session.MainFilename, mainFilename, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Active Main transaction filename '{session.MainFilename}' does not match source filename '{mainFilename}'.");
-            }
+            throw new InvalidOperationException(
+                $"Active Main transaction filename '{session.MainFilename}' does not match source filename '{mainFilename}'.");
+        }
 
-            if (!string.IsNullOrWhiteSpace(session.IngameFilename) &&
-                !string.Equals(session.IngameFilename, ingameFilename, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Active Main transaction ingame filename '{session.IngameFilename}' does not match derived ingame filename '{ingameFilename}'.");
-            }
+        if (!string.Equals(session.MainPrompt, prompt, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Active Main transaction prompt '{session.MainPrompt}' does not match provided prompt '{prompt}'.");
+        }
 
-            if (!string.Equals(session.MainPrompt, prompt, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Active Main transaction prompt '{session.MainPrompt}' does not match provided prompt '{prompt}'.");
-            }
-
-            if (!session.MainProcessedAt.HasValue ||
-                !session.MainProcessedAt.Value.EqualsExact(processedAt))
-            {
-                throw new InvalidOperationException(
-                    $"Active Main transaction processedAt '{session.MainProcessedAt}' does not match provided processedAt '{processedAt}'.");
-            }
+        if (!session.MainProcessedAt.HasValue ||
+            !session.MainProcessedAt.Value.EqualsExact(processedAt))
+        {
+            throw new InvalidOperationException(
+                $"Active Main transaction processedAt '{session.MainProcessedAt}' does not match provided processedAt '{processedAt}'.");
         }
 
         var rootMainDestination =
@@ -276,6 +301,12 @@ public sealed partial class AssetProcessorService
             session.WasIngameFolderCreatedByTool = true;
         }
 
+        if (Directory.Exists(ingameFolder) && ValidationService.IsReparsePoint(ingameFolder))
+        {
+            throw new InvalidOperationException(
+                "Ingame folder became a reparse point and cannot be used safely.");
+        }
+
         var tempMainPath =
             !string.IsNullOrWhiteSpace(session.GetMainTempImagePath())
                 ? session.GetMainTempImagePath()
@@ -323,8 +354,8 @@ public sealed partial class AssetProcessorService
                     sourceHash,
                     StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
-                    $"Active Main transaction hash '{session.MainHash}' does not match source image hash '{sourceHash}'.");
+                throw new IOException(
+                    $"Main source changed between validation/hash and copy: expected {session.MainHash}, got {sourceHash}.");
             }
 
             CopyFileWithoutOverwrite(
@@ -484,8 +515,8 @@ public sealed partial class AssetProcessorService
             session.IsMainCommitting = true;
             session.MainTransactionId ??= Guid.NewGuid().ToString("N");
             session.MainFilename = mainFilename;
-            session.IngameFilename = ingameFilename;
             session.MainHash = mainHash;
+            session.MainProvenanceHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant();
             session.MainPrompt = prompt;
             session.MainProcessedAt = processedAt;
 
@@ -498,6 +529,7 @@ public sealed partial class AssetProcessorService
                         mainFilename,
                         generationDate,
                         prompt,
+                        _templateService,
                         session.MainHash);
 
             if (!validation.IsValid)
@@ -675,17 +707,12 @@ public sealed partial class AssetProcessorService
             return ValidationResult.Failure("Main rollback metadata is incomplete or invalid.");
         }
 
-        var derivedIngame = !string.IsNullOrWhiteSpace(session.MainFilename)
-            ? AssetNaming.BuildIngameFilename(session.AssetFolderName, session.MainFilename)
+        var targetIngameFilename = !string.IsNullOrWhiteSpace(session.MainFilename)
+            ? session.GetIngameFilename()
             : string.Empty;
-
-        var targetIngameFilename = !string.IsNullOrWhiteSpace(session.IngameFilename)
-            ? session.IngameFilename
-            : derivedIngame;
 
         if (!string.IsNullOrWhiteSpace(mainFilename) &&
             !string.Equals(session.MainFilename, mainFilename, StringComparison.Ordinal) &&
-            !string.Equals(session.IngameFilename, mainFilename, StringComparison.Ordinal) &&
             !string.Equals(targetIngameFilename, mainFilename, StringComparison.Ordinal))
         {
             return ValidationResult.Failure("mainFilename does not match session.MainFilename.");
@@ -810,6 +837,13 @@ public sealed partial class AssetProcessorService
                 return ValidationResult.Failure(
                     $"Main temp provenance at '{tempProv}' does not match session state ({string.Join("; ", tempProvValidation.Errors)}). Refusing to delete unknown file.");
             }
+        }
+
+        var ingameFolder = session.GetIngameFolderPath();
+        if (Directory.Exists(ingameFolder) && ValidationService.IsReparsePoint(ingameFolder))
+        {
+            return ValidationResult.Failure(
+                "Ingame folder became a reparse point before rollback. No Main files were deleted.");
         }
 
         var errors =

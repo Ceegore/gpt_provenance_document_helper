@@ -26,7 +26,7 @@ public sealed class ChangeV11IngameTests
             DateTimeOffset.Now);
 
         Assert.Equal("ChatGPT Image 2026-08-18.png", result);
-        Assert.Equal("onboarding1.png", session.IngameFilename);
+        Assert.Equal("onboarding1.png", session.GetIngameFilename());
         Assert.Equal("ChatGPT Image 2026-08-18.png", session.MainFilename);
 
         var rootMainPath = Path.Combine(session.AssetFolder, "ChatGPT Image 2026-08-18.png");

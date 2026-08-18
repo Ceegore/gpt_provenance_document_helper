@@ -13,6 +13,7 @@ public static class AppConstants
 
     public const string SettingsFileName = "settings.json";
     public const string SessionFileName = "session.json";
+    public const string ReferenceReplacementFileName = "reference-replacement.json";
 
     public static readonly IReadOnlyList<string> DefaultImageExtensions =
         new[]

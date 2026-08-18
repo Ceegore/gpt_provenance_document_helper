@@ -5,13 +5,12 @@ namespace AssetProvenanceHelper.Services;
 
 public sealed partial class AssetProcessorService
 {
-    public AssetSession ProcessReference(
+    public AssetSession CreateReferenceSession(
         AppSettings settings,
         string assetFolderName,
         string sourceImagePath,
         DateTimeOffset processedAt)
     {
-        // BUG-R9-005: Validate all service inputs and paths before performing any filesystem mutation
         ArgumentNullException.ThrowIfNull(settings);
 
         if (ValidationService.IsReparsePoint(settings.AssetRootFolder))
@@ -27,7 +26,7 @@ public sealed partial class AssetProcessorService
                 string.Join(Environment.NewLine, settingsValidation.Errors));
         }
 
-        var folderValidation = _validationService.ValidateAssetFolderName(assetFolderName);
+        var folderValidation = _validationService.ValidateAssetName(assetFolderName, settings.AcceptedExtensions);
         if (!folderValidation.IsValid)
         {
             throw new InvalidDataException(
@@ -49,227 +48,159 @@ public sealed partial class AssetProcessorService
             throw new InvalidDataException("Asset folder is not a direct child of AssetRootFolder.");
         }
 
-        var assetFolder =
-            expectedAssetFolder;
+        var assetFolder = expectedAssetFolder;
+        var referenceFolder = ValidationService.NormalizePath(Path.Combine(assetFolder, AppConstants.ReferenceFolderName));
+        var referenceFilename = Path.GetFileName(sourceImagePath);
+        var referenceDestination = ValidationService.NormalizePath(Path.Combine(referenceFolder, referenceFilename));
+        var referenceProvenance = ValidationService.NormalizePath(Path.Combine(referenceFolder, AppConstants.ReferenceProvenanceFileName));
 
-        var referenceFolder =
-            ValidationService.NormalizePath(
-                Path.Combine(
-                    assetFolder,
-                    AppConstants.ReferenceFolderName));
-
-        var referenceFilename =
-            Path.GetFileName(
-                sourceImagePath);
-
-        var referenceDestination =
-            ValidationService.NormalizePath(
-                Path.Combine(
-                    referenceFolder,
-                    referenceFilename));
-
-        var referenceProvenance =
-            ValidationService.NormalizePath(
-                Path.Combine(
-                    referenceFolder,
-                    AppConstants.ReferenceProvenanceFileName));
-
-        var assetFolderExisted =
-            Directory.Exists(
-                assetFolder);
-
-        var referenceFolderExisted =
-            Directory.Exists(
-                referenceFolder);
-
-        // BUG-007: Check for reparse points (junctions/symlinks) before performing any write/directory operations
-        if (ValidationService.IsReparsePoint(settings.AssetRootFolder))
-        {
-            throw new IOException(
-                $"Asset root folder is a reparse point (junction or symbolic link): {settings.AssetRootFolder}");
-        }
+        var assetFolderExisted = Directory.Exists(assetFolder);
+        var referenceFolderExisted = Directory.Exists(referenceFolder);
 
         if (assetFolderExisted && ValidationService.IsReparsePoint(assetFolder))
         {
-            throw new IOException(
-                $"Asset folder is a reparse point (junction or symbolic link): {assetFolder}");
+            throw new IOException($"Asset folder is a reparse point (junction or symbolic link): {assetFolder}");
         }
 
         if (referenceFolderExisted && ValidationService.IsReparsePoint(referenceFolder))
         {
-            throw new IOException(
-                $"Reference folder is a reparse point (junction or symbolic link): {referenceFolder}");
+            throw new IOException($"Reference folder is a reparse point (junction or symbolic link): {referenceFolder}");
         }
 
-        var imageCopied =
-            false;
+        if (File.Exists(referenceDestination))
+        {
+            throw new IOException($"Reference destination already exists: {referenceDestination}");
+        }
 
-        var provenanceWritten =
-            false;
+        if (File.Exists(referenceProvenance))
+        {
+            throw new IOException($"Reference provenance already exists: {referenceProvenance}");
+        }
 
-        // BUG-R16-001: Declare outside try so catch block can verify ownership
-        string? sourceHash = null;
+        var sourceHash = ComputeSha256(sourceImagePath);
+        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var projectLabel = AssetNaming.DeriveProjectLabel(settings.AssetRootFolder);
+        var provenance = _templateService.RenderReference(referenceFilename, projectLabel, generationDate);
+        var provHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant();
+
+        return new AssetSession
+        {
+            WorkflowMode = AssetWorkflowMode.ReferenceAssisted,
+            ReferenceCommitPhase = ReferenceCommitPhase.Prepared,
+            ReferenceTransactionId = Guid.NewGuid().ToString("N"),
+            ProjectName = projectLabel,
+            AssetRootFolder = settings.AssetRootFolder,
+            AssetFolderName = assetFolderName,
+            AssetFolder = assetFolder,
+            ReferenceSourcePath = sourceImagePath,
+            ReferenceDestinationPath = referenceDestination,
+            ReferenceFilename = referenceFilename,
+            ReferenceProvenancePath = referenceProvenance,
+            ReferenceHash = sourceHash,
+            ReferenceProvenanceHash = provHash,
+            ReferenceProcessedAt = processedAt,
+            WasAssetFolderCreatedByTool = !assetFolderExisted,
+            WasReferenceFolderCreatedByTool = !referenceFolderExisted
+        };
+    }
+
+    public AssetSession ProcessReference(
+        AssetSession session,
+        AppSettings settings,
+        string sourceImagePath,
+        DateTimeOffset processedAt)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (session.ReferenceCommitPhase != ReferenceCommitPhase.Prepared)
+        {
+            throw new InvalidOperationException("ProcessReference requires a prepared Reference session.");
+        }
+
+        var pathValidation = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+        if (!pathValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, pathValidation.Errors));
+        }
+
+        var assetFolder = session.AssetFolder;
+        var referenceFolder = Path.Combine(assetFolder, AppConstants.ReferenceFolderName);
+        var referenceDestination = session.ReferenceDestinationPath;
+        var referenceProvenance = session.ReferenceProvenancePath;
+        var referenceFilename = session.ReferenceFilename;
+
+        var assetFolderExisted = !session.WasAssetFolderCreatedByTool;
+        var referenceFolderExisted = !session.WasReferenceFolderCreatedByTool;
+
+        var imageCopied = false;
+        var provenanceWritten = false;
+        string? sourceHash = session.ReferenceHash;
         string? provenance = null;
 
         try
         {
-            if (File.Exists(
-                    referenceDestination))
+            if (File.Exists(referenceDestination))
             {
-                throw new IOException(
-                    $"Reference destination already exists: {referenceDestination}");
+                throw new IOException($"Reference destination already exists: {referenceDestination}");
             }
 
-            if (File.Exists(
-                    referenceProvenance))
+            if (File.Exists(referenceProvenance))
             {
-                throw new IOException(
-                    $"Reference provenance already exists: {referenceProvenance}");
+                throw new IOException($"Reference provenance already exists: {referenceProvenance}");
             }
 
-            Directory.CreateDirectory(
-                assetFolder);
+            Directory.CreateDirectory(assetFolder);
+            Directory.CreateDirectory(referenceFolder);
 
-            Directory.CreateDirectory(
-                referenceFolder);
+            sourceHash = ComputeSha256(sourceImagePath);
 
-            sourceHash =
-                ComputeSha256(
-                    sourceImagePath);
+            CopyFileWithoutOverwrite(sourceImagePath, referenceDestination);
+            imageCopied = true;
+            OnFileCopiedHook?.Invoke(sourceImagePath, referenceDestination);
 
-            CopyFileWithoutOverwrite(
-                sourceImagePath,
-                referenceDestination);
-
-            imageCopied =
-                true;
-
-            OnFileCopiedHook?.Invoke(
-                sourceImagePath,
-                referenceDestination);
-
-            var copiedValidation =
-                _validationService
-                    .ValidateImageFile(
-                        referenceDestination,
-                        settings.AcceptedExtensions);
-
+            var copiedValidation = _validationService.ValidateImageFile(referenceDestination, settings.AcceptedExtensions);
             if (!copiedValidation.IsValid)
             {
-                throw new InvalidDataException(
-                    "Copied reference image is invalid: "
-                    + string.Join("; ", copiedValidation.Errors));
+                throw new InvalidDataException("Copied reference image is invalid: " + string.Join("; ", copiedValidation.Errors));
             }
 
-            var hash =
-                ComputeSha256(
-                    referenceDestination);
-
-            if (!string.Equals(
-                    sourceHash,
-                    hash,
-                    StringComparison.OrdinalIgnoreCase))
+            var hash = ComputeSha256(referenceDestination);
+            if (!string.Equals(sourceHash, hash, StringComparison.OrdinalIgnoreCase))
             {
-                throw new IOException(
-                    "Reference source image changed during copy.");
+                throw new IOException("Reference source image changed during copy.");
             }
 
-            var generationDate =
-                processedAt
-                    .ToString(
-                        "yyyy-MM-dd",
-                        CultureInfo.InvariantCulture);
+            var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            provenance = _templateService.RenderReference(referenceFilename, session.ProjectName, generationDate);
 
-            var projectLabel =
-                AssetNaming.DeriveProjectLabel(
-                    settings.AssetRootFolder);
+            WriteTextAtomic(referenceProvenance, provenance);
+            provenanceWritten = true;
 
-            provenance =
-                _templateService.RenderReference(
-                    referenceFilename,
-                    projectLabel,
-                    generationDate);
-
-            WriteTextAtomic(
-                referenceProvenance,
-                provenance);
-
-            provenanceWritten =
-                true;
-
-            var session =
-                new AssetSession
-                {
-                    ProjectName =
-                        projectLabel,
-
-                    AssetRootFolder =
-                        settings.AssetRootFolder,
-
-                    AssetFolderName =
-                        assetFolderName,
-
-                    AssetFolder =
-                        assetFolder,
-
-                    ReferenceSourcePath =
-                        sourceImagePath,
-
-                    ReferenceDestinationPath =
-                        referenceDestination,
-
-                    ReferenceFilename =
-                        referenceFilename,
-
-                    ReferenceProvenancePath =
-                        referenceProvenance,
-
-                    ReferenceHash =
-                        hash,
-
-                    ReferenceProcessedAt =
-                        processedAt,
-
-                    WasAssetFolderCreatedByTool =
-                        !assetFolderExisted,
-
-                    WasReferenceFolderCreatedByTool =
-                        !referenceFolderExisted
-                };
-
-            var validation =
-                _validationService
-                    .ValidateReferenceOutput(
-                        session);
-
+            var validation = _validationService.ValidateExactReferenceOutput(session, _templateService);
             if (!validation.IsValid)
             {
-                throw new InvalidDataException(
-                    string.Join(
-                        Environment.NewLine,
-                        validation.Errors));
+                throw new InvalidDataException(string.Join(Environment.NewLine, validation.Errors));
             }
+
+            session.ReferenceCommitPhase = ReferenceCommitPhase.None;
+            session.ReferenceTransactionId = null;
 
             return session;
         }
         catch (Exception primaryException)
         {
-            var rollbackErrors =
-                new List<string>();
+            var rollbackErrors = new List<string>();
 
-            // BUG-R16-001: Verify current content ownership before deleting
             if (provenanceWritten)
             {
                 if (provenance is not null && TryVerifyTextFileOwnership(referenceProvenance, provenance))
                 {
-                    TryDeleteFileWithError(
-                        referenceProvenance,
-                        rollbackErrors);
+                    TryDeleteFileWithError(referenceProvenance, rollbackErrors);
                 }
                 else
                 {
-                    rollbackErrors.Add(
-                        $"Reference provenance at '{referenceProvenance}' content no longer matches tool-written provenance. File preserved.");
+                    rollbackErrors.Add($"Reference provenance at '{referenceProvenance}' content no longer matches tool-written provenance. File preserved.");
                 }
             }
 
@@ -277,52 +208,47 @@ public sealed partial class AssetProcessorService
             {
                 if (sourceHash is not null && TryVerifyFileHashOwnership(referenceDestination, sourceHash))
                 {
-                    TryDeleteFileWithError(
-                        referenceDestination,
-                        rollbackErrors);
+                    TryDeleteFileWithError(referenceDestination, rollbackErrors);
                 }
                 else
                 {
-                    rollbackErrors.Add(
-                        $"Reference image at '{referenceDestination}' hash no longer matches source hash. File preserved.");
+                    rollbackErrors.Add($"Reference image at '{referenceDestination}' hash no longer matches expected hash. File preserved.");
                 }
             }
 
-            if (!referenceFolderExisted)
+            if (!referenceFolderExisted && Directory.Exists(referenceFolder))
             {
-                TryDeleteEmptyDirectoryWithError(
-                    referenceFolder,
-                    rollbackErrors);
+                TryDeleteEmptyDirectoryWithError(referenceFolder, rollbackErrors);
             }
 
-            if (!assetFolderExisted)
+            if (!assetFolderExisted && Directory.Exists(assetFolder))
             {
-                TryDeleteEmptyDirectoryWithError(
-                    assetFolder,
-                    rollbackErrors);
+                TryDeleteEmptyDirectoryWithError(assetFolder, rollbackErrors);
             }
 
             if (rollbackErrors.Count > 0)
             {
                 throw new IOException(
                     "Reference processing failed and automatic rollback was incomplete."
-                    + Environment.NewLine
-                    + Environment.NewLine
-                    + "Primary error:"
-                    + Environment.NewLine
-                    + primaryException.Message
-                    + Environment.NewLine
-                    + Environment.NewLine
-                    + "Rollback errors:"
-                    + Environment.NewLine
-                    + string.Join(
-                        Environment.NewLine,
-                        rollbackErrors),
+                    + Environment.NewLine + Environment.NewLine
+                    + "Primary error:" + Environment.NewLine + primaryException.Message
+                    + Environment.NewLine + Environment.NewLine
+                    + "Rollback errors:" + Environment.NewLine + string.Join(Environment.NewLine, rollbackErrors),
                     primaryException);
             }
 
             throw;
         }
+    }
+
+    public AssetSession ProcessReference(
+        AppSettings settings,
+        string assetFolderName,
+        string sourceImagePath,
+        DateTimeOffset processedAt)
+    {
+        var session = CreateReferenceSession(settings, assetFolderName, sourceImagePath, processedAt);
+        return ProcessReference(session, settings, sourceImagePath, processedAt);
     }
 
     public ValidationResult RollbackReference(
@@ -621,6 +547,8 @@ public sealed partial class AssetProcessorService
             newProvenancePromoted =
                 true;
 
+            var newProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(newProvenance))).ToLowerInvariant();
+
             var newSession =
                 new AssetSession
                 {
@@ -651,6 +579,9 @@ public sealed partial class AssetProcessorService
                     ReferenceHash =
                         newHash,
 
+                    ReferenceProvenanceHash =
+                        newProvHash,
+
                     ReferenceProcessedAt =
                         processedAt,
 
@@ -663,8 +594,9 @@ public sealed partial class AssetProcessorService
 
             var validation =
                 _validationService
-                    .ValidateReferenceOutput(
-                        newSession);
+                    .ValidateExactReferenceOutput(
+                        newSession,
+                        _templateService);
 
             if (!validation.IsValid)
             {
@@ -689,7 +621,13 @@ public sealed partial class AssetProcessorService
                     backupReferencePath,
 
                 BackupProvenancePath =
-                    backupProvenancePath
+                    backupProvenancePath,
+
+                TempNewReferencePath =
+                    tempReferencePath,
+
+                TempNewProvenancePath =
+                    tempProvenancePath
             };
         }
         catch (Exception primaryException)

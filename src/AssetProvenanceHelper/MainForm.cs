@@ -106,10 +106,12 @@ public partial class MainForm : Form
         txtAssetRoot.Leave += (_, _) => SaveSettingsSafe();
         FormClosing += (_, _) => SaveSettingsSafe();
 
-        txtPrompt.TextChanged += (_, _) => ClearMainValidationVisuals();
+        txtPrompt.TextChanged += (_, _) => ClearPromptValidation();
         txtAssetFolderName.TextChanged += (_, _) => HighlightField(pnlAssetFolderNameHost, false);
         txtAssetRoot.TextChanged += (_, _) => HighlightField(pnlAssetRootHost, false);
         txtDownloadFolder.TextChanged += (_, _) => HighlightField(pnlDownloadFolderHost, false);
+
+        helpOverlay.CloseRequested += (_, _) => pnlMainContent.Enabled = true;
 
         KeyDown += MainForm_KeyDown;
     }
@@ -178,13 +180,11 @@ public partial class MainForm : Form
             SelectedPath = txtDownloadFolder.Text
         };
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            return;
+            txtDownloadFolder.Text = dialog.SelectedPath;
+            SaveSettingsSafe();
         }
-
-        txtDownloadFolder.Text = dialog.SelectedPath;
-        SaveSettingsSafe();
     }
 
     private void BrowseAssetRoot()
@@ -206,13 +206,11 @@ public partial class MainForm : Form
             SelectedPath = txtAssetRoot.Text
         };
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            return;
+            txtAssetRoot.Text = dialog.SelectedPath;
+            SaveSettingsSafe();
         }
-
-        txtAssetRoot.Text = dialog.SelectedPath;
-        SaveSettingsSafe();
     }
 
     private void SaveSettingsSafe()
@@ -236,7 +234,11 @@ public partial class MainForm : Form
             {
                 e.SuppressKeyPress = true;
                 helpOverlay.HideOverlay();
+                pnlMainContent.Enabled = true;
+                return;
             }
+
+            // Suppress all hotkeys while help overlay is visible
             return;
         }
 
@@ -259,11 +261,20 @@ public partial class MainForm : Form
             return;
         }
 
-        if (e.KeyCode == Keys.R && _state == UiState.Idle && !chkNoReference.Checked)
+        if (e.KeyCode == Keys.R)
         {
-            e.SuppressKeyPress = true;
-            HandleReference();
-            return;
+            if (_state == UiState.Idle && !chkNoReference.Checked)
+            {
+                e.SuppressKeyPress = true;
+                HandleReference();
+                return;
+            }
+            else if (_state == UiState.ReferenceReady)
+            {
+                e.SuppressKeyPress = true;
+                HandleReplaceReference();
+                return;
+            }
         }
 
         if (e.KeyCode == Keys.M)
@@ -344,6 +355,7 @@ public partial class MainForm : Form
 
     private void ShowHelpOverlay()
     {
+        pnlMainContent.Enabled = false;
         helpOverlay.ShowOverlay();
     }
 

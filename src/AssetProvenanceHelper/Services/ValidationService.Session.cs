@@ -458,34 +458,10 @@ public sealed partial class ValidationService
                     "Session IsMainCommitting is true but MainFilename is missing or contains path separators.");
             }
 
-            if (!string.IsNullOrWhiteSpace(session.IngameFilename))
-            {
-                if (!string.Equals(
-                        Path.GetFileName(session.IngameFilename),
-                        session.IngameFilename,
-                        StringComparison.Ordinal))
-                {
-                    errors.Add(
-                        "Session IngameFilename contains path separators.");
-                }
-                else if (!string.IsNullOrWhiteSpace(session.AssetFolderName) &&
-                         !string.IsNullOrWhiteSpace(session.MainFilename))
-                {
-                    var expectedIngame =
-                        AssetNaming.BuildIngameFilename(session.AssetFolderName, session.MainFilename);
-
-                    if (!string.Equals(session.IngameFilename, expectedIngame, StringComparison.Ordinal))
-                    {
-                        errors.Add(
-                            $"Session IngameFilename '{session.IngameFilename}' does not match expected derived filename '{expectedIngame}'.");
-                    }
-                }
-            }
-
-            if (session.MainPrompt is null)
+            if (string.IsNullOrWhiteSpace(session.MainPrompt))
             {
                 errors.Add(
-                    "Session IsMainCommitting is true but MainPrompt is missing.");
+                    "Session IsMainCommitting is true but MainPrompt is missing or blank.");
             }
 
             if (!session.MainProcessedAt.HasValue ||
@@ -577,6 +553,22 @@ public sealed partial class ValidationService
         return errors.Count == 0
             ? ValidationResult.Success()
             : ValidationResult.Failure(errors);
+    }
+
+    public ValidationResult ValidateExactReferenceOutput(
+        AssetSession session,
+        TemplateService templateService)
+    {
+        var normal = ValidateReferenceOutput(session);
+        if (!normal.IsValid)
+        {
+            return normal;
+        }
+
+        return ValidateExactReferenceProvenanceOwnership(
+            session,
+            session.ReferenceProvenancePath,
+            templateService);
     }
 
     public ValidationResult ValidateReferenceOutput(
@@ -671,6 +663,7 @@ public sealed partial class ValidationService
         string mainFilename,
         string mainGenerationDate,
         string prompt,
+        TemplateService templateService,
         string? expectedMainHash = null)
     {
         var errors =
@@ -679,8 +672,9 @@ public sealed partial class ValidationService
         if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted)
         {
             var referenceValidation =
-                ValidateReferenceOutput(
-                    session);
+                ValidateExactReferenceOutput(
+                    session,
+                    templateService);
 
             if (!referenceValidation.IsValid)
             {
@@ -755,18 +749,57 @@ public sealed partial class ValidationService
             }
         }
 
-        var finalProvValidation =
-            ValidateFinalProvenanceContent(
-                session,
-                finalProvenancePath,
-                mainFilename,
-                mainGenerationDate,
-                prompt);
-
-        if (!finalProvValidation.IsValid)
+        string expectedText;
+        try
         {
-            errors.AddRange(
-                finalProvValidation.Errors);
+            expectedText = session.WorkflowMode switch
+            {
+                AssetWorkflowMode.ReferenceAssisted =>
+                    templateService.RenderFinal(
+                        mainFilename,
+                        session.ReferenceFilename,
+                        session.ProjectName,
+                        mainGenerationDate,
+                        prompt),
+
+                AssetWorkflowMode.NoReference =>
+                    templateService.RenderFinalNoReference(
+                        mainFilename,
+                        session.ProjectName,
+                        mainGenerationDate,
+                        prompt),
+
+                _ => throw new InvalidOperationException($"Unsupported workflow mode: {session.WorkflowMode}")
+            };
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"Could not render expected final provenance for validation: {ex.Message}");
+            expectedText = string.Empty;
+        }
+
+        if (!File.Exists(finalProvenancePath))
+        {
+            errors.Add($"Final provenance does not exist: {finalProvenancePath}");
+        }
+        else if (!string.IsNullOrEmpty(expectedText))
+        {
+            try
+            {
+                var actualText = File.ReadAllText(finalProvenancePath, Encoding.UTF8);
+                if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))
+                {
+                    errors.Add("Final provenance content does not match expected output.");
+                    if (!actualText.Contains($"- Main Asset ID: `{mainFilename}`"))
+                    {
+                        errors.Add($"Final provenance does not contain expected Main Asset ID: {mainFilename}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"Could not read final provenance at '{finalProvenancePath}': {ex.Message}");
+            }
         }
 
         return errors.Count == 0
@@ -785,17 +818,6 @@ public sealed partial class ValidationService
                 $"Reference provenance file does not exist: {provenancePath}");
         }
 
-        string actualText;
-        try
-        {
-            actualText = File.ReadAllText(provenancePath, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            return ValidationResult.Failure(
-                $"Could not read reference provenance at '{provenancePath}': {ex.Message}");
-        }
-
         string expectedText;
         try
         {
@@ -809,6 +831,37 @@ public sealed partial class ValidationService
         {
             return ValidationResult.Failure(
                 $"Could not render expected reference provenance for ownership validation: {ex.Message}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.ReferenceProvenanceHash))
+        {
+            try
+            {
+                var actualHash = ComputeSha256(provenancePath);
+                if (!string.Equals(actualHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ValidationResult.Failure(
+                        "Reference provenance SHA-256 hash does not match stored ReferenceProvenanceHash.");
+                }
+
+                return ValidationResult.Success();
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not compute reference provenance hash at '{provenancePath}': {ex.Message}");
+            }
+        }
+
+        string actualText;
+        try
+        {
+            actualText = File.ReadAllText(provenancePath, Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not read reference provenance at '{provenancePath}': {ex.Message}");
         }
 
         if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))
@@ -838,17 +891,6 @@ public sealed partial class ValidationService
                 "Session Main metadata is incomplete for final provenance ownership validation.");
         }
 
-        string actualText;
-        try
-        {
-            actualText = File.ReadAllText(finalProvenancePath, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            return ValidationResult.Failure(
-                $"Could not read final provenance at '{finalProvenancePath}': {ex.Message}");
-        }
-
         string expectedText;
         try
         {
@@ -871,15 +913,44 @@ public sealed partial class ValidationService
                         generationDate,
                         session.MainPrompt ?? string.Empty),
 
-                _ =>
-                    throw new InvalidDataException(
-                        $"Unsupported WorkflowMode: {session.WorkflowMode}")
+                _ => throw new InvalidOperationException($"Unsupported workflow mode: {session.WorkflowMode}")
             };
         }
         catch (Exception ex)
         {
             return ValidationResult.Failure(
                 $"Could not render expected final provenance for ownership validation: {ex.Message}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.MainProvenanceHash))
+        {
+            try
+            {
+                var actualHash = ComputeSha256(finalProvenancePath);
+                if (!string.Equals(actualHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ValidationResult.Failure(
+                        "Final provenance SHA-256 hash does not match stored MainProvenanceHash.");
+                }
+
+                return ValidationResult.Success();
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not compute final provenance hash at '{finalProvenancePath}': {ex.Message}");
+            }
+        }
+
+        string actualText;
+        try
+        {
+            actualText = File.ReadAllText(finalProvenancePath, Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not read final provenance at '{finalProvenancePath}': {ex.Message}");
         }
 
         if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))

@@ -1,9 +1,17 @@
+using AssetProvenanceHelper.Services;
+
 namespace AssetProvenanceHelper.Models;
 
 public enum AssetWorkflowMode
 {
     ReferenceAssisted = 0,
     NoReference = 1
+}
+
+public enum ReferenceCommitPhase
+{
+    None = 0,
+    Prepared = 1
 }
 
 public enum CancelPhase
@@ -16,6 +24,10 @@ public enum CancelPhase
 public sealed class AssetSession
 {
     public AssetWorkflowMode WorkflowMode { get; set; } = AssetWorkflowMode.ReferenceAssisted;
+
+    public ReferenceCommitPhase ReferenceCommitPhase { get; set; } = ReferenceCommitPhase.None;
+
+    public string? ReferenceTransactionId { get; set; }
 
     public string ProjectName { get; set; } = string.Empty;
 
@@ -35,6 +47,8 @@ public sealed class AssetSession
 
     public string ReferenceHash { get; set; } = string.Empty;
 
+    public string? ReferenceProvenanceHash { get; set; }
+
     public DateTimeOffset ReferenceProcessedAt { get; set; }
 
     public bool WasAssetFolderCreatedByTool { get; set; }
@@ -53,7 +67,7 @@ public sealed class AssetSession
 
     public string? MainFilename { get; set; }
 
-    public string? IngameFilename { get; set; }
+    public string? MainProvenanceHash { get; set; }
 
     public string? MainPrompt { get; set; }
 
@@ -134,19 +148,15 @@ public sealed class AssetSession
 
     public string GetIngameFilename()
     {
-        if (!string.IsNullOrWhiteSpace(IngameFilename))
-        {
-            return IngameFilename;
-        }
-
         if (string.IsNullOrWhiteSpace(AssetFolderName)
             || string.IsNullOrWhiteSpace(MainFilename))
         {
             return string.Empty;
         }
 
-        return AssetFolderName
-            + Path.GetExtension(MainFilename);
+        return AssetNaming.BuildIngameFilename(
+            AssetFolderName,
+            MainFilename);
     }
 
     public string GetIngameImagePath()
@@ -181,7 +191,7 @@ public sealed class AssetSession
     {
         IsMainCommitting = false;
         MainFilename = null;
-        IngameFilename = null;
+        MainProvenanceHash = null;
         MainPrompt = null;
         MainProcessedAt = null;
         MainHash = null;

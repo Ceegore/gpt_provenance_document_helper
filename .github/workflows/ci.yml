@@ -146,6 +146,7 @@ jobs:
             @{ Name = "AssetProvenanceHelper.MainForm"; File = "MainForm.cs" },
             @{ Name = "AssetProvenanceHelper.AppBootstrap"; File = "Services\AppBootstrap.cs" },
             @{ Name = "AssetProvenanceHelper.Services.AssetProcessorService"; File = "Services\AssetProcessorService.cs" },
+            @{ Name = "AssetProvenanceHelper.Services.AssetNaming"; File = "Services\AssetNaming.cs" },
             @{ Name = "AssetProvenanceHelper.Services.SessionService"; File = "Services\SessionService.cs" },
             @{ Name = "AssetProvenanceHelper.Services.ValidationService"; File = "Services\ValidationService.cs" },
             @{ Name = "AssetProvenanceHelper.Services.SettingsService"; File = "Services\SettingsService.cs" },
