@@ -442,4 +442,7 @@ public partial class MainForm : Form
 
     [ThreadStatic]
     internal static Action<AssetSession>? OnReferenceStableSessionSavedHook;
+
+    [ThreadStatic]
+    internal static Action? OnCancelDurableCommitHook;
 }

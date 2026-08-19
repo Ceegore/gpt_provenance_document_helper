@@ -1962,11 +1962,13 @@ public sealed class RegressionTests
         var settings = workspace.CreateSettings();
 
         var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        string? capturedTempPath = null;
 
         try
         {
             AssetProcessorService.OnFileCopiedHook = (src, dest) =>
             {
+                capturedTempPath = dest;
                 // Tamper with destination bytes right after copy
                 File.WriteAllBytes(dest, new byte[] { 42, 42, 42 });
             };
@@ -1976,13 +1978,15 @@ public sealed class RegressionTests
                 processor.ProcessReference(settings, "asset_reg87", refSource, DateTimeOffset.Now));
             Assert.Contains("Reference processing failed", ex.Message);
 
-            // BUG-R16-001: Tampered destination must be preserved (not owned)
+            // BUG-R16-001 & R7-001: Tampered temp staged file must be preserved (not owned), canonical never created
             var assetFolder = Path.Combine(settings.AssetRootFolder, "asset_reg87");
             var referenceFolder = Path.Combine(assetFolder, "reference");
             var referenceDestination = Path.Combine(referenceFolder, "ref.png");
             Assert.True(Directory.Exists(assetFolder), "Asset folder must remain because it contains non-owned content");
-            Assert.True(File.Exists(referenceDestination), "Tampered reference must be preserved");
-            Assert.Equal(new byte[] { 42, 42, 42 }, File.ReadAllBytes(referenceDestination));
+            Assert.False(File.Exists(referenceDestination), "Canonical reference must never have been created");
+            Assert.NotNull(capturedTempPath);
+            Assert.True(File.Exists(capturedTempPath), "Tampered temp reference must be preserved");
+            Assert.Equal(new byte[] { 42, 42, 42 }, File.ReadAllBytes(capturedTempPath));
         }
         finally
         {
@@ -4453,11 +4457,13 @@ public sealed class RegressionTests
         var settings = workspace.CreateSettings();
 
         var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        string? capturedTempPath = null;
 
         try
         {
             AssetProcessorService.OnFileCopiedHook = (src, dest) =>
             {
+                capturedTempPath = dest;
                 File.WriteAllBytes(dest, new byte[] { 42, 42, 42 });
             };
 
@@ -4468,8 +4474,10 @@ public sealed class RegressionTests
             var referenceFolder = Path.Combine(assetFolder, "reference");
             var referenceDestination = Path.Combine(referenceFolder, "ref.png");
 
-            Assert.True(File.Exists(referenceDestination), "Tampered file must be preserved");
-            Assert.Equal(new byte[] { 42, 42, 42 }, File.ReadAllBytes(referenceDestination));
+            Assert.False(File.Exists(referenceDestination), "Canonical file must never have been created");
+            Assert.NotNull(capturedTempPath);
+            Assert.True(File.Exists(capturedTempPath), "Tampered temp file must be preserved");
+            Assert.Equal(new byte[] { 42, 42, 42 }, File.ReadAllBytes(capturedTempPath));
             Assert.True(Directory.Exists(assetFolder), "Asset folder must remain");
 
             // Downloads source unchanged

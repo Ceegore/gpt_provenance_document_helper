@@ -530,14 +530,34 @@ partial class MainForm
             return;
         }
 
+        var cancelledSession = _currentSession;
+
         try
         {
-            _sessionService.Cancel(_currentSession);
+            _sessionService.Cancel(cancelledSession);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not cancel current asset safely.", ex);
+            return;
+        }
+
+        // DURABLE CANCEL COMMIT POINT.
+        // The service outputs/session are gone.
+        // Detach authority before any throwable UI/status work.
+        _currentSession = null;
+        _state = UiState.Idle;
+
+        CompleteCancelUiAfterDurableCommit();
+    }
+
+    private void CompleteCancelUiAfterDurableCommit()
+    {
+        try
+        {
+            OnCancelDurableCommitHook?.Invoke();
 
             AddStatus("Current asset session cancelled.");
-
-            _currentSession = null;
-            _state = UiState.Idle;
 
             txtPrompt.Clear();
             txtAssetFolderName.Clear();
@@ -549,9 +569,24 @@ partial class MainForm
 
             ApplyState();
         }
-        catch (Exception ex)
+        catch (Exception uiEx)
         {
-            ShowError("Could not cancel current asset safely.", ex);
+            try
+            {
+                ShowMessageBox(
+                    "The asset session was cancelled successfully, but the interface could not be refreshed."
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + uiEx.Message,
+                    "Post-Cancel UI Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch
+            {
+            }
+
+            Close();
         }
     }
 }

@@ -94,6 +94,32 @@ public sealed class AssetSession
     /// </summary>
     public string? MainTransactionId { get; set; }
 
+    public string GetReferenceTempImagePath()
+    {
+        if (string.IsNullOrWhiteSpace(ReferenceTransactionId) || string.IsNullOrWhiteSpace(AssetFolder) || string.IsNullOrWhiteSpace(ReferenceFilename))
+        {
+            return string.Empty;
+        }
+
+        return Path.Combine(
+            AssetFolder,
+            AppConstants.ReferenceFolderName,
+            $".__reference_{ReferenceTransactionId}{Path.GetExtension(ReferenceFilename)}");
+    }
+
+    public string GetReferenceTempProvenancePath()
+    {
+        if (string.IsNullOrWhiteSpace(ReferenceTransactionId) || string.IsNullOrWhiteSpace(AssetFolder))
+        {
+            return string.Empty;
+        }
+
+        return Path.Combine(
+            AssetFolder,
+            AppConstants.ReferenceFolderName,
+            $".__reference_provenance_{ReferenceTransactionId}.tmp");
+    }
+
     public string GetCancelTempReferencePath()
     {
         if (string.IsNullOrWhiteSpace(CancellationId) || string.IsNullOrWhiteSpace(ReferenceDestinationPath))

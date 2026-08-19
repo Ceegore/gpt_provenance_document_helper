@@ -104,7 +104,7 @@ public sealed partial class AssetProcessorService
         };
     }
 
-    private void RequirePreparedReferenceAuthority(
+    private string RequirePreparedReferenceAuthority(
         AssetSession session,
         AppSettings settings,
         string sourceImagePath,
@@ -123,7 +123,7 @@ public sealed partial class AssetProcessorService
             throw new InvalidOperationException("Reference source path does not match the Prepared session authority.");
         }
 
-        if (processedAt != session.ReferenceProcessedAt)
+        if (!processedAt.EqualsExact(session.ReferenceProcessedAt))
         {
             throw new InvalidOperationException("Reference processedAt does not match the Prepared session authority.");
         }
@@ -151,6 +151,8 @@ public sealed partial class AssetProcessorService
         {
             throw new InvalidDataException("Reference provenance changed after the Prepared session was persisted.");
         }
+
+        return provenance;
     }
 
     internal AssetSession ProcessReference(
@@ -165,7 +167,8 @@ public sealed partial class AssetProcessorService
         var actualSourcePath = sourceImagePath ?? session.ReferenceSourcePath;
         var actualProcessedAt = processedAt ?? session.ReferenceProcessedAt;
 
-        RequirePreparedReferenceAuthority(session, settings, actualSourcePath, actualProcessedAt);
+        var verifiedProvenance = RequirePreparedReferenceAuthority(session, settings, actualSourcePath, actualProcessedAt);
+        OnPreparedReferenceAuthorityVerifiedHook?.Invoke();
 
         var pathValidation = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
         if (!pathValidation.IsValid)
@@ -179,13 +182,21 @@ public sealed partial class AssetProcessorService
         var referenceProvenance = session.ReferenceProvenancePath;
         var referenceFilename = session.ReferenceFilename;
 
+        var tempImagePath = session.GetReferenceTempImagePath();
+        var tempProvenancePath = session.GetReferenceTempProvenancePath();
+
+        if (string.IsNullOrWhiteSpace(tempImagePath) || string.IsNullOrWhiteSpace(tempProvenancePath))
+        {
+            throw new InvalidOperationException("Reference temporary paths could not be determined.");
+        }
+
         var assetFolderExisted = !session.WasAssetFolderCreatedByTool;
         var referenceFolderExisted = !session.WasReferenceFolderCreatedByTool;
 
-        var imageCopied = false;
-        var provenanceWritten = false;
-        string? sourceHash = session.ReferenceHash;
-        string? provenance = null;
+        var tempImageCopied = false;
+        var tempProvenanceWritten = false;
+        var imagePromoted = false;
+        var provenancePromoted = false;
 
         try
         {
@@ -199,30 +210,79 @@ public sealed partial class AssetProcessorService
                 throw new IOException($"Reference provenance already exists: {referenceProvenance}");
             }
 
+            if (File.Exists(tempImagePath))
+            {
+                throw new IOException($"Reference temporary image already exists: {tempImagePath}");
+            }
+
+            if (File.Exists(tempProvenancePath))
+            {
+                throw new IOException($"Reference temporary provenance already exists: {tempProvenancePath}");
+            }
+
             Directory.CreateDirectory(assetFolder);
+            if (ValidationService.IsReparsePoint(assetFolder))
+            {
+                throw new IOException($"Asset folder became a reparse point: {assetFolder}");
+            }
+
             Directory.CreateDirectory(referenceFolder);
-
-            CopyFileWithoutOverwrite(actualSourcePath, referenceDestination);
-            imageCopied = true;
-            OnFileCopiedHook?.Invoke(actualSourcePath, referenceDestination);
-
-            var copiedValidation = _validationService.ValidateImageFile(referenceDestination, settings.AcceptedExtensions);
-            if (!copiedValidation.IsValid)
+            if (ValidationService.IsReparsePoint(referenceFolder))
             {
-                throw new InvalidDataException("Copied reference image is invalid: " + string.Join("; ", copiedValidation.Errors));
+                throw new IOException($"Reference folder became a reparse point: {referenceFolder}");
             }
 
-            var hash = ComputeSha256(referenceDestination);
-            if (!string.Equals(session.ReferenceHash, hash, StringComparison.OrdinalIgnoreCase))
+            var postCreatePaths = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+            if (!postCreatePaths.IsValid)
             {
-                throw new IOException("Copied Reference does not match Prepared ReferenceHash.");
+                throw new InvalidDataException(string.Join(Environment.NewLine, postCreatePaths.Errors));
             }
 
-            var generationDate = actualProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            provenance = _templateService.RenderReference(referenceFilename, session.ProjectName, generationDate);
+            // 1. Stage image in deterministic temp path
+            CopyFileWithoutOverwrite(actualSourcePath, tempImagePath);
+            tempImageCopied = true;
+            OnFileCopiedHook?.Invoke(actualSourcePath, tempImagePath);
 
-            WriteTextAtomic(referenceProvenance, provenance);
-            provenanceWritten = true;
+            var tempImageValidation = _validationService.ValidateImageFile(tempImagePath, settings.AcceptedExtensions);
+            if (!tempImageValidation.IsValid)
+            {
+                throw new InvalidDataException("Copied reference temp image is invalid: " + string.Join("; ", tempImageValidation.Errors));
+            }
+
+            var tempImageHash = ComputeSha256(tempImagePath);
+            if (!string.Equals(session.ReferenceHash, tempImageHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("Copied reference temp image does not match Prepared ReferenceHash.");
+            }
+
+            // 2. Stage pre-rendered verified provenance in deterministic temp path
+            WriteTextAtomic(tempProvenancePath, verifiedProvenance);
+            tempProvenanceWritten = true;
+
+            var tempProvHash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    new System.Text.UTF8Encoding(false).GetBytes(File.ReadAllText(tempProvenancePath))))
+                .ToLowerInvariant();
+
+            if (!string.Equals(session.ReferenceProvenanceHash, tempProvHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Copied reference temp provenance does not match Prepared ReferenceProvenanceHash.");
+            }
+
+            // Re-validate reparse safety before canonical promotion
+            if (ValidationService.IsReparsePoint(assetFolder) || ValidationService.IsReparsePoint(referenceFolder))
+            {
+                throw new IOException("Reference folder hierarchy became a reparse point before promotion.");
+            }
+
+            // 3. Promote staged artifacts to canonical paths
+            File.Move(tempImagePath, referenceDestination, overwrite: false);
+            imagePromoted = true;
+            tempImageCopied = false;
+
+            File.Move(tempProvenancePath, referenceProvenance, overwrite: false);
+            provenancePromoted = true;
+            tempProvenanceWritten = false;
 
             var validation = _validationService.ValidateExactReferenceOutput(session, _templateService);
             if (!validation.IsValid)
@@ -239,9 +299,33 @@ public sealed partial class AssetProcessorService
         {
             var rollbackErrors = new List<string>();
 
-            if (provenanceWritten)
+            if (tempProvenanceWritten && File.Exists(tempProvenancePath))
             {
-                if (provenance is not null && TryVerifyTextFileOwnership(referenceProvenance, provenance))
+                if (TryVerifyTextFileOwnership(tempProvenancePath, verifiedProvenance))
+                {
+                    TryDeleteFileWithError(tempProvenancePath, rollbackErrors);
+                }
+                else
+                {
+                    rollbackErrors.Add($"Reference temp provenance at '{tempProvenancePath}' content no longer matches expected text. File preserved.");
+                }
+            }
+
+            if (tempImageCopied && File.Exists(tempImagePath))
+            {
+                if (TryVerifyFileHashOwnership(tempImagePath, session.ReferenceHash))
+                {
+                    TryDeleteFileWithError(tempImagePath, rollbackErrors);
+                }
+                else
+                {
+                    rollbackErrors.Add($"Reference temp image at '{tempImagePath}' hash no longer matches expected hash. File preserved.");
+                }
+            }
+
+            if (provenancePromoted && File.Exists(referenceProvenance))
+            {
+                if (TryVerifyTextFileOwnership(referenceProvenance, verifiedProvenance))
                 {
                     TryDeleteFileWithError(referenceProvenance, rollbackErrors);
                 }
@@ -251,9 +335,9 @@ public sealed partial class AssetProcessorService
                 }
             }
 
-            if (imageCopied)
+            if (imagePromoted && File.Exists(referenceDestination))
             {
-                if (sourceHash is not null && TryVerifyFileHashOwnership(referenceDestination, sourceHash))
+                if (TryVerifyFileHashOwnership(referenceDestination, session.ReferenceHash))
                 {
                     TryDeleteFileWithError(referenceDestination, rollbackErrors);
                 }
@@ -327,6 +411,60 @@ public sealed partial class AssetProcessorService
             !ValidationService.PathsEqual(Path.GetDirectoryName(ValidationService.NormalizePath(session.ReferenceProvenancePath)) ?? "", expectedReferenceFolder))
         {
             return ValidationResult.Failure("Reference paths escape expected reference folder.");
+        }
+
+        // Verify temp files if they exist
+        var tempImage = session.GetReferenceTempImagePath();
+        var tempProv = session.GetReferenceTempProvenancePath();
+
+        if (!string.IsNullOrWhiteSpace(tempImage) && File.Exists(tempImage))
+        {
+            if (!ValidationService.PathsEqual(Path.GetDirectoryName(ValidationService.NormalizePath(tempImage)) ?? "", expectedReferenceFolder))
+            {
+                return ValidationResult.Failure("Reference temp image path escapes expected reference folder.");
+            }
+
+            try
+            {
+                var hash = ComputeSha256(tempImage);
+                if (string.Equals(hash, session.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDeleteFileWithError(tempImage, errors);
+                }
+                else
+                {
+                    return ValidationResult.Failure($"Reference temp image at '{tempImage}' hash does not match session ReferenceHash. Refusing to delete unknown file.");
+                }
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure($"Could not verify reference temp image: {ex.Message}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
+        {
+            if (!ValidationService.PathsEqual(Path.GetDirectoryName(ValidationService.NormalizePath(tempProv)) ?? "", expectedReferenceFolder))
+            {
+                return ValidationResult.Failure("Reference temp provenance path escapes expected reference folder.");
+            }
+
+            try
+            {
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(tempProv))).ToLowerInvariant();
+                if (string.Equals(hash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDeleteFileWithError(tempProv, errors);
+                }
+                else
+                {
+                    return ValidationResult.Failure($"Reference temp provenance at '{tempProv}' hash does not match session ReferenceProvenanceHash. Refusing to delete unknown file.");
+                }
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure($"Could not verify reference temp provenance: {ex.Message}");
+            }
         }
 
         TryDeleteFileWithError(

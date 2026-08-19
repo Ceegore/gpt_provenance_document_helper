@@ -600,7 +600,9 @@ public class ChangeV11MainFormTests
                 workspace.CreateAssetProcessor(),
                 workspace.CreateSessionService());
 
+            var _ = form.Handle;
             form.Show();
+            Application.DoEvents();
 
             var overlay = form.Controls.Find("helpOverlay", true).FirstOrDefault() as HelpOverlayControl;
             Assert.NotNull(overlay);

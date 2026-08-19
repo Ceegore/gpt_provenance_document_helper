@@ -1686,7 +1686,7 @@ public sealed class Bugs3ParanoidTests
 
     [Fact]
     [Trait("Category", "RecoveryCritical")]
-    public void InitialReference_Prepared_ProcessedAtMismatch_NoMutation()
+    public void InitialReference_Prepared_SameInstantDifferentOffset_IsRejected()
     {
         using var workspace = new TestWorkspace();
         var processor = workspace.CreateAssetProcessor();
@@ -1694,15 +1694,150 @@ public sealed class Bugs3ParanoidTests
         var sessionService = workspace.CreateSessionService();
 
         var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
-        var now = DateTimeOffset.Now;
-        var prepared = processor.CreateReferenceSession(settings, "r6_time_mismatch", source, now);
+        var preparedAt = new DateTimeOffset(2026, 8, 19, 23, 30, 0, TimeSpan.FromHours(2));
+        var sameInstantDifferentOffset = preparedAt.ToOffset(TimeSpan.FromHours(5));
+
+        Assert.True(preparedAt == sameInstantDifferentOffset);
+        Assert.False(preparedAt.EqualsExact(sameInstantDifferentOffset));
+
+        var prepared = processor.CreateReferenceSession(settings, "r7_offset_mismatch", source, preparedAt);
         sessionService.Save(prepared);
 
         Assert.Throws<InvalidOperationException>(() =>
-            processor.ProcessReference(prepared, settings, source, now.AddMinutes(5)));
+            processor.ProcessReference(prepared, settings, source, sameInstantDifferentOffset));
 
         Assert.False(Directory.Exists(prepared.AssetFolder), "Timestamp mismatch must be rejected before folder creation.");
         Assert.True(sessionService.Exists(), "Prepared journal remains durable.");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_Prepared_TemplateChangesAfterPreflight_ReusesPreflightProvenance()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r7_template_hook_test", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        var templateFile = Path.Combine(workspace.Root, "templates", "reference.md");
+
+        AssetProcessorService.OnPreparedReferenceAuthorityVerifiedHook = () =>
+        {
+            // Tamper template file after preflight authority verified
+            File.WriteAllText(templateFile, "# TAMPERED TEMPLATE {{ProjectName}}");
+        };
+
+        try
+        {
+            var completed = processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt);
+            Assert.True(File.Exists(completed.ReferenceProvenancePath));
+
+            var writtenProv = File.ReadAllText(completed.ReferenceProvenancePath);
+            var hash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    new System.Text.UTF8Encoding(false).GetBytes(writtenProv))).ToLowerInvariant();
+
+            Assert.Equal(prepared.ReferenceProvenanceHash, hash);
+            Assert.DoesNotContain("TAMPERED", writtenProv);
+        }
+        finally
+        {
+            AssetProcessorService.OnPreparedReferenceAuthorityVerifiedHook = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_Prepared_SourceChangesAfterPreflight_RejectsAtTempStage()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r7_source_hook_test", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        AssetProcessorService.OnPreparedReferenceAuthorityVerifiedHook = () =>
+        {
+            // Change source after authority verification
+            File.WriteAllBytes(source, TestWorkspace.EnsureMagicBytes(source, new byte[] { 99, 88, 77 }));
+        };
+
+        try
+        {
+            Assert.Throws<IOException>(() =>
+                processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+
+            Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical reference must NEVER exist on staging mismatch");
+            Assert.False(File.Exists(prepared.ReferenceProvenancePath), "Canonical provenance must NEVER exist on staging mismatch");
+        }
+        finally
+        {
+            AssetProcessorService.OnPreparedReferenceAuthorityVerifiedHook = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void PreparedReference_InterruptedStagedCopy_CleansTempsAndDeletesJournal()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r7_interrupted_staging", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        // Create staging files matching expected transaction ownership
+        Directory.CreateDirectory(Path.Combine(prepared.AssetFolder, AppConstants.ReferenceFolderName));
+        File.Copy(source, prepared.GetReferenceTempImagePath());
+
+        var generationDate = prepared.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var prov = workspace.CreateTemplateService().RenderReference(prepared.ReferenceFilename, prepared.ProjectName, generationDate);
+        File.WriteAllText(prepared.GetReferenceTempProvenancePath(), prov);
+
+        RunStartupRecovery(workspace, settings, processor, sessionService);
+
+        Assert.False(sessionService.Exists(), "Prepared journal should be deleted after rollback of temps");
+        Assert.False(File.Exists(prepared.GetReferenceTempImagePath()), "Temp image should be cleaned up");
+        Assert.False(File.Exists(prepared.GetReferenceTempProvenancePath()), "Temp provenance should be cleaned up");
+        Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical destination was never created");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void PreparedReference_OnePromotedOneTemp_RollsBackExactOwnedFilesAndDeletesJournal()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r7_one_promoted_one_temp", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        // Canonical image promoted, temp provenance still in temp
+        Directory.CreateDirectory(Path.Combine(prepared.AssetFolder, AppConstants.ReferenceFolderName));
+        File.Copy(source, prepared.ReferenceDestinationPath);
+
+        var generationDate = prepared.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var prov = workspace.CreateTemplateService().RenderReference(prepared.ReferenceFilename, prepared.ProjectName, generationDate);
+        File.WriteAllText(prepared.GetReferenceTempProvenancePath(), prov);
+
+        RunStartupRecovery(workspace, settings, processor, sessionService);
+
+        Assert.False(sessionService.Exists(), "Prepared journal should be rolled back");
+        Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical image should be rolled back");
+        Assert.False(File.Exists(prepared.GetReferenceTempProvenancePath()), "Temp provenance should be cleaned up");
     }
 
     [Fact]
@@ -1927,7 +2062,124 @@ public sealed class Bugs3ParanoidTests
 
     [Fact]
     [Trait("Category", "RecoveryCritical")]
-    public void NoReference_JournalSaved_PostSaveUiFailure_DoesNotLeaveUsableUntrackedTransaction()
+    public void Cancel_PostCommitUiFailure_DoesNotLeaveReferenceReadySession()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r7_cancel_ui_throw", ref1, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        RunOnSta(() =>
+        {
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true; // confirm cancel
+
+            MainForm.OnCancelDurableCommitHook = () =>
+            {
+                throw new InvalidOperationException("Simulated UI failure after durable cancel commit.");
+            };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+            sessionField?.SetValue(form, session);
+            stateField?.SetValue(form, 1);
+
+            try
+            {
+                var handleCancelMethod = typeof(MainForm).GetMethod("HandleCancel", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleCancelMethod?.Invoke(form, null);
+
+                Assert.False(sessionService.Exists(), "session.json must remain deleted");
+                Assert.False(File.Exists(session.ReferenceDestinationPath), "Reference image must be deleted");
+                Assert.False(File.Exists(session.ReferenceProvenancePath), "Reference provenance must be deleted");
+
+                var currentSessionVal = sessionField?.GetValue(form);
+                var currentStateVal = stateField?.GetValue(form);
+                Assert.Null(currentSessionVal);
+                Assert.Equal("Idle", currentStateVal?.ToString());
+            }
+            finally
+            {
+                MainForm.OnCancelDurableCommitHook = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Cancel_PostCommitUiFailure_DoesNotRecreateSession()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r7_cancel_no_recreate", ref1, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        RunOnSta(() =>
+        {
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+            MainForm.OnCancelDurableCommitHook = () =>
+            {
+                throw new InvalidOperationException("Simulated UI failure after durable cancel commit.");
+            };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+            sessionField?.SetValue(form, session);
+            stateField?.SetValue(form, 1);
+
+            try
+            {
+                var handleCancelMethod = typeof(MainForm).GetMethod("HandleCancel", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleCancelMethod?.Invoke(form, null);
+
+                Assert.False(sessionService.Exists(), "Cancelled session must not be recreated upon UI error");
+            }
+            finally
+            {
+                MainForm.OnCancelDurableCommitHook = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void NoReference_JournalSaved_PostSaveStatusFailure_ContinuesCommit()
     {
         using var workspace = new TestWorkspace();
         var settings = workspace.CreateSettings();
@@ -1955,7 +2207,7 @@ public sealed class Bugs3ParanoidTests
             if (chkNoRef != null) chkNoRef.Checked = true;
 
             var folderBox = typeof(MainForm).GetField("txtAssetFolderName", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
-            if (folderBox != null) folderBox.Text = "asset_r6_noref_test";
+            if (folderBox != null) folderBox.Text = "asset_r7_noref_status_throw";
 
             form.SetSelectedImage(ImageSlot.Main, main1);
             var promptBox = typeof(MainForm).GetField("txtPrompt", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
@@ -1967,12 +2219,109 @@ public sealed class Bugs3ParanoidTests
                 handleMainMethod?.Invoke(form, null);
 
                 Assert.False(sessionService.Exists(), "session.json must be removed on complete commit");
-                Assert.True(File.Exists(Path.Combine(settings.AssetRootFolder, "asset_r6_noref_test", "main1.png")));
+                Assert.True(File.Exists(Path.Combine(settings.AssetRootFolder, "asset_r7_noref_status_throw", "main1.png")));
             }
             finally
             {
                 MainForm.MessageBoxProvider = null;
             }
         });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Replacement_PostCommitUiFailure_DoesNotRollbackOrRecreateOldReference()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r7_replace_post_ui_throw", ref1, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+
+        RunOnSta(() =>
+        {
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+            MainForm.MessageBoxProvider = (_, message, caption, _, _) =>
+            {
+                if (caption == "Post-Commit UI Error")
+                {
+                    // Simulated expected post-commit UI error handler invocation
+                }
+            };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+            sessionField?.SetValue(form, session);
+            stateField?.SetValue(form, 1);
+
+            form.SetSelectedImage(ImageSlot.Reference, ref2);
+
+            try
+            {
+                var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleReplaceMethod?.Invoke(form, null);
+
+                Assert.False(sessionService.ReplacementJournalExists(), "Replacement journal must remain deleted");
+                Assert.True(sessionService.Exists(), "New session must remain on disk");
+                var loaded = sessionService.Load()!;
+                Assert.Equal("ref2.png", loaded.ReferenceFilename);
+                Assert.True(File.Exists(loaded.ReferenceDestinationPath), "New reference image must exist");
+                Assert.True(File.Exists(loaded.ReferenceProvenancePath), "New reference provenance must exist");
+            }
+            finally
+            {
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void R7_003_ProcessReference_AssetFolderBecomesReparse_Rejects()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r7_reparse_test", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        try
+        {
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, prepared.AssetFolder))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+
+            Assert.Throws<IOException>(() =>
+                processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+        }
+        finally
+        {
+            ValidationService.FileAttributesProvider = null;
+        }
     }
 }

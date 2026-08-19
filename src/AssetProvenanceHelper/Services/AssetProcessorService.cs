@@ -23,6 +23,9 @@ public sealed partial class AssetProcessorService
     [ThreadStatic]
     internal static Action<ReferenceReplacementTransaction>? OnRollbackReferenceReplacementInvoked;
 
+    [ThreadStatic]
+    internal static Action? OnPreparedReferenceAuthorityVerifiedHook;
+
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
 

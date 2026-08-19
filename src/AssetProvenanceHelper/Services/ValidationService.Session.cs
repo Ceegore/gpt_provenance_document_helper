@@ -1506,6 +1506,20 @@ public sealed partial class ValidationService
             errors.Add("Prepared ReferenceProvenanceHash is missing or invalid.");
         }
 
+        var expectedReferenceFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+        var tempImage = session.GetReferenceTempImagePath();
+        var tempProv = session.GetReferenceTempProvenancePath();
+
+        if (string.IsNullOrWhiteSpace(tempImage) || !PathsEqual(Path.GetDirectoryName(NormalizePath(tempImage)) ?? "", expectedReferenceFolder))
+        {
+            errors.Add("Prepared reference temp image path is invalid or escapes reference folder.");
+        }
+
+        if (string.IsNullOrWhiteSpace(tempProv) || !PathsEqual(Path.GetDirectoryName(NormalizePath(tempProv)) ?? "", expectedReferenceFolder))
+        {
+            errors.Add("Prepared reference temp provenance path is invalid or escapes reference folder.");
+        }
+
         return errors.Count == 0
             ? ValidationResult.Success()
             : ValidationResult.Failure(errors);
