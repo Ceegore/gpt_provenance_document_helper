@@ -97,6 +97,11 @@ public sealed partial class ValidationService
                     errors.Add(
                         $"Accepted extension '{ext}' is invalid. Extensions must start with '.' and contain no path separators.");
                 }
+                else if (!AppConstants.DefaultImageExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase))
+                {
+                    errors.Add(
+                        $"Unsupported image extension configured: {ext}");
+                }
             }
         }
 
@@ -411,7 +416,7 @@ public sealed partial class ValidationService
                    header[8] == (byte)'W' && header[9] == (byte)'E' && header[10] == (byte)'B' && header[11] == (byte)'P';
         }
 
-        return true;
+        return false;
     }
 
     [ThreadStatic]

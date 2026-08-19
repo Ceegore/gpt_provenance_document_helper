@@ -25,6 +25,9 @@ public sealed class SessionService
     [ThreadStatic]
     internal static Action? OnBeforeReplacementJournalDeleteHook;
 
+    [ThreadStatic]
+    internal static Action<AssetSession>? OnBeforeSaveSessionHook;
+
     private readonly string _sessionPath;
     private readonly TemplateService? _templateService;
     private readonly ValidationService? _validationService;
@@ -99,6 +102,8 @@ public sealed class SessionService
     {
         ArgumentNullException.ThrowIfNull(
             session);
+
+        OnBeforeSaveSessionHook?.Invoke(session);
 
         var directory =
             Path.GetDirectoryName(

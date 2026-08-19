@@ -233,7 +233,9 @@ partial class MainForm
                 if (!rollback.IsValid)
                 {
                     ShowMessageBox(
-                        "CRITICAL: Replacement session could not be saved and the old reference could not be fully restored.\n\n"
+                        "CRITICAL: Replacement session could not be saved and the old Reference could not be fully restored."
+                        + Environment.NewLine
+                        + Environment.NewLine
                         + string.Join(Environment.NewLine, rollback.Errors),
                         "Critical replacement error",
                         MessageBoxButtons.OK,
@@ -243,11 +245,16 @@ partial class MainForm
                     return;
                 }
 
-                _sessionService.DeleteReplacementJournal();
+                if (!FinalizeLiveReplacementRollback(transaction))
+                {
+                    return;
+                }
 
-                throw new IOException(
-                    "Could not save replacement session. The previous reference was restored.",
+                ShowError(
+                    "Could not save replacement session. The previous Reference was restored.",
                     saveException);
+
+                return;
             }
 
             // 12. Write-ahead Phase: SessionSwitched

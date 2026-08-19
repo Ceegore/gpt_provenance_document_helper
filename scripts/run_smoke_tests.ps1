@@ -66,6 +66,7 @@ while ($elapsedMs -lt $timeoutMs) {
     $elapsedMs += 250
     try {
         $p = [System.Diagnostics.Process]::GetProcessById($proc.Id)
+        $p.Refresh()
         if ($p.HasExited) {
             break
         }

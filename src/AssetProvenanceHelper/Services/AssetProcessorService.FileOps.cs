@@ -6,7 +6,7 @@ namespace AssetProvenanceHelper.Services;
 
 public sealed partial class AssetProcessorService
 {
-    public void CopyFileWithoutOverwrite(
+    internal void CopyFileWithoutOverwrite(
         string source,
         string destination)
     {
@@ -22,7 +22,7 @@ public sealed partial class AssetProcessorService
             overwrite: false);
     }
 
-    public void WriteTextAtomic(
+    internal void WriteTextAtomic(
         string targetPath,
         string content)
     {

@@ -963,9 +963,26 @@ public sealed partial class ValidationService
     }
 
     /// <summary>
-    /// Validates a reference replacement transaction ensuring both sessions and backup paths are strictly valid and safe.
+    /// Validates a reference replacement transaction ensuring both sessions, deterministic backup paths, and deterministic temp paths are strictly valid and safe.
+    /// Safely wraps all path operations against untrusted user data.
     /// </summary>
     public ValidationResult ValidateReferenceReplacementTransaction(
+        ReferenceReplacementTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        try
+        {
+            return ValidateReferenceReplacementTransactionCore(transaction);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                "Replacement transaction contains invalid or unusable path metadata: " + ex.Message);
+        }
+    }
+
+    private ValidationResult ValidateReferenceReplacementTransactionCore(
         ReferenceReplacementTransaction transaction)
     {
         var errors = new List<string>();
@@ -1016,17 +1033,118 @@ public sealed partial class ValidationService
                 errors.Add("OldSession and NewSession ReferenceProvenancePath do not match.");
             }
 
-            var expectedBackupRef = transaction.OldSession.ReferenceDestinationPath + "." + transaction.TransactionId + ".old";
-            var expectedBackupProv = transaction.OldSession.ReferenceProvenancePath + "." + transaction.TransactionId + ".old";
+            var referenceFolder =
+                NormalizePath(
+                    Path.Combine(
+                        transaction.OldSession.AssetFolder,
+                        AppConstants.ReferenceFolderName));
 
-            if (!PathsEqual(transaction.BackupReferencePath, expectedBackupRef))
+            if (Directory.Exists(referenceFolder)
+                && IsReparsePoint(referenceFolder))
             {
-                errors.Add("Transaction BackupReferencePath does not match expected deterministic backup path.");
+                errors.Add(
+                    "Replacement reference folder is a reparse point.");
             }
 
-            if (!PathsEqual(transaction.BackupProvenancePath, expectedBackupProv))
+            var expectedBackupRef =
+                NormalizePath(
+                    transaction.OldSession.ReferenceDestinationPath
+                    + "."
+                    + transaction.TransactionId
+                    + ".old");
+
+            var expectedBackupProv =
+                NormalizePath(
+                    transaction.OldSession.ReferenceProvenancePath
+                    + "."
+                    + transaction.TransactionId
+                    + ".old");
+
+            var newExtension =
+                Path.GetExtension(transaction.NewSession.ReferenceFilename);
+
+            var expectedTempReference =
+                NormalizePath(
+                    Path.Combine(
+                        referenceFolder,
+                        $".__new_reference_{transaction.TransactionId}{newExtension}"));
+
+            var expectedTempProvenance =
+                NormalizePath(
+                    Path.Combine(
+                        referenceFolder,
+                        $".__new_provenance_{transaction.TransactionId}.tmp"));
+
+            if (string.IsNullOrWhiteSpace(transaction.BackupReferencePath))
             {
-                errors.Add("Transaction BackupProvenancePath does not match expected deterministic backup path.");
+                errors.Add("Transaction BackupReferencePath is missing.");
+            }
+            else
+            {
+                if (!PathsEqual(transaction.BackupReferencePath, expectedBackupRef))
+                {
+                    errors.Add("Transaction BackupReferencePath does not match expected deterministic backup path.");
+                }
+
+                RequireExactParent(
+                    transaction.BackupReferencePath,
+                    referenceFolder,
+                    "Replacement backup Reference",
+                    errors);
+            }
+
+            if (string.IsNullOrWhiteSpace(transaction.BackupProvenancePath))
+            {
+                errors.Add("Transaction BackupProvenancePath is missing.");
+            }
+            else
+            {
+                if (!PathsEqual(transaction.BackupProvenancePath, expectedBackupProv))
+                {
+                    errors.Add("Transaction BackupProvenancePath does not match expected deterministic backup path.");
+                }
+
+                RequireExactParent(
+                    transaction.BackupProvenancePath,
+                    referenceFolder,
+                    "Replacement backup provenance",
+                    errors);
+            }
+
+            if (string.IsNullOrWhiteSpace(transaction.TempNewReferencePath))
+            {
+                errors.Add("Transaction TempNewReferencePath is missing.");
+            }
+            else
+            {
+                if (!PathsEqual(transaction.TempNewReferencePath, expectedTempReference))
+                {
+                    errors.Add("Transaction TempNewReferencePath does not match deterministic transaction temp path.");
+                }
+
+                RequireExactParent(
+                    transaction.TempNewReferencePath,
+                    referenceFolder,
+                    "Replacement temporary Reference",
+                    errors);
+            }
+
+            if (string.IsNullOrWhiteSpace(transaction.TempNewProvenancePath))
+            {
+                errors.Add("Transaction TempNewProvenancePath is missing.");
+            }
+            else
+            {
+                if (!PathsEqual(transaction.TempNewProvenancePath, expectedTempProvenance))
+                {
+                    errors.Add("Transaction TempNewProvenancePath does not match deterministic transaction temp path.");
+                }
+
+                RequireExactParent(
+                    transaction.TempNewProvenancePath,
+                    referenceFolder,
+                    "Replacement temporary provenance",
+                    errors);
             }
         }
 

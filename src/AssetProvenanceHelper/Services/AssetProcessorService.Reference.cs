@@ -104,7 +104,7 @@ public sealed partial class AssetProcessorService
         };
     }
 
-    public AssetSession ProcessReference(
+    internal AssetSession ProcessReference(
         AssetSession session,
         AppSettings settings,
         string sourceImagePath,
@@ -254,7 +254,7 @@ public sealed partial class AssetProcessorService
         return ProcessReference(session, settings, sourceImagePath, processedAt);
     }
 
-    public ValidationResult RollbackReference(
+    internal ValidationResult RollbackReference(
         AssetSession session)
     {
         // BUG-013 & BUG-R13-003: Validate full session path hierarchy and verify exact ownership before deletion
@@ -400,15 +400,30 @@ public sealed partial class AssetProcessorService
         };
     }
 
+    private void RequireSafeReferenceReplacementTransaction(
+        ReferenceReplacementTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        var validation = _validationService.ValidateReferenceReplacementTransaction(transaction);
+        if (!validation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, validation.Errors));
+        }
+    }
+
     /// <summary>
     /// R2-002: Creates temporary replacement reference image and provenance files on disk and verifies integrity.
+    /// Note: Caller contract requires persisting a Prepared replacement journal before invoking this mutator.
     /// </summary>
-    public void CreateReplacementTempFiles(
+    internal void CreateReplacementTempFiles(
         ReferenceReplacementTransaction transaction,
         IReadOnlyCollection<string> acceptedExtensions)
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(acceptedExtensions);
+
+        RequireSafeReferenceReplacementTransaction(transaction);
 
         var sourceHash = ComputeSha256(transaction.NewSession.ReferenceSourcePath);
         if (!string.Equals(
@@ -463,11 +478,14 @@ public sealed partial class AssetProcessorService
 
     /// <summary>
     /// R2-002: Moves old canonical reference image and provenance to deterministic backup paths.
+    /// Note: Caller contract requires persisting an OldBackupPending replacement journal before invoking this mutator.
     /// </summary>
-    public void BackupOldReference(
+    internal void BackupOldReference(
         ReferenceReplacementTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
+
+        RequireSafeReferenceReplacementTransaction(transaction);
 
         if (!File.Exists(transaction.OldSession.ReferenceDestinationPath))
         {
@@ -515,11 +533,14 @@ public sealed partial class AssetProcessorService
 
     /// <summary>
     /// R2-002: Promotes temporary replacement files to canonical destination paths.
+    /// Note: Caller contract requires persisting a NewPromotionPending replacement journal before invoking this mutator.
     /// </summary>
-    public void PromoteNewReference(
+    internal void PromoteNewReference(
         ReferenceReplacementTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
+
+        RequireSafeReferenceReplacementTransaction(transaction);
 
         File.Move(
             transaction.TempNewReferencePath,
@@ -544,7 +565,7 @@ public sealed partial class AssetProcessorService
     /// <summary>
     /// R2-002: Cleans up old backup files after successful commit. Alias for CommitReferenceReplacement.
     /// </summary>
-    public ValidationResult CleanupReplacementBackups(
+    internal ValidationResult CleanupReplacementBackups(
         ReferenceReplacementTransaction transaction)
     {
         return CommitReferenceReplacement(transaction);
@@ -595,7 +616,7 @@ public sealed partial class AssetProcessorService
     }
 
 
-    public ValidationResult CommitReferenceReplacement(
+    internal ValidationResult CommitReferenceReplacement(
         ReferenceReplacementTransaction transaction)
     {
         var transactionValidation = _validationService.ValidateReferenceReplacementTransaction(transaction);
@@ -676,7 +697,7 @@ public sealed partial class AssetProcessorService
             : ValidationResult.Failure(errors);
     }
 
-    public ValidationResult RollbackReferenceReplacement(
+    internal ValidationResult RollbackReferenceReplacement(
         ReferenceReplacementTransaction transaction)
     {
         var transactionValidation = _validationService.ValidateReferenceReplacementTransaction(transaction);

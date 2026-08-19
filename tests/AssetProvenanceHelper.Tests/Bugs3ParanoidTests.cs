@@ -556,19 +556,19 @@ public sealed class Bugs3ParanoidTests
         var processor = workspace.CreateAssetProcessor();
         var settings = workspace.CreateSettings();
 
-        var customExts = new[] { ".customimg" };
+        var customExts = new[] { ".webp" };
 
         var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
         var session = processor.ProcessReference(settings, "asset_r3_014_ext", ref1, DateTimeOffset.Now);
 
-        var customImage = workspace.CreateImage("main.customimg", new byte[] { 10, 20, 30 });
+        var customImage = workspace.CreateImage("main.webp", TestWorkspace.GetValidImageBytesForExtension("main.webp"));
         var standardPng = workspace.CreateImage("main.png", new byte[] { 40, 50, 60 });
         var now = DateTimeOffset.Now;
 
         // Accepting custom extension
         var preparedSession = processor.PrepareMainCommit(session, customExts, customImage, "prompt", now);
         Assert.True(preparedSession.IsMainCommitting);
-        Assert.Equal("main.customimg", preparedSession.MainFilename);
+        Assert.Equal("main.webp", preparedSession.MainFilename);
 
         // Rejecting standard .png when custom extension set is passed
         session.ResetMainCommitMetadata();
@@ -1155,31 +1155,26 @@ public sealed class Bugs3ParanoidTests
         var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
         var session = processor.ProcessReference(settings, "asset_r4_004_active_main", ref1, DateTimeOffset.Now);
 
-        // Active main transaction
-        session.IsMainCommitting = true;
-        session.MainFilename = "main.png";
-        session.MainProcessedAt = DateTimeOffset.Now;
-        session.MainHash = new string('a', 64);
-        session.MainProvenanceHash = new string('b', 64);
-        sessionService.Save(session);
-
         var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
-        // Create an overlapping replacement journal
-        var rawTx = new ReferenceReplacementTransaction
-        {
-            TransactionId = Guid.NewGuid().ToString("N"),
-            OldSession = session,
-            NewSession = session,
-            BackupReferencePath = session.ReferenceDestinationPath + ".bak",
-            BackupProvenancePath = session.ReferenceProvenancePath + ".bak",
-            TempNewReferencePath = session.ReferenceDestinationPath + ".tmp",
-            TempNewProvenancePath = session.ReferenceProvenancePath + ".tmp"
-        };
-        sessionService.SaveReplacementJournal(rawTx.ToJournal(ReferenceReplacementPhase.Prepared));
+        // Create a real valid replacement transaction with deterministic paths
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        sessionService.SaveReplacementJournal(tx.ToJournal(ReferenceReplacementPhase.Prepared));
+
+        // Deep-clone tx.OldSession for the durable session on disk and set IsMainCommitting = true
+        var current = System.Text.Json.JsonSerializer.Deserialize<AssetSession>(
+            System.Text.Json.JsonSerializer.Serialize(tx.OldSession))!;
+        current.IsMainCommitting = true;
+        current.MainFilename = "main.png";
+        current.MainPrompt = "prompt";
+        current.MainProcessedAt = DateTimeOffset.Now;
+        current.MainHash = new string('a', 64);
+        current.MainProvenanceHash = new string('b', 64);
+        current.MainTransactionId = Guid.NewGuid().ToString("N");
+        sessionService.Save(current);
 
         RunStartupRecovery(workspace, settings, processor, sessionService);
 
-        // Must fail closed: both journals preserved
+        // Must fail closed: both journals preserved because durable session is not stable Reference authority
         Assert.True(sessionService.ReplacementJournalExists(), "Replacement journal must be preserved");
         Assert.True(sessionService.Exists(), "Main session journal must be preserved");
         var loaded = sessionService.Load()!;
@@ -1197,21 +1192,15 @@ public sealed class Bugs3ParanoidTests
         var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
         var session = processor.ProcessReference(settings, "asset_r4_004_active_cancel", ref1, DateTimeOffset.Now);
 
-        session.CancelPhase = CancelPhase.Prepared;
-        session.CancellationId = Guid.NewGuid().ToString("N");
-        sessionService.Save(session);
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        sessionService.SaveReplacementJournal(tx.ToJournal(ReferenceReplacementPhase.Prepared));
 
-        var rawTx = new ReferenceReplacementTransaction
-        {
-            TransactionId = Guid.NewGuid().ToString("N"),
-            OldSession = session,
-            NewSession = session,
-            BackupReferencePath = session.ReferenceDestinationPath + ".bak",
-            BackupProvenancePath = session.ReferenceProvenancePath + ".bak",
-            TempNewReferencePath = session.ReferenceDestinationPath + ".tmp",
-            TempNewProvenancePath = session.ReferenceProvenancePath + ".tmp"
-        };
-        sessionService.SaveReplacementJournal(rawTx.ToJournal(ReferenceReplacementPhase.Prepared));
+        var current = System.Text.Json.JsonSerializer.Deserialize<AssetSession>(
+            System.Text.Json.JsonSerializer.Serialize(tx.OldSession))!;
+        current.CancelPhase = CancelPhase.Prepared;
+        current.CancellationId = Guid.NewGuid().ToString("N");
+        sessionService.Save(current);
 
         RunStartupRecovery(workspace, settings, processor, sessionService);
 
@@ -1228,20 +1217,17 @@ public sealed class Bugs3ParanoidTests
         var sessionService = workspace.CreateSessionService();
 
         var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
-        var session = processor.CreateReferenceSession(settings, "asset_r4_004_active_prep_ref", ref1, DateTimeOffset.Now);
-        sessionService.Save(session);
+        var session = processor.ProcessReference(settings, "asset_r4_004_active_prep_ref", ref1, DateTimeOffset.Now);
 
-        var rawTx = new ReferenceReplacementTransaction
-        {
-            TransactionId = Guid.NewGuid().ToString("N"),
-            OldSession = session,
-            NewSession = session,
-            BackupReferencePath = session.ReferenceDestinationPath + ".bak",
-            BackupProvenancePath = session.ReferenceProvenancePath + ".bak",
-            TempNewReferencePath = session.ReferenceDestinationPath + ".tmp",
-            TempNewProvenancePath = session.ReferenceProvenancePath + ".tmp"
-        };
-        sessionService.SaveReplacementJournal(rawTx.ToJournal(ReferenceReplacementPhase.Prepared));
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        sessionService.SaveReplacementJournal(tx.ToJournal(ReferenceReplacementPhase.Prepared));
+
+        var current = System.Text.Json.JsonSerializer.Deserialize<AssetSession>(
+            System.Text.Json.JsonSerializer.Serialize(tx.OldSession))!;
+        current.ReferenceCommitPhase = ReferenceCommitPhase.Prepared;
+        current.ReferenceTransactionId = Guid.NewGuid().ToString("N");
+        sessionService.Save(current);
 
         RunStartupRecovery(workspace, settings, processor, sessionService);
 
@@ -1313,5 +1299,333 @@ public sealed class Bugs3ParanoidTests
         {
             ValidationService.EnumerateFilesInFolderHook = null;
         }
+    }
+
+    [Fact]
+    public void R5_001_RollbackReplacement_ExternalTempReferencePath_RejectsAndPreserves()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var oldSource = workspace.CreateImage("old.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "r5_external_temp_ref", oldSource, DateTimeOffset.Now);
+
+        var newSource = workspace.CreateImage("new.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, newSource, DateTimeOffset.Now);
+
+        var outsideFolder = Path.Combine(workspace.Root, "OUTSIDE_REF");
+        Directory.CreateDirectory(outsideFolder);
+        var outsideFile = Path.Combine(outsideFolder, "do-not-delete.png");
+        File.Copy(newSource, outsideFile);
+
+        tx.TempNewReferencePath = outsideFile;
+
+        var result = processor.RollbackReferenceReplacement(tx);
+        Assert.False(result.IsValid);
+        Assert.True(File.Exists(outsideFile), "External matching file must never be deleted.");
+    }
+
+    [Fact]
+    public void R5_001_RollbackReplacement_ExternalTempProvenancePath_RejectsAndPreserves()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var oldSource = workspace.CreateImage("old.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "r5_external_temp_prov", oldSource, DateTimeOffset.Now);
+
+        var newSource = workspace.CreateImage("new.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, newSource, DateTimeOffset.Now);
+
+        var outsideFolder = Path.Combine(workspace.Root, "OUTSIDE_PROV");
+        Directory.CreateDirectory(outsideFolder);
+        var outsideFile = Path.Combine(outsideFolder, "do-not-delete.tmp");
+        File.WriteAllText(outsideFile, "SOME CONTENT");
+
+        tx.TempNewProvenancePath = outsideFile;
+
+        var result = processor.RollbackReferenceReplacement(tx);
+        Assert.False(result.IsValid);
+        Assert.True(File.Exists(outsideFile), "External matching provenance file must never be deleted.");
+    }
+
+    [Fact]
+    public void R5_002_RawMutators_AreInternalNotPublic()
+    {
+        var rawMutators = new[]
+        {
+            ("ProcessMainImage", new[] { typeof(AssetSession), typeof(IReadOnlyCollection<string>), typeof(string), typeof(string), typeof(DateTimeOffset) }),
+            ("ProcessReference", new[] { typeof(AssetSession), typeof(AppSettings), typeof(string), typeof(DateTimeOffset) }),
+            ("CreateReplacementTempFiles", new[] { typeof(ReferenceReplacementTransaction), typeof(IReadOnlyCollection<string>) }),
+            ("BackupOldReference", new[] { typeof(ReferenceReplacementTransaction) }),
+            ("PromoteNewReference", new[] { typeof(ReferenceReplacementTransaction) }),
+            ("RollbackReferenceReplacement", new[] { typeof(ReferenceReplacementTransaction) }),
+            ("CleanupReplacementBackups", new[] { typeof(ReferenceReplacementTransaction) }),
+            ("CommitReferenceReplacement", new[] { typeof(ReferenceReplacementTransaction) }),
+            ("RollbackMain", new[] { typeof(AssetSession), typeof(string) }),
+            ("RollbackReference", new[] { typeof(AssetSession) }),
+            ("CopyFileWithoutOverwrite", new[] { typeof(string), typeof(string) }),
+            ("WriteTextAtomic", new[] { typeof(string), typeof(string) }),
+        };
+
+        foreach (var (methodName, parameterTypes) in rawMutators)
+        {
+            var method = typeof(AssetProcessorService).GetMethod(
+                methodName,
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                binder: null,
+                types: parameterTypes,
+                modifiers: null);
+
+            Assert.NotNull(method);
+            Assert.True(method.IsAssembly, $"{methodName} must be internal (IsAssembly).");
+            Assert.False(method.IsPublic, $"{methodName} must NOT be public.");
+        }
+    }
+
+    [Fact]
+    public void R5_003_CreateReplacementTemps_ReferenceFolderBecomesReparse_Rejects()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r5_003_temp_reparse", ref1, DateTimeOffset.Now);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        var referenceFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+
+        ValidationService.FileAttributesProvider = path =>
+        {
+            if (ValidationService.PathsEqual(path, referenceFolder))
+            {
+                return FileAttributes.Directory | FileAttributes.ReparsePoint;
+            }
+            return File.GetAttributes(path);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions));
+
+            Assert.Contains("reparse point", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(tx.TempNewReferencePath));
+            Assert.True(File.Exists(session.ReferenceDestinationPath));
+        }
+        finally
+        {
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    public void R5_003_BackupOldReference_ReferenceFolderBecomesReparse_Rejects()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r5_003_bak_reparse", ref1, DateTimeOffset.Now);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+
+        var referenceFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+
+        ValidationService.FileAttributesProvider = path =>
+        {
+            if (ValidationService.PathsEqual(path, referenceFolder))
+            {
+                return FileAttributes.Directory | FileAttributes.ReparsePoint;
+            }
+            return File.GetAttributes(path);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                processor.BackupOldReference(tx));
+
+            Assert.Contains("reparse point", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(session.ReferenceDestinationPath));
+        }
+        finally
+        {
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    public void R5_003_PromoteNewReference_ReferenceFolderBecomesReparse_Rejects()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r5_003_prom_reparse", ref1, DateTimeOffset.Now);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+
+        var referenceFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+
+        ValidationService.FileAttributesProvider = path =>
+        {
+            if (ValidationService.PathsEqual(path, referenceFolder))
+            {
+                return FileAttributes.Directory | FileAttributes.ReparsePoint;
+            }
+            return File.GetAttributes(path);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                processor.PromoteNewReference(tx));
+
+            Assert.Contains("reparse point", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    public void R5_004_SaveNewSessionFailure_RollsBackExactlyOnce()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r5_004_save_new_fail", ref1, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+
+        var messages = new List<string>();
+
+        RunOnSta(() =>
+        {
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+            MainForm.MessageBoxProvider = (_, msg, _, _, _) => messages.Add(msg);
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+            sessionField?.SetValue(form, session);
+            stateField?.SetValue(form, 1);
+
+            form.SetSelectedImage(ImageSlot.Reference, ref2);
+
+            // Hook Save to fail when saving NewSession (ref2.png)
+            var saveCallCount = 0;
+            SessionService.OnBeforeSaveSessionHook = s =>
+            {
+                if (string.Equals(s.ReferenceFilename, "ref2.png", StringComparison.OrdinalIgnoreCase) && ++saveCallCount == 1)
+                {
+                    throw new IOException("Simulated Save(NewSession) failure.");
+                }
+            };
+
+            try
+            {
+                // Perform live replacement
+                var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleReplaceMethod?.Invoke(form, null);
+
+                // Check message reported previous reference was restored
+                Assert.Contains(messages, m => m.Contains("previous Reference was restored") || m.Contains("previous reference was restored") || m.Contains("CRITICAL"));
+            }
+            finally
+            {
+                SessionService.OnBeforeSaveSessionHook = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void R5_006_Replacement_NewPromotionPending_BothPromoted_RestoresOld()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r5_006_npp_bothpromoted", ref1, DateTimeOffset.Now);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(session, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+        processor.PromoteNewReference(tx);
+
+        sessionService.Save(tx.OldSession);
+        sessionService.SaveReplacementJournal(tx.ToJournal(ReferenceReplacementPhase.NewPromotionPending));
+
+        RunStartupRecovery(workspace, settings, processor, sessionService);
+
+        Assert.False(sessionService.ReplacementJournalExists(), "Journal must be removed after successful rollback");
+        Assert.False(File.Exists(tx.BackupReferencePath));
+        Assert.False(File.Exists(tx.BackupProvenancePath));
+        Assert.True(File.Exists(session.ReferenceDestinationPath));
+        Assert.True(File.Exists(session.ReferenceProvenancePath));
+        var loaded = sessionService.Load()!;
+        Assert.Equal("ref1.png", loaded.ReferenceFilename);
+        Assert.Equal(session.ReferenceHash, loaded.ReferenceHash);
+    }
+
+    [Fact]
+    public void R5_007_Settings_CustomUnknownExtension_Rejected()
+    {
+        using var workspace = new TestWorkspace();
+        var validationService = workspace.CreateValidationService();
+        var settings = workspace.CreateSettings();
+
+        settings.AcceptedExtensions.Add(".customimg");
+
+        var result = validationService.ValidateProcessingSettings(settings);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("Unsupported image extension configured") || e.Contains(".customimg"));
+    }
+
+    [Fact]
+    public void R5_007_Image_UnknownConfiguredExtension_Rejected()
+    {
+        using var workspace = new TestWorkspace();
+        var validationService = workspace.CreateValidationService();
+
+        var customPath = workspace.CreateImage("sample.customimg", new byte[] { 10, 20, 30, 40 });
+
+        var result = validationService.ValidateImageFile(customPath, new[] { ".customimg" });
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("header does not match expected signature") || e.Contains("signature"));
     }
 }

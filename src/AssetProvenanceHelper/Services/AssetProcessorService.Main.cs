@@ -201,7 +201,7 @@ public sealed partial class AssetProcessorService
         return session;
     }
 
-    public string ProcessMainImage(
+    internal string ProcessMainImage(
         AssetSession session,
         IReadOnlyCollection<string> acceptedExtensions,
         string sourceImagePath,
@@ -741,7 +741,7 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    public ValidationResult RollbackMain(
+    internal ValidationResult RollbackMain(
         AssetSession session,
         string? mainFilename = null)
     {
