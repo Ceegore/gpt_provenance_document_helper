@@ -117,35 +117,33 @@ partial class MainForm
             return;
         }
 
-        string sourceImageHash;
-        try
+        var destValidation = _validationService.ValidateMainDestinationAvailability(
+            session,
+            settings.AcceptedExtensions,
+            sourceImage);
+
+        if (!destValidation.IsValid)
         {
-            sourceImageHash = _assetProcessorService.ComputeSha256(sourceImage);
-        }
-        catch (Exception ex)
-        {
-            ShowError("Failed to compute hash for main source image.", ex);
+            ShowValidationError(
+                "Main image destination is unavailable",
+                destValidation);
             return;
         }
 
-        var mainFilename = Path.GetFileName(sourceImage);
-        var dateStr = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var finalProv = _templateService.RenderFinal(
-            mainFilename,
-            session.ReferenceFilename,
-            session.ProjectName,
-            dateStr,
-            prompt);
-        var mainProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(finalProv))).ToLowerInvariant();
-
-        session.IsMainCommitting = true;
-        session.MainFilename = mainFilename;
-        session.MainProvenanceHash = mainProvHash;
-        session.MainPrompt = prompt;
-        session.MainProcessedAt = processedAt;
-        session.MainHash = sourceImageHash;
-        session.MainTransactionId = Guid.NewGuid().ToString("N");
-        session.WasIngameFolderCreatedByTool = !Directory.Exists(session.GetIngameFolderPath());
+        try
+        {
+            _assetProcessorService.PrepareMainCommit(
+                session,
+                settings.AcceptedExtensions,
+                sourceImage,
+                prompt,
+                processedAt);
+        }
+        catch (Exception prepEx)
+        {
+            ShowError("Could not prepare Main image commit.", prepEx);
+            return;
+        }
 
         try
         {
@@ -201,9 +199,57 @@ partial class MainForm
                     return;
                 }
 
-                throw new IOException(
-                    "Main Image was rolled back because session.json could not be removed.",
-                    deleteException);
+                if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted)
+                {
+                    try
+                    {
+                        // Replaces the still-durable active Main journal with the recovered Reference session.
+                        _sessionService.Save(session);
+
+                        _currentSession = session;
+                        _state = UiState.ReferenceReady;
+
+                        ApplyState();
+
+                        ShowError(
+                            "The asset could not be finalized because session.json could not be removed. "
+                            + "Main outputs were rolled back and the Reference session was restored.",
+                            deleteException);
+
+                        return;
+                    }
+                    catch (Exception saveException)
+                    {
+                        ShowError(
+                            "CRITICAL: Main output rollback succeeded but the recovered Reference session could not be persisted.",
+                            saveException);
+
+                        Close();
+                        return;
+                    }
+                }
+                else
+                {
+                    // NoReference mode: No stable session should remain
+                    try
+                    {
+                        _sessionService.Delete();
+
+                        _currentSession = null;
+                        _state = UiState.Idle;
+                        ApplyState();
+                        return;
+                    }
+                    catch (Exception retryDeleteException)
+                    {
+                        ShowError(
+                            "CRITICAL: Main outputs were rolled back, but the NoReference journal could not be deleted.",
+                            retryDeleteException);
+
+                        Close();
+                        return;
+                    }
+                }
             }
 
             _lastCompletedAssetFolderPath = session.AssetFolder;

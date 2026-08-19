@@ -3250,18 +3250,14 @@ public sealed class RegressionTests
             Assert.NotNull(handleReplaceMethod);
             handleReplaceMethod.Invoke(form, null);
 
-            // Verify old session was restored
-            var currentSession = sessionField?.GetValue(form) as AssetSession;
-            Assert.NotNull(currentSession);
-            Assert.Equal("ref1.png", currentSession.ReferenceFilename);
+            // Per R3-003: On cleanup failure, CleanupPending journal is preserved
+            Assert.True(sessionService.ReplacementJournalExists());
+            var journal = sessionService.LoadReplacementJournal();
+            Assert.NotNull(journal);
+            Assert.Equal(ReferenceReplacementPhase.CleanupPending, journal.Phase);
 
-            var loadedSession = sessionService.Load();
-            Assert.NotNull(loadedSession);
-            Assert.Equal("ref1.png", loadedSession.ReferenceFilename);
-            Assert.Equal(File.ReadAllBytes(ref1), File.ReadAllBytes(loadedSession.ReferenceDestinationPath));
-
-            // Verify error message was displayed and NOT success warning
-            Assert.Contains(messages, m => m.Contains("Reference replacement failed") || m.Contains("previous reference state was restored"));
+            // Verify error message was displayed and NOT success
+            Assert.Contains(messages, m => m.Contains("cleanup") || m.Contains("CleanupPending"));
             Assert.DoesNotContain(messages, m => m.Contains("Reference replacement succeeded"));
 
             MainForm.OnBeforeReferenceReplacementCommit = null;
@@ -3324,18 +3320,14 @@ public sealed class RegressionTests
                 Assert.NotNull(handleReplaceMethod);
                 handleReplaceMethod.Invoke(form, null);
 
-                // Verify NewSession is retained as active and valid
-                var currentSession = sessionField?.GetValue(form) as AssetSession;
-                Assert.NotNull(currentSession);
-                Assert.Equal("ref2.png", currentSession.ReferenceFilename);
+                // Per R3-003: On cleanup failure, CleanupPending journal is preserved
+                Assert.True(sessionService.ReplacementJournalExists());
+                var journal = sessionService.LoadReplacementJournal();
+                Assert.NotNull(journal);
+                Assert.Equal(ReferenceReplacementPhase.CleanupPending, journal.Phase);
 
-                var loadedSession = sessionService.Load();
-                Assert.NotNull(loadedSession);
-                Assert.Equal("ref2.png", loadedSession.ReferenceFilename);
-                Assert.Equal(File.ReadAllBytes(ref2), File.ReadAllBytes(loadedSession.ReferenceDestinationPath));
-
-                // Verify warning was displayed
-                Assert.Contains(messages, m => m.Contains("Reference replacement succeeded, but old temporary backup files could not be fully cleaned up"));
+                // Verify cleanup failure message was displayed
+                Assert.Contains(messages, m => m.Contains("cleanup") || m.Contains("CleanupPending"));
             }
             finally
             {
@@ -4938,7 +4930,7 @@ public sealed class RegressionTests
         string? capturedTemp = null;
 
         var processedAt = DateTimeOffset.Now;
-        processor.PrepareMainCommit(session, main1, "prompt", processedAt);
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, main1, "prompt", processedAt);
 
         try
         {

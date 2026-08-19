@@ -1033,14 +1033,94 @@ public sealed partial class ValidationService
     }
 
     /// <summary>
-    /// R2-001: Validates a replacement journal's structural integrity before any recovery mutation.
+    /// R3-007: Preflights Main destination availability without mutations.
+    /// Used before durable active Main journal persistence to avoid false rollback failures.
+    /// </summary>
+    public ValidationResult ValidateMainDestinationAvailability(
+        AssetSession session,
+        IReadOnlyCollection<string> acceptedExtensions,
+        string sourceImagePath)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(acceptedExtensions);
+        ArgumentNullException.ThrowIfNull(sourceImagePath);
+
+        var errors = new List<string>();
+
+        var mainFilename = Path.GetFileName(sourceImagePath);
+        var rootMain = Path.Combine(session.AssetFolder, mainFilename);
+        var finalProvenance = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
+        var ingameFolder = session.GetIngameFolderPath();
+
+        if (File.Exists(rootMain))
+        {
+            errors.Add($"Main image destination already exists: {rootMain}");
+        }
+
+        if (File.Exists(finalProvenance))
+        {
+            errors.Add($"Final provenance already exists: {finalProvenance}");
+        }
+
+        if (Directory.Exists(ingameFolder) && IsReparsePoint(ingameFolder))
+        {
+            errors.Add("Ingame folder is a reparse point.");
+        }
+
+        if (Directory.Exists(ingameFolder))
+        {
+            foreach (var path in Directory.EnumerateFiles(
+                         ingameFolder,
+                         "*",
+                         SearchOption.TopDirectoryOnly))
+            {
+                var ext = Path.GetExtension(path);
+                var stem = Path.GetFileNameWithoutExtension(path);
+
+                if (acceptedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
+                    && string.Equals(stem, session.AssetFolderName, StringComparison.OrdinalIgnoreCase))
+                {
+                    errors.Add($"An ingame asset variant already exists: {path}");
+                }
+            }
+        }
+
+        return errors.Count == 0
+            ? ValidationResult.Success()
+            : ValidationResult.Failure(errors);
+    }
+
+    private static bool IsSha256Hex(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Length == 64
+            && value.All(Uri.IsHexDigit);
+    }
+
+    /// <summary>
+    /// R2-001/R3-010: Validates a replacement journal's structural integrity before any recovery mutation.
     /// Proves all 14 path/phase/reparse constraints before trusting journal paths.
+    /// Safely wraps all path operations against untrusted user data.
     /// </summary>
     public ValidationResult ValidateReferenceReplacementJournal(
         ReferenceReplacementJournal journal)
     {
         ArgumentNullException.ThrowIfNull(journal);
 
+        try
+        {
+            return ValidateReferenceReplacementJournalCore(journal);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                "Replacement journal contains invalid or unusable path metadata: " + ex.Message);
+        }
+    }
+
+    private ValidationResult ValidateReferenceReplacementJournalCore(
+        ReferenceReplacementJournal journal)
+    {
         var errors = new List<string>();
 
         if (!Enum.IsDefined(typeof(ReferenceReplacementPhase), journal.Phase))
@@ -1207,10 +1287,27 @@ public sealed partial class ValidationService
     }
 
     /// <summary>
-    /// R2-003: Validates a session in ReferenceCommitPhase.Prepared without requiring files to exist on disk.
+    /// R2-003/R3-010: Validates a session in ReferenceCommitPhase.Prepared without requiring files to exist on disk.
     /// Used during startup recovery BEFORE running the full ValidateSession which would reject in-progress sessions.
+    /// Safely wraps all path operations against untrusted user data and requires complete authority hashes.
     /// </summary>
     public ValidationResult ValidatePreparedReferenceSession(
+        AssetSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        try
+        {
+            return ValidatePreparedReferenceSessionCore(session);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                "Prepared reference session contains invalid or unusable path metadata: " + ex.Message);
+        }
+    }
+
+    private ValidationResult ValidatePreparedReferenceSessionCore(
         AssetSession session)
     {
         var errors = new List<string>();
@@ -1232,6 +1329,26 @@ public sealed partial class ValidationService
             errors.Add("ReferenceTransactionId must be exactly 32 hexadecimal characters.");
         }
 
+        if (string.IsNullOrWhiteSpace(session.ProjectName))
+        {
+            errors.Add("Prepared session ProjectName is missing.");
+        }
+
+        if (session.ReferenceProcessedAt == default)
+        {
+            errors.Add("Prepared session ReferenceProcessedAt is missing.");
+        }
+
+        if (session.CancelPhase != CancelPhase.None)
+        {
+            errors.Add("Prepared session CancelPhase must be None.");
+        }
+
+        if (session.IsMainCommitting)
+        {
+            errors.Add("Prepared session must not have active Main commit state.");
+        }
+
         // Validate path security (does not require directories to exist)
         var pathValidation = ValidateSessionPathsForDestructiveOperation(session);
         if (!pathValidation.IsValid)
@@ -1239,18 +1356,14 @@ public sealed partial class ValidationService
             errors.AddRange(pathValidation.Errors);
         }
 
-        if (!string.IsNullOrWhiteSpace(session.ReferenceHash)
-            && (session.ReferenceHash.Length != 64
-                || session.ReferenceHash.Any(c => !Uri.IsHexDigit(c))))
+        if (!IsSha256Hex(session.ReferenceHash))
         {
-            errors.Add("ReferenceHash must be exactly 64 hexadecimal characters.");
+            errors.Add("Prepared ReferenceHash is missing or invalid.");
         }
 
-        if (!string.IsNullOrWhiteSpace(session.ReferenceProvenanceHash)
-            && (session.ReferenceProvenanceHash.Length != 64
-                || session.ReferenceProvenanceHash.Any(c => !Uri.IsHexDigit(c))))
+        if (!IsSha256Hex(session.ReferenceProvenanceHash))
         {
-            errors.Add("ReferenceProvenanceHash must be exactly 64 hexadecimal characters.");
+            errors.Add("Prepared ReferenceProvenanceHash is missing or invalid.");
         }
 
         return errors.Count == 0

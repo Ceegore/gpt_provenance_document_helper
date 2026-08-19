@@ -271,7 +271,7 @@ public static class TestExtensions
         string prompt,
         DateTimeOffset processedAt)
     {
-        processor.PrepareMainCommit(session, sourceImagePath, prompt, processedAt);
+        processor.PrepareMainCommit(session, acceptedExtensions, sourceImagePath, prompt, processedAt);
         return processor.ProcessMainImage(session, acceptedExtensions, sourceImagePath, prompt, processedAt);
     }
 }

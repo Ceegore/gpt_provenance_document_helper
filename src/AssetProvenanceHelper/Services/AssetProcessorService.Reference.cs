@@ -515,7 +515,10 @@ public sealed partial class AssetProcessorService
         return CommitReferenceReplacement(transaction);
     }
 
-    public ReferenceReplacementTransaction PrepareReferenceReplacement(
+    /// <summary>
+    /// Test convenience overload. Internalized to prevent production callers from bypassing durable session persistence (R3-011).
+    /// </summary>
+    internal ReferenceReplacementTransaction PrepareReferenceReplacement(
         AssetSession oldSession,
         IReadOnlyCollection<string> acceptedExtensions,
         string newSourceImagePath,
@@ -882,27 +885,45 @@ public sealed partial class AssetProcessorService
             try
             {
                 var tempRefHash = ComputeSha256(transaction.TempNewReferencePath);
-                if (string.Equals(tempRefHash, transaction.NewSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(tempRefHash, transaction.NewSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    errors.Add(
+                        "Replacement temp Reference no longer matches NewSession.ReferenceHash. Unknown file was preserved.");
+                }
+                else
                 {
                     TryDeleteFileWithError(transaction.TempNewReferencePath, errors);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Preserve unknown/unreadable temp
+                errors.Add($"Could not verify replacement temp Reference: {ex.Message}");
             }
         }
 
         if (!string.IsNullOrWhiteSpace(transaction.TempNewProvenancePath) && File.Exists(transaction.TempNewProvenancePath))
         {
-            var tempProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
-                transaction.NewSession,
-                transaction.TempNewProvenancePath,
-                _templateService);
-
-            if (tempProvValidation.IsValid)
+            try
             {
-                TryDeleteFileWithError(transaction.TempNewProvenancePath, errors);
+                var tempProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
+                    transaction.NewSession,
+                    transaction.TempNewProvenancePath,
+                    _templateService);
+
+                if (!tempProvValidation.IsValid)
+                {
+                    errors.Add(
+                        "Replacement temp provenance does not match NewSession provenance authority: "
+                        + string.Join("; ", tempProvValidation.Errors));
+                }
+                else
+                {
+                    TryDeleteFileWithError(transaction.TempNewProvenancePath, errors);
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"Could not verify replacement temp provenance: {ex.Message}");
             }
         }
 

@@ -151,7 +151,7 @@ public sealed class ChangeV11MainProcessorTests
         var mainSource = workspace.CreateImage("ChatGPT main.png", new byte[] { 4, 5, 6, 7 });
         var processedAt = DateTimeOffset.UtcNow;
 
-        processor.PrepareMainCommit(session, mainSource, "Reference-based prompt", processedAt);
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "Reference-based prompt", processedAt);
 
         var resultName = processor.ProcessMainImage(
             session,
@@ -226,7 +226,7 @@ public sealed class ChangeV11MainProcessorTests
         var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6, 7 });
         var processedAt = DateTimeOffset.UtcNow;
 
-        processor.PrepareMainCommit(session, mainSource, "Prompt", processedAt);
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "Prompt", processedAt);
 
         processor.ProcessMainImage(
             session,

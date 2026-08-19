@@ -310,28 +310,6 @@ partial class MainForm
                 return;
             }
 
-            var refExists = File.Exists(session.ReferenceDestinationPath);
-            var provExists = File.Exists(session.ReferenceProvenancePath);
-
-            if (!refExists && !provExists)
-            {
-                try
-                {
-                    _sessionService.Delete();
-                    AddStatus($"Unfinished Reference creation journal for '{session.AssetFolderName}' removed.");
-                    _currentSession = null;
-                    _state = UiState.Idle;
-                    ApplyState();
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    ShowError("Could not delete reference creation journal.", ex);
-                    Close();
-                    return;
-                }
-            }
-
             var rollback = _assetProcessorService.RollbackReference(session);
             if (rollback.IsValid)
             {
@@ -479,7 +457,7 @@ partial class MainForm
             }
         }
 
-        var resumeValidation = _validationService.ValidateReferenceOutput(session);
+        var resumeValidation = _validationService.ValidateExactReferenceOutput(session, _templateService);
         if (!resumeValidation.IsValid)
         {
             var deleteCorruptSession = TwoChoiceDialog.ShowChoice(
@@ -526,8 +504,8 @@ partial class MainForm
     }
 
     /// <summary>
-    /// R2-001: Validates the replacement journal structure before any recovery mutation,
-    /// then recovers/completes the interrupted replacement transaction.
+    /// R3-001/R3-002/R3-003/R3-005: Validates the replacement journal structure and session authority,
+    /// then either rolls back or commits forward using ownership-checked processor methods.
     /// Returns false if the application should close due to an unrecoverable error.
     /// </summary>
     private bool RecoverReferenceReplacementJournalIfPresent()
@@ -540,369 +518,272 @@ partial class MainForm
         ReferenceReplacementJournal? journal;
         try
         {
-            journal = _sessionService.LoadReplacementJournal();
+            journal = _sessionService.LoadReplacementJournal()
+                ?? throw new InvalidDataException("Replacement journal is empty.");
         }
         catch (Exception ex)
         {
-            ShowMessageBox(
-                "CRITICAL: The replacement journal could not be read.\n\n" + ex.Message,
-                "Critical Replacement Recovery Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
-            Close();
+            return FailReplacementRecovery("Replacement journal could not be read.", ex);
+        }
+
+        ValidationResult structural;
+        try
+        {
+            structural = _validationService.ValidateReferenceReplacementJournal(journal);
+        }
+        catch (Exception ex)
+        {
+            return FailReplacementRecovery("Replacement journal validation threw unexpectedly.", ex);
+        }
+
+        if (!structural.IsValid)
+        {
+            return FailReplacementRecovery(
+                string.Join(Environment.NewLine, structural.Errors));
+        }
+
+        AssetSession? current = null;
+        if (_sessionService.Exists())
+        {
+            try
+            {
+                current = _sessionService.Load();
+            }
+            catch (Exception ex)
+            {
+                return FailReplacementRecovery(
+                    "session.json could not be read while a replacement journal exists.",
+                    ex);
+            }
+        }
+
+        var oldAuthority = MatchesReferenceAuthority(current, journal.OldSession);
+        var newAuthority = MatchesReferenceAuthority(current, journal.NewSession);
+
+        if (oldAuthority && newAuthority)
+        {
+            return FailReplacementRecovery(
+                "Old and New replacement authorities are not distinguishable.");
+        }
+
+        switch (journal.Phase)
+        {
+            case ReferenceReplacementPhase.Prepared:
+            case ReferenceReplacementPhase.OldBackupPending:
+            case ReferenceReplacementPhase.OldBackedUp:
+            case ReferenceReplacementPhase.NewPromotionPending:
+                if (!oldAuthority)
+                {
+                    return FailReplacementRecovery(
+                        "Durable session does not match OLD authority for rollback phase.");
+                }
+
+                return RollBackReplacementJournal(journal);
+
+            case ReferenceReplacementPhase.NewPromoted:
+            case ReferenceReplacementPhase.SessionSwitchPending:
+                if (oldAuthority)
+                {
+                    return RollBackReplacementJournal(journal);
+                }
+
+                if (newAuthority)
+                {
+                    return FinishReplacementCommit(journal);
+                }
+
+                return FailReplacementRecovery(
+                    "Boundary phase has neither OLD nor NEW durable session authority.");
+
+            case ReferenceReplacementPhase.SessionSwitched:
+            case ReferenceReplacementPhase.CleanupPending:
+                if (!newAuthority)
+                {
+                    return FailReplacementRecovery(
+                        "Durable session does not match NEW authority for commit phase.");
+                }
+
+                return FinishReplacementCommit(journal);
+
+            default:
+                return FailReplacementRecovery(
+                    $"Unknown replacement phase: {(int)journal.Phase}");
+        }
+    }
+
+    private static bool MatchesReferenceAuthority(
+        AssetSession? actual,
+        AssetSession expected)
+    {
+        if (actual is null)
+        {
             return false;
         }
 
-        if (journal is null)
-        {
-            _sessionService.DeleteReplacementJournal();
-            return true;
-        }
+        return
+            actual.WorkflowMode == expected.WorkflowMode
+            && string.Equals(
+                actual.ProjectName,
+                expected.ProjectName,
+                StringComparison.Ordinal)
+            && ValidationService.PathsEqual(
+                actual.AssetRootFolder,
+                expected.AssetRootFolder)
+            && string.Equals(
+                actual.AssetFolderName,
+                expected.AssetFolderName,
+                StringComparison.Ordinal)
+            && ValidationService.PathsEqual(
+                actual.AssetFolder,
+                expected.AssetFolder)
+            && string.Equals(
+                actual.ReferenceFilename,
+                expected.ReferenceFilename,
+                StringComparison.Ordinal)
+            && ValidationService.PathsEqual(
+                actual.ReferenceDestinationPath,
+                expected.ReferenceDestinationPath)
+            && ValidationService.PathsEqual(
+                actual.ReferenceProvenancePath,
+                expected.ReferenceProvenancePath)
+            && string.Equals(
+                actual.ReferenceHash,
+                expected.ReferenceHash,
+                StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                actual.ReferenceProvenanceHash,
+                expected.ReferenceProvenanceHash,
+                StringComparison.OrdinalIgnoreCase)
+            && actual.ReferenceProcessedAt.EqualsExact(expected.ReferenceProcessedAt);
+    }
 
-        // R2-001: Validate the journal structure BEFORE trusting any paths
-        var journalValidation = _validationService.ValidateReferenceReplacementJournal(journal);
-        if (!journalValidation.IsValid)
+    private static ReferenceReplacementTransaction TransactionFromJournal(
+        ReferenceReplacementJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+
+        return new ReferenceReplacementTransaction
+        {
+            TransactionId = journal.TransactionId,
+            OldSession = journal.OldSession,
+            NewSession = journal.NewSession,
+            BackupReferencePath = journal.BackupReferencePath,
+            BackupProvenancePath = journal.BackupProvenancePath,
+            TempNewReferencePath = journal.TempNewReferencePath,
+            TempNewProvenancePath = journal.TempNewProvenancePath
+        };
+    }
+
+    private bool RollBackReplacementJournal(
+        ReferenceReplacementJournal journal)
+    {
+        var transaction = TransactionFromJournal(journal);
+
+        var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
+
+        if (!rollback.IsValid)
         {
             ShowMessageBox(
-                "CRITICAL: The replacement journal failed structural validation and cannot be trusted.\n\n"
-                + string.Join(Environment.NewLine, journalValidation.Errors)
-                + "\n\nThe journal has been preserved. Please inspect the asset folder before deleting it manually.",
+                "CRITICAL: The interrupted Reference replacement could not be safely rolled back."
+                + Environment.NewLine
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, rollback.Errors)
+                + Environment.NewLine
+                + Environment.NewLine
+                + "The replacement journal was preserved.",
                 "Critical Replacement Recovery Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+
             Close();
             return false;
         }
 
         try
         {
-            switch (journal.Phase)
-            {
-                case ReferenceReplacementPhase.Prepared:
-                    // No canonical mutations occurred; only temp files may exist
-                    if (File.Exists(journal.TempNewReferencePath))
-                    {
-                        File.Delete(journal.TempNewReferencePath);
-                    }
-                    if (File.Exists(journal.TempNewProvenancePath))
-                    {
-                        File.Delete(journal.TempNewProvenancePath);
-                    }
-                    _sessionService.DeleteReplacementJournal();
-                    AddStatus("Unfinished reference replacement (Phase Prepared) was rolled back.");
-                    break;
-
-                case ReferenceReplacementPhase.CleanupPending:
-                    var exactCleanup = _validationService.ValidateExactReferenceOutput(journal.NewSession, _templateService);
-                    if (!exactCleanup.IsValid)
-                    {
-                        throw new InvalidDataException("New reference files are invalid or modified: " + string.Join("; ", exactCleanup.Errors));
-                    }
-
-                    if (File.Exists(journal.BackupReferencePath)) File.Delete(journal.BackupReferencePath);
-                    if (File.Exists(journal.BackupProvenancePath)) File.Delete(journal.BackupProvenancePath);
-
-                    _sessionService.DeleteReplacementJournal();
-                    AddStatus("Interrupted reference replacement (Phase CleanupPending) cleanup completed.");
-                    break;
-
-                case ReferenceReplacementPhase.OldBackupPending:
-                    // Backup was about to start; may be partial. Restore any backups, delete temps.
-                    RestoreReferenceImageFailClosed(
-                        journal.BackupReferencePath,
-                        journal.OldSession.ReferenceDestinationPath,
-                        journal.OldSession.ReferenceHash);
-
-                    RestoreReferenceProvenanceFailClosed(
-                        journal.BackupProvenancePath,
-                        journal.OldSession.ReferenceProvenancePath,
-                        journal.OldSession,
-                        _templateService);
-
-                    if (File.Exists(journal.TempNewReferencePath))
-                    {
-                        File.Delete(journal.TempNewReferencePath);
-                    }
-                    if (File.Exists(journal.TempNewProvenancePath))
-                    {
-                        File.Delete(journal.TempNewProvenancePath);
-                    }
-                    _sessionService.Save(journal.OldSession);
-                    _sessionService.DeleteReplacementJournal();
-                    AddStatus("Interrupted reference replacement (Phase OldBackupPending) was restored to previous reference.");
-                    break;
-
-                case ReferenceReplacementPhase.OldBackedUp:
-                    // Old files are in backup paths; new temp files may exist; restore old.
-                    RestoreReferenceProvenanceFailClosed(
-                        journal.BackupProvenancePath,
-                        journal.OldSession.ReferenceProvenancePath,
-                        journal.OldSession,
-                        _templateService);
-
-                    RestoreReferenceImageFailClosed(
-                        journal.BackupReferencePath,
-                        journal.OldSession.ReferenceDestinationPath,
-                        journal.OldSession.ReferenceHash);
-
-                    if (File.Exists(journal.TempNewReferencePath))
-                    {
-                        File.Delete(journal.TempNewReferencePath);
-                    }
-                    if (File.Exists(journal.TempNewProvenancePath))
-                    {
-                        File.Delete(journal.TempNewProvenancePath);
-                    }
-
-                    _sessionService.Save(journal.OldSession);
-                    _sessionService.DeleteReplacementJournal();
-                    AddStatus("Interrupted reference replacement (Phase OldBackedUp) was restored to previous reference.");
-                    break;
-
-                case ReferenceReplacementPhase.NewPromotionPending:
-                    // Promotion was about to start; may be partial. Restore old from backups.
-                    RestoreReferenceProvenanceFailClosed(
-                        journal.BackupProvenancePath,
-                        journal.OldSession.ReferenceProvenancePath,
-                        journal.OldSession,
-                        _templateService);
-
-                    RestoreReferenceImageFailClosed(
-                        journal.BackupReferencePath,
-                        journal.OldSession.ReferenceDestinationPath,
-                        journal.OldSession.ReferenceHash);
-
-                    // Clean up any partially promoted new files
-                    if (File.Exists(journal.NewSession.ReferenceDestinationPath))
-                    {
-                        File.Delete(journal.NewSession.ReferenceDestinationPath);
-                    }
-                    if (File.Exists(journal.NewSession.ReferenceProvenancePath)
-                        && !ValidationService.PathsEqual(
-                            journal.NewSession.ReferenceProvenancePath,
-                            journal.OldSession.ReferenceProvenancePath))
-                    {
-                        File.Delete(journal.NewSession.ReferenceProvenancePath);
-                    }
-
-                    _sessionService.Save(journal.OldSession);
-                    _sessionService.DeleteReplacementJournal();
-                    AddStatus("Interrupted reference replacement (Phase NewPromotionPending) was restored to previous reference.");
-                    break;
-
-                case ReferenceReplacementPhase.NewPromoted:
-                    var currentSessionForNewPromoted = _sessionService.Exists() ? _sessionService.Load() : null;
-                    var sessionSwitchedForNewPromoted = currentSessionForNewPromoted != null &&
-                        string.Equals(currentSessionForNewPromoted.ReferenceFilename, journal.NewSession.ReferenceFilename, StringComparison.Ordinal);
-
-                    if (sessionSwitchedForNewPromoted)
-                    {
-                        // Session already switched to new; commit forward
-                        var exactNew = _validationService.ValidateExactReferenceOutput(journal.NewSession, _templateService);
-                        if (!exactNew.IsValid)
-                        {
-                            throw new InvalidDataException("New reference files are invalid or modified: " + string.Join("; ", exactNew.Errors));
-                        }
-
-                        if (File.Exists(journal.BackupReferencePath)) File.Delete(journal.BackupReferencePath);
-                        if (File.Exists(journal.BackupProvenancePath)) File.Delete(journal.BackupProvenancePath);
-
-                        _sessionService.DeleteReplacementJournal();
-                        AddStatus("Interrupted reference replacement (Phase NewPromoted) completed.");
-                    }
-                    else
-                    {
-                        // Session not yet switched; roll back to old
-                        RestoreReferenceProvenanceFailClosed(
-                            journal.BackupProvenancePath,
-                            journal.OldSession.ReferenceProvenancePath,
-                            journal.OldSession,
-                            _templateService);
-
-                        RestoreReferenceImageFailClosed(
-                            journal.BackupReferencePath,
-                            journal.OldSession.ReferenceDestinationPath,
-                            journal.OldSession.ReferenceHash);
-
-                        // Clean up new promoted files
-                        if (File.Exists(journal.NewSession.ReferenceDestinationPath))
-                        {
-                            File.Delete(journal.NewSession.ReferenceDestinationPath);
-                        }
-
-                        _sessionService.Save(journal.OldSession);
-                        _sessionService.DeleteReplacementJournal();
-                        AddStatus("Interrupted reference replacement (Phase NewPromoted) was rolled back to previous reference.");
-                    }
-                    break;
-
-                case ReferenceReplacementPhase.SessionSwitchPending:
-                    var currentSessionForSwitch = _sessionService.Exists() ? _sessionService.Load() : null;
-                    var alreadySwitched = currentSessionForSwitch != null &&
-                        string.Equals(currentSessionForSwitch.ReferenceFilename, journal.NewSession.ReferenceFilename, StringComparison.Ordinal);
-
-                    if (alreadySwitched)
-                    {
-                        // Session.json was written before journal phase updated; commit forward
-                        var exactNew2 = _validationService.ValidateExactReferenceOutput(journal.NewSession, _templateService);
-                        if (!exactNew2.IsValid)
-                        {
-                            throw new InvalidDataException("New reference files are invalid or modified: " + string.Join("; ", exactNew2.Errors));
-                        }
-                        if (File.Exists(journal.BackupReferencePath)) File.Delete(journal.BackupReferencePath);
-                        if (File.Exists(journal.BackupProvenancePath)) File.Delete(journal.BackupProvenancePath);
-                        _sessionService.DeleteReplacementJournal();
-                        AddStatus("Interrupted reference replacement (Phase SessionSwitchPending, session already updated) completed.");
-                    }
-                    else
-                    {
-                        // Session not yet switched; roll back
-                        RestoreReferenceProvenanceFailClosed(
-                            journal.BackupProvenancePath,
-                            journal.OldSession.ReferenceProvenancePath,
-                            journal.OldSession,
-                            _templateService);
-
-                        RestoreReferenceImageFailClosed(
-                            journal.BackupReferencePath,
-                            journal.OldSession.ReferenceDestinationPath,
-                            journal.OldSession.ReferenceHash);
-
-                        if (File.Exists(journal.NewSession.ReferenceDestinationPath))
-                        {
-                            File.Delete(journal.NewSession.ReferenceDestinationPath);
-                        }
-
-                        _sessionService.Save(journal.OldSession);
-                        _sessionService.DeleteReplacementJournal();
-                        AddStatus("Interrupted reference replacement (Phase SessionSwitchPending) was rolled back to previous reference.");
-                    }
-                    break;
-
-                case ReferenceReplacementPhase.SessionSwitched:
-                    var exactValidation = _validationService.ValidateExactReferenceOutput(journal.NewSession, _templateService);
-                    if (!exactValidation.IsValid)
-                    {
-                        throw new InvalidDataException("New reference files are invalid or modified: " + string.Join("; ", exactValidation.Errors));
-                    }
-
-                    if (File.Exists(journal.BackupReferencePath)) File.Delete(journal.BackupReferencePath);
-                    if (File.Exists(journal.BackupProvenancePath)) File.Delete(journal.BackupProvenancePath);
-
-                    _sessionService.DeleteReplacementJournal();
-                    AddStatus("Interrupted reference replacement (Phase SessionSwitched) cleanup completed.");
-                    break;
-
-                default:
-                    // R2-001: Unknown phase must fail closed — never silently continue
-                    throw new InvalidDataException(
-                        $"Unknown ReferenceReplacementPhase value: {(int)journal.Phase}");
-            }
+            _sessionService.Save(journal.OldSession);
+            _sessionService.DeleteReplacementJournal();
         }
         catch (Exception ex)
         {
-            ShowMessageBox(
-                "CRITICAL: Failed to recover interrupted reference replacement.\n\n"
-                + ex.Message
-                + "\n\nReplacement journal was preserved.",
-                "Critical Replacement Recovery Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            ShowError(
+                "CRITICAL: Replacement files were rolled back, but the old durable session/journal state could not be finalized.",
+                ex);
+
             Close();
             return false;
         }
 
+        AddStatus("Interrupted Reference replacement was rolled back to the previous Reference.");
         return true;
     }
 
-    /// <summary>
-    /// R2-001: Fail-closed reference IMAGE restoration.
-    /// Verifies backup hash ownership before restoring. If destination already contains the
-    /// expected image (idempotent recovery), deletes backup only. Never overwrites unknown content.
-    /// </summary>
-    private static void RestoreReferenceImageFailClosed(
-        string backupPath,
-        string destinationPath,
-        string expectedHash)
+    private bool FinishReplacementCommit(
+        ReferenceReplacementJournal journal)
     {
-        if (!File.Exists(backupPath))
+        var current = _sessionService.Exists()
+            ? _sessionService.Load()
+            : null;
+
+        if (!MatchesReferenceAuthority(current, journal.NewSession))
         {
-            return;
+            return FailReplacementRecovery("session.json does not match NewSession authority.");
         }
 
-        var backupHash = ValidationService.ComputeSha256(backupPath);
+        var exactNew = _validationService.ValidateExactReferenceOutput(
+            journal.NewSession,
+            _templateService);
 
-        if (!string.Equals(backupHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+        if (!exactNew.IsValid)
         {
-            throw new InvalidDataException(
-                $"Reference backup image at '{backupPath}' hash does not match journal authority. Refusing to restore.");
+            return FailReplacementRecovery(
+                string.Join(Environment.NewLine, exactNew.Errors));
         }
 
-        if (File.Exists(destinationPath))
+        var transaction = TransactionFromJournal(journal);
+
+        var cleanup = _assetProcessorService.CleanupReplacementBackups(transaction);
+
+        if (!cleanup.IsValid)
         {
-            var destinationHash = ValidationService.ComputeSha256(destinationPath);
-
-            if (string.Equals(destinationHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-            {
-                // Destination already is the desired old reference; clean up backup only
-                File.Delete(backupPath);
-                return;
-            }
-
-            throw new InvalidDataException(
-                $"Destination '{destinationPath}' contains unknown content (hash mismatch). Refusing to overwrite it.");
+            return FailReplacementRecovery(
+                string.Join(Environment.NewLine, cleanup.Errors));
         }
 
-        File.Move(backupPath, destinationPath, overwrite: false);
+        try
+        {
+            _sessionService.DeleteReplacementJournal();
+        }
+        catch (Exception ex)
+        {
+            ShowError(
+                "Replacement cleanup succeeded but the journal could not be deleted.",
+                ex);
+
+            Close();
+            return false;
+        }
+
+        AddStatus("Interrupted Reference replacement cleanup completed.");
+        return true;
     }
 
-    /// <summary>
-    /// R2-001: Fail-closed reference PROVENANCE restoration.
-    /// Verifies backup provenance ownership via exact ownership check before restoring.
-    /// Never overwrites unknown content.
-    /// </summary>
-    private void RestoreReferenceProvenanceFailClosed(
-        string backupPath,
-        string destinationPath,
-        AssetSession oldSession,
-        TemplateService templateService)
+    private bool FailReplacementRecovery(string message, Exception? ex = null)
     {
-        if (!File.Exists(backupPath))
-        {
-            return;
-        }
+        var detail = ex is not null
+            ? $"{message}\n\n{ex.Message}"
+            : message;
 
-        var provValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
-            oldSession,
-            backupPath,
-            templateService);
+        ShowMessageBox(
+            "CRITICAL: Failed to recover interrupted reference replacement.\n\n"
+            + detail
+            + "\n\nReplacement journal was preserved.",
+            "Critical Replacement Recovery Error",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
 
-        if (!provValidation.IsValid)
-        {
-            throw new InvalidDataException(
-                $"Reference backup provenance at '{backupPath}' does not match old session state: "
-                + string.Join("; ", provValidation.Errors));
-        }
-
-        if (File.Exists(destinationPath))
-        {
-            var destValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
-                oldSession,
-                destinationPath,
-                templateService);
-
-            if (destValidation.IsValid)
-            {
-                // Destination already is the desired old provenance; clean up backup only
-                File.Delete(backupPath);
-                return;
-            }
-
-            throw new InvalidDataException(
-                $"Destination provenance '{destinationPath}' contains unknown content. Refusing to overwrite it.");
-        }
-
-        File.Move(backupPath, destinationPath, overwrite: false);
+        Close();
+        return false;
     }
 }
 

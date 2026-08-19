@@ -146,16 +146,18 @@ public sealed partial class AssetProcessorService
     }
 
     /// <summary>
-    /// R2-006: Prepares Main commit metadata in memory without performing filesystem mutations.
+    /// R2-006/R3-014: Prepares Main commit metadata in memory without performing filesystem mutations.
     /// Caller is responsible for persisting the session before calling ProcessMainImage.
     /// </summary>
     public AssetSession PrepareMainCommit(
         AssetSession session,
+        IReadOnlyCollection<string> acceptedExtensions,
         string sourceImagePath,
         string prompt,
         DateTimeOffset processedAt)
     {
         ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(acceptedExtensions);
         ArgumentNullException.ThrowIfNull(sourceImagePath);
         ArgumentNullException.ThrowIfNull(prompt);
 
@@ -164,7 +166,7 @@ public sealed partial class AssetProcessorService
             throw new ArgumentException("Prompt must not be empty.", nameof(prompt));
         }
 
-        var imageValidation = _validationService.ValidateImageFile(sourceImagePath, AppConstants.DefaultImageExtensions);
+        var imageValidation = _validationService.ValidateImageFile(sourceImagePath, acceptedExtensions);
         if (!imageValidation.IsValid)
         {
             throw new InvalidDataException(string.Join(Environment.NewLine, imageValidation.Errors));
@@ -509,6 +511,18 @@ public sealed partial class AssetProcessorService
                     throw new InvalidDataException(
                         $"Unsupported workflow mode: {session.WorkflowMode}")
             };
+
+            var renderedProvHash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    new UTF8Encoding(false).GetBytes(provenance)))
+                .ToLowerInvariant();
+
+            if (!string.IsNullOrWhiteSpace(session.MainProvenanceHash) &&
+                !string.Equals(renderedProvHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "Final provenance content changed after the Main transaction journal was prepared. No canonical Main output was committed.");
+            }
 
             // BUG-R13-004: Write temporary provenance without silently overwriting pre-existing files
             using (var stream = new FileStream(

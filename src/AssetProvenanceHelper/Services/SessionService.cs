@@ -19,6 +19,9 @@ public sealed class SessionService
     [ThreadStatic]
     internal static Action? OnBeforeFolderCleanupHook;
 
+    [ThreadStatic]
+    internal static Action? OnBeforeSessionDeleteHook;
+
     private readonly string _sessionPath;
     private readonly TemplateService? _templateService;
     private readonly ValidationService? _validationService;
@@ -163,6 +166,8 @@ public sealed class SessionService
 
     public void Delete()
     {
+        OnBeforeSessionDeleteHook?.Invoke();
+
         if (File.Exists(
                 _sessionPath))
         {
