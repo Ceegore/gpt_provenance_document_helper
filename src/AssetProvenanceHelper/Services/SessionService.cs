@@ -22,6 +22,9 @@ public sealed class SessionService
     [ThreadStatic]
     internal static Action? OnBeforeSessionDeleteHook;
 
+    [ThreadStatic]
+    internal static Action? OnBeforeReplacementJournalDeleteHook;
+
     private readonly string _sessionPath;
     private readonly TemplateService? _templateService;
     private readonly ValidationService? _validationService;
@@ -829,6 +832,8 @@ public sealed class SessionService
 
     public void DeleteReplacementJournal()
     {
+        OnBeforeReplacementJournalDeleteHook?.Invoke();
+
         if (File.Exists(ReplacementJournalPath))
         {
             File.Delete(ReplacementJournalPath);

@@ -272,25 +272,10 @@ partial class MainForm
                     return;
                 }
 
-                try
+                if (!FinalizeLiveReplacementRollback(transaction))
                 {
-                    _sessionService.Save(transaction.OldSession);
-                    _sessionService.DeleteReplacementJournal();
-                }
-                catch (Exception saveEx)
-                {
-                    ShowError(
-                        "CRITICAL: Reference replacement failed, previous reference files were restored, but old session record could not be saved.",
-                        saveEx);
-
-                    Close();
                     return;
                 }
-
-                _currentSession = transaction.OldSession;
-                lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
-                SetSelectedImage(ImageSlot.Reference, null);
-                ApplyState();
 
                 ShowMessageBox(
                     "Reference replacement failed because the new reference output was invalid. The previous reference state was restored.\n\n"
@@ -332,7 +317,18 @@ partial class MainForm
             }
 
             // 16. Delete replacement journal upon complete success
-            _sessionService.DeleteReplacementJournal();
+            try
+            {
+                _sessionService.DeleteReplacementJournal();
+            }
+            catch (Exception deleteJournalEx)
+            {
+                ShowError(
+                    "CRITICAL: Reference replacement succeeded on disk, but the replacement journal could not be removed.",
+                    deleteJournalEx);
+                Close();
+                return;
+            }
 
             _currentSession = transaction.NewSession;
             lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
@@ -358,12 +354,11 @@ partial class MainForm
                     var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
                     if (rollback.IsValid)
                     {
-                        try
+                        if (FinalizeLiveReplacementRollback(transaction))
                         {
-                            _sessionService.Save(transaction.OldSession);
-                            _sessionService.DeleteReplacementJournal();
+                            ShowError("Reference replacement encountered an error and previous reference was restored.", ex);
                         }
-                        catch { }
+                        return;
                     }
                     else
                     {
@@ -389,6 +384,42 @@ partial class MainForm
         }
     }
 
+    private bool FinalizeLiveReplacementRollback(
+        ReferenceReplacementTransaction tx)
+    {
+        try
+        {
+            _sessionService.Save(tx.OldSession);
+        }
+        catch (Exception ex)
+        {
+            ShowError(
+                "CRITICAL: Replacement files were rolled back, but the OLD session could not be persisted.",
+                ex);
+            Close();
+            return false;
+        }
+
+        try
+        {
+            _sessionService.DeleteReplacementJournal();
+        }
+        catch (Exception ex)
+        {
+            ShowError(
+                "CRITICAL: OLD state was restored, but the replacement journal could not be removed.",
+                ex);
+            Close();
+            return false;
+        }
+
+        _currentSession = tx.OldSession;
+        lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
+        SetSelectedImage(ImageSlot.Reference, null);
+        _state = UiState.ReferenceReady;
+        ApplyState();
+        return true;
+    }
 
     private void HandleCancel()
     {

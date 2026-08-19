@@ -6,6 +6,9 @@ namespace AssetProvenanceHelper.Services;
 
 public sealed partial class ValidationService
 {
+    [ThreadStatic]
+    internal static Func<string, IEnumerable<string>>? EnumerateFilesInFolderHook;
+
     public ValidationResult ValidateSession(
         AssetSession session)
     {
@@ -1069,19 +1072,38 @@ public sealed partial class ValidationService
 
         if (Directory.Exists(ingameFolder))
         {
-            foreach (var path in Directory.EnumerateFiles(
-                         ingameFolder,
-                         "*",
-                         SearchOption.TopDirectoryOnly))
+            try
             {
-                var ext = Path.GetExtension(path);
-                var stem = Path.GetFileNameWithoutExtension(path);
+                var files = EnumerateFilesInFolderHook != null
+                    ? EnumerateFilesInFolderHook(ingameFolder)
+                    : Directory.EnumerateFiles(
+                        ingameFolder,
+                        "*",
+                        SearchOption.TopDirectoryOnly);
 
-                if (acceptedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
-                    && string.Equals(stem, session.AssetFolderName, StringComparison.OrdinalIgnoreCase))
+                foreach (var path in files)
                 {
-                    errors.Add($"An ingame asset variant already exists: {path}");
+                    var ext = Path.GetExtension(path);
+                    var stem = Path.GetFileNameWithoutExtension(path);
+
+                    if (acceptedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
+                        && string.Equals(stem, session.AssetFolderName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add($"An ingame asset variant already exists: {path}");
+                    }
                 }
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                errors.Add($"Could not inspect ingame folder: {ex.Message}");
+            }
+            catch (IOException ex)
+            {
+                errors.Add($"Could not inspect ingame folder: {ex.Message}");
+            }
+            catch (Exception ex) when (ex is ArgumentException or System.Security.SecurityException)
+            {
+                errors.Add($"Could not inspect ingame folder: {ex.Message}");
             }
         }
 

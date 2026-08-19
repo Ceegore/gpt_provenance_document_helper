@@ -589,7 +589,7 @@ partial class MainForm
 
                 if (newAuthority)
                 {
-                    return FinishReplacementCommit(journal);
+                    return FinishReplacementCommit(journal, current);
                 }
 
                 return FailReplacementRecovery(
@@ -603,7 +603,7 @@ partial class MainForm
                         "Durable session does not match NEW authority for commit phase.");
                 }
 
-                return FinishReplacementCommit(journal);
+                return FinishReplacementCommit(journal, current);
 
             default:
                 return FailReplacementRecovery(
@@ -611,17 +611,29 @@ partial class MainForm
         }
     }
 
+    private static bool IsStableReferenceAuthority(
+        AssetSession? session)
+    {
+        return session is not null
+            && session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted
+            && !session.IsMainCommitting
+            && session.CancelPhase == CancelPhase.None
+            && string.IsNullOrWhiteSpace(session.CancellationId)
+            && session.ReferenceCommitPhase == ReferenceCommitPhase.None
+            && string.IsNullOrWhiteSpace(session.ReferenceTransactionId);
+    }
+
     private static bool MatchesReferenceAuthority(
         AssetSession? actual,
         AssetSession expected)
     {
-        if (actual is null)
+        if (!IsStableReferenceAuthority(actual) || !IsStableReferenceAuthority(expected))
         {
             return false;
         }
 
         return
-            actual.WorkflowMode == expected.WorkflowMode
+            actual!.WorkflowMode == expected.WorkflowMode
             && string.Equals(
                 actual.ProjectName,
                 expected.ProjectName,
@@ -719,12 +731,9 @@ partial class MainForm
     }
 
     private bool FinishReplacementCommit(
-        ReferenceReplacementJournal journal)
+        ReferenceReplacementJournal journal,
+        AssetSession? current)
     {
-        var current = _sessionService.Exists()
-            ? _sessionService.Load()
-            : null;
-
         if (!MatchesReferenceAuthority(current, journal.NewSession))
         {
             return FailReplacementRecovery("session.json does not match NewSession authority.");

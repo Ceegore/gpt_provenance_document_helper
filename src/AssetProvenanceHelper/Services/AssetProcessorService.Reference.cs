@@ -333,6 +333,15 @@ public sealed partial class AssetProcessorService
             throw new InvalidDataException(string.Join(Environment.NewLine, oldValidation.Errors));
         }
 
+        var exactOld = _validationService.ValidateExactReferenceOutput(oldSession, _templateService);
+        if (!exactOld.IsValid)
+        {
+            throw new InvalidDataException(
+                "Current Reference output is inconsistent or modified and cannot be replaced."
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, exactOld.Errors));
+        }
+
         var imageValidation = _validationService.ValidateImageFile(newSourceImagePath, acceptedExtensions);
         if (!imageValidation.IsValid)
         {
@@ -402,6 +411,15 @@ public sealed partial class AssetProcessorService
         ArgumentNullException.ThrowIfNull(acceptedExtensions);
 
         var sourceHash = ComputeSha256(transaction.NewSession.ReferenceSourcePath);
+        if (!string.Equals(
+                sourceHash,
+                transaction.NewSession.ReferenceHash,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException(
+                "Replacement Reference source changed after the Prepared transaction was created.");
+        }
+
         CopyFileWithoutOverwrite(transaction.NewSession.ReferenceSourcePath, transaction.TempNewReferencePath);
         OnFileCopiedHook?.Invoke(transaction.NewSession.ReferenceSourcePath, transaction.TempNewReferencePath);
 
@@ -411,10 +429,13 @@ public sealed partial class AssetProcessorService
             throw new InvalidDataException("Copied replacement reference image is invalid: " + string.Join("; ", copiedValidation.Errors));
         }
 
-        var newHash = ComputeSha256(transaction.TempNewReferencePath);
-        if (!string.Equals(sourceHash, newHash, StringComparison.OrdinalIgnoreCase))
+        var tempHash = ComputeSha256(transaction.TempNewReferencePath);
+        if (!string.Equals(
+                tempHash,
+                transaction.NewSession.ReferenceHash,
+                StringComparison.OrdinalIgnoreCase))
         {
-            throw new IOException("Replacement reference image changed during copy.");
+            throw new IOException("Replacement temp Reference does not match Prepared ReferenceHash.");
         }
 
         var generationDate = transaction.NewSession.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -422,6 +443,20 @@ public sealed partial class AssetProcessorService
             transaction.NewSession.ReferenceFilename,
             transaction.OldSession.ProjectName,
             generationDate);
+
+        var provenanceHash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                new System.Text.UTF8Encoding(false).GetBytes(newProvenance)))
+            .ToLowerInvariant();
+
+        if (!string.Equals(
+                provenanceHash,
+                transaction.NewSession.ReferenceProvenanceHash,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Replacement provenance changed after the Prepared transaction was created.");
+        }
 
         WriteTextAtomic(transaction.TempNewProvenancePath, newProvenance);
     }
@@ -933,7 +968,9 @@ public sealed partial class AssetProcessorService
         }
 
         // Post-mutation validation: ensure old session reference output is fully restored and valid
-        var postValidation = _validationService.ValidateReferenceOutput(transaction.OldSession);
+        var postValidation = _validationService.ValidateExactReferenceOutput(
+            transaction.OldSession,
+            _templateService);
         if (!postValidation.IsValid)
         {
             return ValidationResult.Failure(postValidation.Errors);
