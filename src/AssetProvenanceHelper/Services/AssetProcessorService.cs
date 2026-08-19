@@ -56,6 +56,12 @@ public sealed partial class AssetProcessorService
     [ThreadStatic]
     internal static Action<ReferenceReplacementTransaction>? OnBeforeReplacementFinalPathGate;
 
+    [ThreadStatic]
+    internal static Action<string, string>? OnBeforeRestoreFileHook;
+
+    [ThreadStatic]
+    internal static Action<ReferenceReplacementTransaction>? OnBeforeBackupOldReferenceFinalAuthorityGate;
+
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
 

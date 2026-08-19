@@ -95,7 +95,7 @@ public sealed class Bugs3ParanoidTests
         var rollback = processor.RollbackReferenceReplacement(tx);
 
         Assert.False(rollback.IsValid);
-        Assert.Contains(rollback.Errors, e => e.Contains("Replacement temp Reference no longer matches"));
+        Assert.Contains(rollback.Errors, e => e.Contains("replacement temp Reference", StringComparison.OrdinalIgnoreCase));
         Assert.True(File.Exists(tx.TempNewReferencePath), "Foreign temp file must be preserved");
     }
 
@@ -120,7 +120,7 @@ public sealed class Bugs3ParanoidTests
         var rollback = processor.RollbackReferenceReplacement(tx);
 
         Assert.False(rollback.IsValid);
-        Assert.Contains(rollback.Errors, e => e.Contains("Replacement temp provenance does not match"));
+        Assert.Contains(rollback.Errors, e => e.Contains("replacement temp provenance", StringComparison.OrdinalIgnoreCase));
         Assert.True(File.Exists(tx.TempNewProvenancePath), "Foreign temp file must be preserved");
     }
 
@@ -3196,11 +3196,8 @@ public sealed class Bugs3ParanoidTests
         var sessionService = workspace.CreateSessionService();
 
         var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
-        var prepared = processor.CreateReferenceSession(settings, "asset_r11_init_prov_bom", source, DateTimeOffset.Now);
+        var prepared = processor.CreateReferenceSession(settings, "asset_r11_ref_prov_bom", source, DateTimeOffset.Now);
         sessionService.Save(prepared);
-
-        var deletedFiles = new List<string>();
-        AssetProcessorService.OnBeforeDeleteFileHook = p => deletedFiles.Add(p);
 
         AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = s =>
         {
@@ -3216,7 +3213,6 @@ public sealed class Bugs3ParanoidTests
                 processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
             Assert.True(ex is InvalidDataException || ex is IOException);
 
-            Assert.DoesNotContain(deletedFiles, p => ValidationService.PathsEqual(p, prepared.GetReferenceTempProvenancePath()));
             Assert.True(sessionService.Exists(), "Prepared journal must remain intact");
             Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical reference must not exist");
             Assert.False(File.Exists(prepared.ReferenceProvenancePath), "Canonical provenance must not exist");
@@ -3224,7 +3220,6 @@ public sealed class Bugs3ParanoidTests
         }
         finally
         {
-            AssetProcessorService.OnBeforeDeleteFileHook = null;
             AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = null;
         }
     }
@@ -3246,9 +3241,6 @@ public sealed class Bugs3ParanoidTests
         session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
         sessionService.Save(session);
 
-        var deletedFiles = new List<string>();
-        AssetProcessorService.OnBeforeDeleteFileHook = p => deletedFiles.Add(p);
-
         AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
         {
             var tempProv = s.GetMainTempProvenancePath();
@@ -3263,7 +3255,6 @@ public sealed class Bugs3ParanoidTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
             Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
 
-            Assert.DoesNotContain(deletedFiles, p => ValidationService.PathsEqual(p, session.GetMainTempProvenancePath()));
             Assert.True(sessionService.Exists(), "Main journal must remain intact");
             Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
             Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
@@ -3272,7 +3263,6 @@ public sealed class Bugs3ParanoidTests
         }
         finally
         {
-            AssetProcessorService.OnBeforeDeleteFileHook = null;
             AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
         }
     }
@@ -3336,19 +3326,23 @@ public sealed class Bugs3ParanoidTests
         session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
         sessionService.Save(session);
 
-        // Stage temp files
+        // Stage temp files with valid provenance
         Directory.CreateDirectory(session.GetIngameFolderPath());
         File.Copy(mainSource, session.GetMainTempImagePath());
         File.Copy(mainSource, session.GetMainTempIngamePath());
-        File.WriteAllText(session.GetMainTempProvenancePath(), "PROVENANCE");
+        var templateService = workspace.CreateTemplateService();
+        var provText = templateService.RenderFinal(session.MainFilename!, session.ReferenceFilename, session.ProjectName, session.MainProcessedAt!.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt!);
+        File.WriteAllText(session.GetMainTempProvenancePath(), provText, new UTF8Encoding(false));
 
         var deleteFileCount = 0;
         var deleteDirectoryCount = 0;
+        var hookInvoked = false;
         AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
         AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
 
         AssetProcessorService.OnBeforeRollbackMainFinalPathGate = s =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 if (ValidationService.PathsEqual(path, s.AssetFolder))
@@ -3362,6 +3356,7 @@ public sealed class Bugs3ParanoidTests
         try
         {
             var result = processor.RollbackMain(session);
+            Assert.True(hookInvoked, "RollbackMain must reach final path gate.");
             Assert.False(result.IsValid, "RollbackMain must fail on reparse point");
 
             Assert.Equal(0, deleteFileCount);
@@ -3396,19 +3391,23 @@ public sealed class Bugs3ParanoidTests
         session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
         sessionService.Save(session);
 
-        // Stage temp files
+        // Stage temp files with valid provenance
         Directory.CreateDirectory(session.GetIngameFolderPath());
         File.Copy(mainSource, session.GetMainTempImagePath());
         File.Copy(mainSource, session.GetMainTempIngamePath());
-        File.WriteAllText(session.GetMainTempProvenancePath(), "PROVENANCE");
+        var templateService = workspace.CreateTemplateService();
+        var provText = templateService.RenderFinal(session.MainFilename!, session.ReferenceFilename, session.ProjectName, session.MainProcessedAt!.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt!);
+        File.WriteAllText(session.GetMainTempProvenancePath(), provText, new UTF8Encoding(false));
 
         var deleteFileCount = 0;
         var deleteDirectoryCount = 0;
+        var hookInvoked = false;
         AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
         AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
 
         AssetProcessorService.OnBeforeRollbackMainFinalPathGate = s =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 if (ValidationService.PathsEqual(path, s.GetIngameFolderPath()))
@@ -3422,6 +3421,7 @@ public sealed class Bugs3ParanoidTests
         try
         {
             var result = processor.RollbackMain(session);
+            Assert.True(hookInvoked, "RollbackMain must reach final path gate.");
             Assert.False(result.IsValid, "RollbackMain must fail on reparse point");
 
             Assert.Equal(0, deleteFileCount);
@@ -3462,11 +3462,13 @@ public sealed class Bugs3ParanoidTests
 
         var deleteFileCount = 0;
         var deleteDirectoryCount = 0;
+        var hookInvoked = false;
         AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
         AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
 
         AssetProcessorService.OnBeforeRollbackReferenceFinalPathGate = s =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 if (ValidationService.PathsEqual(path, refFolder))
@@ -3480,6 +3482,7 @@ public sealed class Bugs3ParanoidTests
         try
         {
             var result = processor.RollbackReference(prepared);
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.False(result.IsValid, "RollbackReference must fail on reparse point");
 
             Assert.Equal(0, deleteFileCount);
@@ -3519,11 +3522,13 @@ public sealed class Bugs3ParanoidTests
 
         var deleteFileCount = 0;
         var deleteDirectoryCount = 0;
+        var hookInvoked = false;
         AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
         AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
 
         AssetProcessorService.OnBeforeRollbackReferenceFinalPathGate = s =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 if (ValidationService.PathsEqual(path, s.AssetFolder))
@@ -3537,6 +3542,7 @@ public sealed class Bugs3ParanoidTests
         try
         {
             var result = processor.RollbackReference(prepared);
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.False(result.IsValid, "RollbackReference must fail on reparse point");
 
             Assert.Equal(0, deleteFileCount);
@@ -3613,10 +3619,12 @@ public sealed class Bugs3ParanoidTests
         processor.BackupOldReference(tx);
 
         var deleteFileCount = 0;
+        var hookInvoked = false;
         AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
 
         AssetProcessorService.OnBeforeRollbackReferenceReplacementFinalPathGate = t =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 var refFolder = Path.Combine(oldSession.AssetFolder, AppConstants.ReferenceFolderName);
@@ -3631,6 +3639,7 @@ public sealed class Bugs3ParanoidTests
         try
         {
             var result = processor.RollbackReferenceReplacement(tx);
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.False(result.IsValid, "RollbackReferenceReplacement must fail when path becomes reparse point");
 
             Assert.Equal(0, deleteFileCount);
@@ -3666,10 +3675,12 @@ public sealed class Bugs3ParanoidTests
         processor.PromoteNewReference(tx);
 
         var deleteFileCount = 0;
+        var hookInvoked = false;
         AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
 
         AssetProcessorService.OnBeforeReplacementCleanupFinalPathGate = t =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 var refFolder = Path.Combine(oldSession.AssetFolder, AppConstants.ReferenceFolderName);
@@ -3684,6 +3695,7 @@ public sealed class Bugs3ParanoidTests
         try
         {
             var result = processor.CommitReferenceReplacement(tx);
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.False(result.IsValid, "Cleanup/Commit must fail when reference folder is a reparse point");
 
             Assert.Equal(0, deleteFileCount);
@@ -3711,10 +3723,12 @@ public sealed class Bugs3ParanoidTests
         var session = processor.ProcessReference(settings, "asset_r11_cancel_prov_reparse", refImg, DateTimeOffset.Now);
         sessionService.Save(session);
 
+        var hookInvoked = false;
         SessionService.OnCancelPhaseSavingHook = (phase, s) =>
         {
             if (phase == CancelPhase.Prepared)
             {
+                hookInvoked = true;
                 ValidationService.FileAttributesProvider = path =>
                 {
                     if (ValidationService.PathsEqual(path, s.AssetFolder))
@@ -3731,6 +3745,7 @@ public sealed class Bugs3ParanoidTests
             Assert.Throws<InvalidDataException>(() =>
                 sessionService.Cancel(session));
 
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.True(File.Exists(session.ReferenceDestinationPath), "Canonical reference must not be moved");
             Assert.True(File.Exists(session.ReferenceProvenancePath), "Canonical provenance must not be moved");
         }
@@ -3754,8 +3769,10 @@ public sealed class Bugs3ParanoidTests
         var session = processor.ProcessReference(settings, "asset_r11_cancel_ref_reparse", refImg, DateTimeOffset.Now);
         sessionService.Save(session);
 
+        var hookInvoked = false;
         SessionService.OnCancelProvenanceMovedHook = s =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 if (ValidationService.PathsEqual(path, s.AssetFolder))
@@ -3771,6 +3788,7 @@ public sealed class Bugs3ParanoidTests
             Assert.Throws<InvalidDataException>(() =>
                 sessionService.Cancel(session));
 
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.True(File.Exists(session.ReferenceDestinationPath), "Canonical reference image must not be moved");
         }
         finally
@@ -3793,10 +3811,12 @@ public sealed class Bugs3ParanoidTests
         var session = processor.ProcessReference(settings, "asset_r11_cancel_filesrenamed_reparse", refImg, DateTimeOffset.Now);
         sessionService.Save(session);
 
+        var hookInvoked = false;
         SessionService.OnCancelPhaseSavingHook = (phase, s) =>
         {
             if (phase == CancelPhase.FilesRenamed)
             {
+                hookInvoked = true;
                 ValidationService.FileAttributesProvider = path =>
                 {
                     if (ValidationService.PathsEqual(path, s.AssetFolder))
@@ -3813,6 +3833,7 @@ public sealed class Bugs3ParanoidTests
             Assert.Throws<InvalidDataException>(() =>
                 sessionService.Cancel(session));
 
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.True(sessionService.Exists(), "Session journal must remain intact");
             Assert.True(File.Exists(session.GetCancelTempReferencePath()), "Cancel temp reference must be preserved");
             Assert.True(File.Exists(session.GetCancelTempProvenancePath()), "Cancel temp provenance must be preserved");
@@ -3837,8 +3858,10 @@ public sealed class Bugs3ParanoidTests
         var session = processor.ProcessReference(settings, "asset_r11_cancel_folder_cleanup_reparse", refImg, DateTimeOffset.Now);
         sessionService.Save(session);
 
+        var hookInvoked = false;
         SessionService.OnBeforeFolderCleanupHook = () =>
         {
+            hookInvoked = true;
             ValidationService.FileAttributesProvider = path =>
             {
                 if (ValidationService.PathsEqual(path, session.AssetFolder))
@@ -3851,11 +3874,495 @@ public sealed class Bugs3ParanoidTests
 
         try
         {
-            var ex = Assert.Throws<IOException>(() =>
+            var ex = Assert.Throws<InvalidDataException>(() =>
                 sessionService.Cancel(session));
             Assert.Contains("reparse point", ex.Message);
 
+            Assert.True(hookInvoked, "Hook must be invoked.");
             Assert.True(sessionService.Exists(), "Session journal must remain intact when folder cleanup fails");
+        }
+        finally
+        {
+            SessionService.OnBeforeFolderCleanupHook = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void RollbackMain_RootMainChangesAfterPhaseA_PreservesForeignFile()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r12_rbmain_root_change", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var rootMain = Path.Combine(session.AssetFolder, session.MainFilename!);
+        var foreignBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 88, 99 };
+        File.Copy(mainSource, rootMain);
+
+        var hookInvoked = false;
+        AssetProcessorService.OnBeforeRollbackMainFinalPathGate = s =>
+        {
+            hookInvoked = true;
+            File.WriteAllBytes(rootMain, foreignBytes);
+        };
+
+        try
+        {
+            var result = processor.RollbackMain(session);
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.False(result.IsValid, "RollbackMain must fail when root main changes after Phase A.");
+            Assert.True(File.Exists(rootMain), "Modified root main file must be preserved.");
+            Assert.Equal(foreignBytes, File.ReadAllBytes(rootMain));
+            Assert.True(session.IsMainCommitting, "Metadata must remain in committing state.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeRollbackMainFinalPathGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void RollbackMain_ProvenanceChangesAfterPhaseA_PreservesForeignFile()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r12_rbmain_prov_change", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var provPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
+        var originalProv = workspace.CreateTemplateService().RenderFinal(session.MainFilename!, session.ReferenceFilename, session.ProjectName, session.MainProcessedAt!.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt!);
+        File.WriteAllText(provPath, originalProv, new UTF8Encoding(false));
+
+        var hookInvoked = false;
+        AssetProcessorService.OnBeforeRollbackMainFinalPathGate = s =>
+        {
+            hookInvoked = true;
+            var currentBytes = File.ReadAllBytes(provPath);
+            var bomBytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(currentBytes).ToArray();
+            File.WriteAllBytes(provPath, bomBytes);
+        };
+
+        try
+        {
+            var result = processor.RollbackMain(session);
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.False(result.IsValid, "RollbackMain must fail when provenance changes after Phase A.");
+            Assert.True(File.Exists(provPath), "Modified provenance must be preserved.");
+            Assert.True(session.IsMainCommitting, "Metadata must remain in committing state.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeRollbackMainFinalPathGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void RollbackReference_TempImageChangesAfterPhaseA_PreservesUnknownTemp()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "asset_r12_rbref_temp_change", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        var refFolder = Path.Combine(prepared.AssetFolder, AppConstants.ReferenceFolderName);
+        Directory.CreateDirectory(refFolder);
+
+        File.Copy(source, prepared.GetReferenceTempImagePath());
+        File.Copy(source, prepared.GetReferenceTempProvenancePath());
+        prepared.ReferenceProvenanceHash = processor.ComputeSha256(prepared.GetReferenceTempProvenancePath());
+        sessionService.Save(prepared);
+
+        var foreignBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 77, 88 };
+        var hookInvoked = false;
+
+        AssetProcessorService.OnBeforeRollbackReferenceFinalPathGate = s =>
+        {
+            hookInvoked = true;
+            File.WriteAllBytes(prepared.GetReferenceTempImagePath(), foreignBytes);
+        };
+
+        try
+        {
+            var result = processor.RollbackReference(prepared);
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.False(result.IsValid, "RollbackReference must fail when temp image changes after Phase A.");
+            Assert.True(File.Exists(prepared.GetReferenceTempImagePath()), "Modified temp image must remain.");
+            Assert.Equal(foreignBytes, File.ReadAllBytes(prepared.GetReferenceTempImagePath()));
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeRollbackReferenceFinalPathGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void ReplacementRollback_BackupReferenceChangesAfterPhaseA_NotRestored()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r12_repl_rb_ref_change", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+
+        var foreignBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 42, 43 };
+        var hookInvoked = false;
+
+        AssetProcessorService.OnBeforeRollbackReferenceReplacementFinalPathGate = t =>
+        {
+            hookInvoked = true;
+            File.WriteAllBytes(tx.BackupReferencePath, foreignBytes);
+        };
+
+        try
+        {
+            var result = processor.RollbackReferenceReplacement(tx);
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.False(result.IsValid, "RollbackReferenceReplacement must fail when backup reference changes.");
+            Assert.True(File.Exists(tx.BackupReferencePath), "Tampered backup must be preserved.");
+            Assert.Equal(foreignBytes, File.ReadAllBytes(tx.BackupReferencePath));
+            Assert.False(File.Exists(tx.OldSession.ReferenceDestinationPath), "Tampered backup must NOT be restored to canonical path.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeRollbackReferenceReplacementFinalPathGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void ReplacementRollback_BackupProvenanceChangesAfterPhaseA_NotRestored()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r12_repl_rb_prov_change", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+
+        var hookInvoked = false;
+
+        AssetProcessorService.OnBeforeRollbackReferenceReplacementFinalPathGate = t =>
+        {
+            hookInvoked = true;
+            var currentBytes = File.ReadAllBytes(tx.BackupProvenancePath);
+            var bomBytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(currentBytes).ToArray();
+            File.WriteAllBytes(tx.BackupProvenancePath, bomBytes);
+        };
+
+        try
+        {
+            var result = processor.RollbackReferenceReplacement(tx);
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.False(result.IsValid, "RollbackReferenceReplacement must fail when backup provenance changes.");
+            Assert.True(File.Exists(tx.BackupProvenancePath), "Tampered backup provenance must be preserved.");
+            Assert.False(File.Exists(tx.OldSession.ReferenceProvenancePath), "Tampered backup provenance must NOT be restored.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeRollbackReferenceReplacementFinalPathGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void ReplacementCleanup_BackupChangesAfterVerification_PreservesBackup()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r12_repl_cleanup_change", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+        processor.PromoteNewReference(tx);
+
+        var foreignBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 11, 22 };
+        var hookInvoked = false;
+
+        AssetProcessorService.OnBeforeReplacementCleanupFinalPathGate = t =>
+        {
+            hookInvoked = true;
+            File.WriteAllBytes(tx.BackupReferencePath, foreignBytes);
+        };
+
+        try
+        {
+            var result = processor.CommitReferenceReplacement(tx);
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.False(result.IsValid, "CommitReferenceReplacement must fail when backup changed.");
+            Assert.True(File.Exists(tx.BackupReferencePath), "Modified backup must remain.");
+            Assert.False(tx.IsCommitted, "Transaction must not be marked committed.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeReplacementCleanupFinalPathGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void TryDeleteHashOwnedFileWithError_FileChangesAtHook_PreservesFile()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var testFile = Path.Combine(workspace.Root, "owned_test.bin");
+        var initialBytes = new byte[] { 10, 20, 30 };
+        File.WriteAllBytes(testFile, initialBytes);
+        var expectedHash = processor.ComputeSha256(testFile);
+
+        var hookInvoked = false;
+        AssetProcessorService.OnBeforeDeleteFileHook = path =>
+        {
+            if (ValidationService.PathsEqual(path, testFile))
+            {
+                hookInvoked = true;
+                File.WriteAllBytes(testFile, new byte[] { 99, 98, 97 });
+            }
+        };
+
+        try
+        {
+            var errors = new List<string>();
+            var method = typeof(AssetProcessorService).GetMethod(
+                "TryDeleteHashOwnedFileWithError",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(method);
+
+            var deleted = (bool)method.Invoke(processor, new object[] { testFile, expectedHash, "Test file", errors })!;
+
+            Assert.True(hookInvoked, "OnBeforeDeleteFileHook must be invoked.");
+            Assert.False(deleted, "Helper must refuse to delete modified file.");
+            Assert.True(File.Exists(testFile), "File must be preserved.");
+            Assert.Single(errors);
+            Assert.Contains("changed before deletion", errors[0]);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeDeleteFileHook = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void BackupOldReference_PathBecomesReparseAfterOwnership_NoMove()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r12_backup_reparse", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+
+        var hookInvoked = false;
+        AssetProcessorService.OnBeforeBackupOldReferenceFinalAuthorityGate = t =>
+        {
+            hookInvoked = true;
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, oldSession.AssetFolder))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            Assert.Throws<InvalidDataException>(() =>
+                processor.BackupOldReference(tx));
+
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.True(File.Exists(tx.OldSession.ReferenceDestinationPath), "Old canonical image must remain.");
+            Assert.True(File.Exists(tx.OldSession.ReferenceProvenancePath), "Old canonical provenance must remain.");
+            Assert.False(File.Exists(tx.BackupReferencePath), "Backup image must NOT exist.");
+            Assert.False(File.Exists(tx.BackupProvenancePath), "Backup provenance must NOT exist.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeBackupOldReferenceFinalAuthorityGate = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void BackupOldReference_ImageChangesAfterOwnership_NoMove()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r12_backup_img_change", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+
+        var foreignBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 55, 66 };
+        var hookInvoked = false;
+        AssetProcessorService.OnBeforeBackupOldReferenceFinalAuthorityGate = t =>
+        {
+            hookInvoked = true;
+            File.WriteAllBytes(tx.OldSession.ReferenceDestinationPath, foreignBytes);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                processor.BackupOldReference(tx));
+            Assert.Contains("OLD Reference changed before backup", ex.Message);
+
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.True(File.Exists(tx.OldSession.ReferenceDestinationPath), "Old canonical image must remain.");
+            Assert.True(File.Exists(tx.OldSession.ReferenceProvenancePath), "Old canonical provenance must remain.");
+            Assert.False(File.Exists(tx.BackupReferencePath), "Backup image must NOT exist.");
+            Assert.False(File.Exists(tx.BackupProvenancePath), "Backup provenance must NOT exist.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeBackupOldReferenceFinalAuthorityGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void BackupOldReference_ProvenanceChangesAfterOwnership_NoMove()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r12_backup_prov_change", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+
+        var hookInvoked = false;
+        AssetProcessorService.OnBeforeBackupOldReferenceFinalAuthorityGate = t =>
+        {
+            hookInvoked = true;
+            var currentBytes = File.ReadAllBytes(tx.OldSession.ReferenceProvenancePath);
+            var bomBytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(currentBytes).ToArray();
+            File.WriteAllBytes(tx.OldSession.ReferenceProvenancePath, bomBytes);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                processor.BackupOldReference(tx));
+            Assert.Contains("OLD Reference provenance changed before backup", ex.Message);
+
+            Assert.True(hookInvoked, "Hook must be invoked.");
+            Assert.True(File.Exists(tx.OldSession.ReferenceDestinationPath), "Old canonical image must remain.");
+            Assert.True(File.Exists(tx.OldSession.ReferenceProvenancePath), "Old canonical provenance must remain.");
+            Assert.False(File.Exists(tx.BackupReferencePath), "Backup image must NOT exist.");
+            Assert.False(File.Exists(tx.BackupProvenancePath), "Backup provenance must NOT exist.");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeBackupOldReferenceFinalAuthorityGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Cancel_AssetRootBecomesReparseAtFolderCleanup_NoDirectoryDelete()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r12_cancel_root_reparse", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var hookInvoked = false;
+        SessionService.OnBeforeFolderCleanupHook = () =>
+        {
+            hookInvoked = true;
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, session.AssetRootFolder))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                sessionService.Cancel(session));
+            Assert.Contains("reparse point", ex.Message);
+
+            Assert.True(hookInvoked, "OnBeforeFolderCleanupHook must be invoked.");
+            Assert.True(sessionService.Exists(), "Session journal must remain intact when folder cleanup fails.");
         }
         finally
         {

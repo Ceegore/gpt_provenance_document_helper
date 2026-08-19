@@ -447,6 +447,8 @@ public sealed class SessionService
 
             OnBeforeFolderCleanupHook?.Invoke();
 
+            EnsureCancelPathsAreSafe(session);
+
             if (ValidationService.IsReparsePoint(session.AssetFolder) || (Directory.Exists(referenceFolder) && ValidationService.IsReparsePoint(referenceFolder)))
             {
                 throw new IOException("Folder hierarchy became a reparse point before folder cleanup. Preserving session.");

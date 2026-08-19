@@ -309,50 +309,36 @@ public sealed partial class AssetProcessorService
 
             if (tempProvenanceWritten && File.Exists(tempProvenancePath))
             {
-                if (expectedProvHash is not null && TryVerifyFileHashOwnership(tempProvenancePath, expectedProvHash))
+                if (expectedProvHash is not null)
                 {
-                    TryDeleteFileWithError(tempProvenancePath, rollbackErrors);
+                    TryDeleteHashOwnedFileWithError(tempProvenancePath, expectedProvHash, "Reference temp provenance", rollbackErrors);
                 }
                 else
                 {
-                    rollbackErrors.Add($"Reference temp provenance at '{tempProvenancePath}' hash no longer matches expected hash. File preserved.");
+                    rollbackErrors.Add($"Reference temp provenance at '{tempProvenancePath}' expected hash could not be determined. File preserved.");
                 }
             }
 
             if (tempImageCopied && File.Exists(tempImagePath))
             {
-                if (TryVerifyFileHashOwnership(tempImagePath, session.ReferenceHash))
-                {
-                    TryDeleteFileWithError(tempImagePath, rollbackErrors);
-                }
-                else
-                {
-                    rollbackErrors.Add($"Reference temp image at '{tempImagePath}' hash no longer matches expected hash. File preserved.");
-                }
+                TryDeleteHashOwnedFileWithError(tempImagePath, session.ReferenceHash, "Reference temp image", rollbackErrors);
             }
 
             if (provenancePromoted && File.Exists(referenceProvenance))
             {
-                if (expectedProvHash is not null && TryVerifyFileHashOwnership(referenceProvenance, expectedProvHash))
+                if (expectedProvHash is not null)
                 {
-                    TryDeleteFileWithError(referenceProvenance, rollbackErrors);
+                    TryDeleteHashOwnedFileWithError(referenceProvenance, expectedProvHash, "Reference provenance", rollbackErrors);
                 }
                 else
                 {
-                    rollbackErrors.Add($"Reference provenance at '{referenceProvenance}' hash no longer matches tool-written provenance. File preserved.");
+                    rollbackErrors.Add($"Reference provenance at '{referenceProvenance}' expected hash could not be determined. File preserved.");
                 }
             }
 
             if (imagePromoted && File.Exists(referenceDestination))
             {
-                if (TryVerifyFileHashOwnership(referenceDestination, session.ReferenceHash))
-                {
-                    TryDeleteFileWithError(referenceDestination, rollbackErrors);
-                }
-                else
-                {
-                    rollbackErrors.Add($"Reference image at '{referenceDestination}' hash no longer matches expected hash. File preserved.");
-                }
+                TryDeleteHashOwnedFileWithError(referenceDestination, session.ReferenceHash, "Reference image", rollbackErrors);
             }
 
             if (!referenceFolderExisted && Directory.Exists(referenceFolder))
@@ -489,21 +475,23 @@ public sealed partial class AssetProcessorService
 
         if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
         {
-            TryDeleteFileWithError(tempProv, errors);
+            TryDeleteHashOwnedFileWithError(tempProv, session.ReferenceProvenanceHash!, "Reference temp provenance", errors);
         }
 
         if (!string.IsNullOrWhiteSpace(tempImage) && File.Exists(tempImage))
         {
-            TryDeleteFileWithError(tempImage, errors);
+            TryDeleteHashOwnedFileWithError(tempImage, session.ReferenceHash!, "Reference temp image", errors);
         }
 
-        TryDeleteFileWithError(
-            session.ReferenceProvenancePath,
-            errors);
+        if (File.Exists(session.ReferenceProvenancePath))
+        {
+            TryDeleteHashOwnedFileWithError(session.ReferenceProvenancePath, session.ReferenceProvenanceHash!, "Reference provenance", errors);
+        }
 
-        TryDeleteFileWithError(
-            session.ReferenceDestinationPath,
-            errors);
+        if (File.Exists(session.ReferenceDestinationPath))
+        {
+            TryDeleteHashOwnedFileWithError(session.ReferenceDestinationPath, session.ReferenceHash!, "Reference image", errors);
+        }
 
         if (session.WasReferenceFolderCreatedByTool)
         {
@@ -724,6 +712,27 @@ public sealed partial class AssetProcessorService
                 $"Old reference provenance on disk does not match expected session provenance: {string.Join("; ", oldProvValidation.Errors)}");
         }
 
+        OnBeforeBackupOldReferenceFinalAuthorityGate?.Invoke(transaction);
+
+        RequireSafeReferenceReplacementTransaction(transaction);
+
+        var finalOldRefHash = ComputeSha256(transaction.OldSession.ReferenceDestinationPath);
+        if (!string.Equals(finalOldRefHash, transaction.OldSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("OLD Reference changed before backup.");
+        }
+
+        var finalOldProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
+            transaction.OldSession,
+            transaction.OldSession.ReferenceProvenancePath,
+            _templateService);
+
+        if (!finalOldProvValidation.IsValid)
+        {
+            throw new InvalidDataException(
+                "OLD Reference provenance changed before backup.");
+        }
+
         File.Move(
             transaction.OldSession.ReferenceDestinationPath,
             transaction.BackupReferencePath,
@@ -922,13 +931,23 @@ public sealed partial class AssetProcessorService
             return finalSafety;
         }
 
-        TryDeleteFileWithError(
-            transaction.BackupReferencePath,
-            errors);
+        if (File.Exists(transaction.BackupReferencePath))
+        {
+            TryDeleteHashOwnedFileWithError(
+                transaction.BackupReferencePath,
+                transaction.OldSession.ReferenceHash!,
+                "backup reference image",
+                errors);
+        }
 
-        TryDeleteFileWithError(
-            transaction.BackupProvenancePath,
-            errors);
+        if (File.Exists(transaction.BackupProvenancePath))
+        {
+            TryDeleteHashOwnedFileWithError(
+                transaction.BackupProvenancePath,
+                transaction.OldSession.ReferenceProvenanceHash!,
+                "backup reference provenance",
+                errors);
+        }
 
         if (errors.Count == 0)
         {
@@ -1143,13 +1162,31 @@ public sealed partial class AssetProcessorService
         // Rollback Provenance
         if (backupProvExists)
         {
-            TryDeleteFileWithError(
-                transaction.OldSession.ReferenceProvenancePath,
-                errors);
+            if (File.Exists(transaction.OldSession.ReferenceProvenancePath))
+            {
+                var currProvHash = ComputeSha256(transaction.OldSession.ReferenceProvenancePath);
+                var validOld = string.Equals(currProvHash, transaction.OldSession.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase);
+                var validNew = string.Equals(currProvHash, transaction.NewSession.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase);
 
-            TryRestoreFileWithError(
+                if (validOld || validNew)
+                {
+                    TryDeleteHashOwnedFileWithError(
+                        transaction.OldSession.ReferenceProvenancePath,
+                        currProvHash,
+                        "current reference provenance",
+                        errors);
+                }
+                else
+                {
+                    errors.Add(
+                        $"Current reference provenance at '{transaction.OldSession.ReferenceProvenancePath}' hash no longer matches old or new provenance authority. File preserved.");
+                }
+            }
+
+            TryRestoreHashOwnedFileWithError(
                 transaction.BackupProvenancePath,
                 transaction.OldSession.ReferenceProvenancePath,
+                transaction.OldSession.ReferenceProvenanceHash!,
                 "old reference provenance",
                 errors);
         }
@@ -1157,33 +1194,46 @@ public sealed partial class AssetProcessorService
         // Rollback Reference Image
         if (backupRefExists)
         {
-            if (!sameFilename && newRefExists)
+            if (!sameFilename && newRefExists && File.Exists(transaction.NewSession.ReferenceDestinationPath))
             {
-                TryDeleteFileWithError(
+                TryDeleteHashOwnedFileWithError(
                     transaction.NewSession.ReferenceDestinationPath,
+                    transaction.NewSession.ReferenceHash!,
+                    "new reference image",
                     errors);
             }
 
-            if (oldRefExists)
+            if (oldRefExists && File.Exists(transaction.OldSession.ReferenceDestinationPath))
             {
-                TryDeleteFileWithError(
+                var expectedDestHash = sameFilename
+                    ? (string.Equals(ComputeSha256(transaction.OldSession.ReferenceDestinationPath), transaction.NewSession.ReferenceHash, StringComparison.OrdinalIgnoreCase)
+                        ? transaction.NewSession.ReferenceHash!
+                        : transaction.OldSession.ReferenceHash!)
+                    : transaction.OldSession.ReferenceHash!;
+
+                TryDeleteHashOwnedFileWithError(
                     transaction.OldSession.ReferenceDestinationPath,
+                    expectedDestHash,
+                    "old reference destination",
                     errors);
             }
 
-            TryRestoreFileWithError(
+            TryRestoreHashOwnedFileWithError(
                 transaction.BackupReferencePath,
                 transaction.OldSession.ReferenceDestinationPath,
+                transaction.OldSession.ReferenceHash!,
                 "old reference image",
                 errors);
         }
         else
         {
             // Old reference destination was verified intact on disk; clean up new reference file if different
-            if (!sameFilename && newRefExists)
+            if (!sameFilename && newRefExists && File.Exists(transaction.NewSession.ReferenceDestinationPath))
             {
-                TryDeleteFileWithError(
+                TryDeleteHashOwnedFileWithError(
                     transaction.NewSession.ReferenceDestinationPath,
+                    transaction.NewSession.ReferenceHash!,
+                    "new reference image",
                     errors);
             }
         }
@@ -1191,49 +1241,20 @@ public sealed partial class AssetProcessorService
         // Clean up temporary files if they match expected ownership
         if (!string.IsNullOrWhiteSpace(transaction.TempNewReferencePath) && File.Exists(transaction.TempNewReferencePath))
         {
-            try
-            {
-                var tempRefHash = ComputeSha256(transaction.TempNewReferencePath);
-                if (!string.Equals(tempRefHash, transaction.NewSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    errors.Add(
-                        "Replacement temp Reference no longer matches NewSession.ReferenceHash. Unknown file was preserved.");
-                }
-                else
-                {
-                    TryDeleteFileWithError(transaction.TempNewReferencePath, errors);
-                }
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"Could not verify replacement temp Reference: {ex.Message}");
-            }
+            TryDeleteHashOwnedFileWithError(
+                transaction.TempNewReferencePath,
+                transaction.NewSession.ReferenceHash!,
+                "replacement temp Reference",
+                errors);
         }
 
         if (!string.IsNullOrWhiteSpace(transaction.TempNewProvenancePath) && File.Exists(transaction.TempNewProvenancePath))
         {
-            try
-            {
-                var tempProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
-                    transaction.NewSession,
-                    transaction.TempNewProvenancePath,
-                    _templateService);
-
-                if (!tempProvValidation.IsValid)
-                {
-                    errors.Add(
-                        "Replacement temp provenance does not match NewSession provenance authority: "
-                        + string.Join("; ", tempProvValidation.Errors));
-                }
-                else
-                {
-                    TryDeleteFileWithError(transaction.TempNewProvenancePath, errors);
-                }
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"Could not verify replacement temp provenance: {ex.Message}");
-            }
+            TryDeleteHashOwnedFileWithError(
+                transaction.TempNewProvenancePath,
+                transaction.NewSession.ReferenceProvenanceHash!,
+                "replacement temp provenance",
+                errors);
         }
 
         if (errors.Count > 0)

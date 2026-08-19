@@ -617,67 +617,75 @@ public sealed partial class AssetProcessorService
                 ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant()
                 : null);
 
-            // BUG-R16-001 & BUG-R11-001: Verify current hash ownership before deleting promoted files
+            // BUG-R16-001 & BUG-R11-001 & BUG-R12-001: Verify current hash ownership at deletion boundary
             if (provenanceWritten)
             {
-                if (expectedProvHash is not null && TryVerifyFileHashOwnership(finalProvenance, expectedProvHash))
+                if (expectedProvHash is not null)
                 {
-                    TryDeleteFileWithError(
+                    TryDeleteHashOwnedFileWithError(
                         finalProvenance,
+                        expectedProvHash,
+                        "Final provenance",
                         rollbackErrors);
                 }
                 else
                 {
                     rollbackErrors.Add(
-                        $"Final provenance at '{finalProvenance}' hash no longer matches tool-written provenance. File preserved.");
+                        $"Final provenance at '{finalProvenance}' expected hash could not be determined. File preserved.");
                 }
             }
 
             if (mainPromoted)
             {
-                if (sourceHash is not null && TryVerifyFileHashOwnership(rootMainDestination, sourceHash))
+                if (sourceHash is not null)
                 {
-                    TryDeleteFileWithError(
+                    TryDeleteHashOwnedFileWithError(
                         rootMainDestination,
+                        sourceHash,
+                        "Main image",
                         rollbackErrors);
                 }
                 else
                 {
                     rollbackErrors.Add(
-                        $"Main image at '{rootMainDestination}' hash no longer matches expected hash. File preserved.");
+                        $"Main image at '{rootMainDestination}' expected hash could not be determined. File preserved.");
                 }
             }
 
             if (ingamePromoted)
             {
-                if (sourceHash is not null && TryVerifyFileHashOwnership(ingameDestination, sourceHash))
+                if (sourceHash is not null)
                 {
-                    TryDeleteFileWithError(
+                    TryDeleteHashOwnedFileWithError(
                         ingameDestination,
+                        sourceHash,
+                        "Ingame image",
                         rollbackErrors);
                 }
                 else
                 {
                     rollbackErrors.Add(
-                        $"Ingame image at '{ingameDestination}' hash no longer matches expected hash. File preserved.");
+                        $"Ingame image at '{ingameDestination}' expected hash could not be determined. File preserved.");
                 }
             }
 
-            // BUG-R17-002: Verify current temp main image ownership before deleting
+            // BUG-R17-002 & BUG-R12-001: Verify current temp main image ownership before deleting
             if (tempCopied && !mainPromoted)
             {
                 if (File.Exists(tempMainPath))
                 {
-                    if (sourceHash is not null && TryVerifyFileHashOwnership(tempMainPath, sourceHash))
+                    if (sourceHash is not null)
                     {
-                        TryDeleteFileWithError(
+                        TryDeleteHashOwnedFileWithError(
                             tempMainPath,
+                            sourceHash,
+                            "Main temp image",
                             rollbackErrors);
                     }
                     else
                     {
                         rollbackErrors.Add(
-                            $"Main temp image at '{tempMainPath}' hash no longer matches expected hash. File preserved.");
+                            $"Main temp image at '{tempMainPath}' expected hash could not be determined. File preserved.");
                     }
                 }
             }
@@ -686,35 +694,39 @@ public sealed partial class AssetProcessorService
             {
                 if (File.Exists(tempIngamePath))
                 {
-                    if (sourceHash is not null && TryVerifyFileHashOwnership(tempIngamePath, sourceHash))
+                    if (sourceHash is not null)
                     {
-                        TryDeleteFileWithError(
+                        TryDeleteHashOwnedFileWithError(
                             tempIngamePath,
+                            sourceHash,
+                            "Ingame temp image",
                             rollbackErrors);
                     }
                     else
                     {
                         rollbackErrors.Add(
-                            $"Ingame temp image at '{tempIngamePath}' hash no longer matches expected hash. File preserved.");
+                            $"Ingame temp image at '{tempIngamePath}' expected hash could not be determined. File preserved.");
                     }
                 }
             }
 
-            // BUG-R13-004, BUG-R17-002 & BUG-R11-001: Verify temp provenance ownership before deleting
+            // BUG-R13-004, BUG-R17-002, BUG-R11-001 & BUG-R12-001: Verify temp provenance ownership before deleting
             if (tempProvenanceCreatedByThisCall)
             {
                 if (File.Exists(tempProvenancePath))
                 {
-                    if (expectedProvHash is not null && TryVerifyFileHashOwnership(tempProvenancePath, expectedProvHash))
+                    if (expectedProvHash is not null)
                     {
-                        TryDeleteFileWithError(
+                        TryDeleteHashOwnedFileWithError(
                             tempProvenancePath,
+                            expectedProvHash,
+                            "Main temp provenance",
                             rollbackErrors);
                     }
                     else
                     {
                         rollbackErrors.Add(
-                            $"Main temp provenance at '{tempProvenancePath}' hash no longer matches tool-written provenance. File preserved.");
+                            $"Main temp provenance at '{tempProvenancePath}' expected hash could not be determined. File preserved.");
                     }
                 }
             }
@@ -942,42 +954,67 @@ public sealed partial class AssetProcessorService
                 "Ingame folder became a reparse point before Main rollback. No files were deleted.");
         }
 
+        var expectedProvHash = session.MainProvenanceHash ?? (session.MainPrompt is not null && session.MainProcessedAt.HasValue
+            ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(
+                session.WorkflowMode == AssetWorkflowMode.NoReference
+                    ? _templateService.RenderFinalNoReference(session.MainFilename!, session.ProjectName, session.MainProcessedAt.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt)
+                    : _templateService.RenderFinal(session.MainFilename!, session.ReferenceFilename, session.ProjectName, session.MainProcessedAt.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt)))).ToLowerInvariant()
+            : string.Empty);
+
         var errors =
             new List<string>();
 
-        TryDeleteFileWithError(
-            provenancePath,
-            errors);
-
-        TryDeleteFileWithError(
-            rootMainPath,
-            errors);
-
-        if (!string.IsNullOrWhiteSpace(ingamePath))
+        if (File.Exists(provenancePath))
         {
-            TryDeleteFileWithError(
+            TryDeleteHashOwnedFileWithError(
+                provenancePath,
+                expectedProvHash,
+                "Final provenance",
+                errors);
+        }
+
+        if (File.Exists(rootMainPath))
+        {
+            TryDeleteHashOwnedFileWithError(
+                rootMainPath,
+                session.MainHash!,
+                "Main image",
+                errors);
+        }
+
+        if (!string.IsNullOrWhiteSpace(ingamePath) && File.Exists(ingamePath))
+        {
+            TryDeleteHashOwnedFileWithError(
                 ingamePath,
+                session.MainHash!,
+                "Ingame image",
                 errors);
         }
 
         if (!string.IsNullOrWhiteSpace(tempImage) && File.Exists(tempImage))
         {
-            TryDeleteFileWithError(
+            TryDeleteHashOwnedFileWithError(
                 tempImage,
+                session.MainHash!,
+                "Main temp image",
                 errors);
         }
 
         if (!string.IsNullOrWhiteSpace(tempIngame) && File.Exists(tempIngame))
         {
-            TryDeleteFileWithError(
+            TryDeleteHashOwnedFileWithError(
                 tempIngame,
+                session.MainHash!,
+                "Ingame temp image",
                 errors);
         }
 
         if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
         {
-            TryDeleteFileWithError(
+            TryDeleteHashOwnedFileWithError(
                 tempProv,
+                expectedProvHash,
+                "Main temp provenance",
                 errors);
         }
 

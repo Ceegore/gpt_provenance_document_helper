@@ -156,6 +156,54 @@ public sealed partial class AssetProcessorService
         }
     }
 
+    // BUG-R12-001: Delete file only after verifying exact hash ownership immediately before deletion (after hook)
+    private bool TryDeleteHashOwnedFileWithError(
+        string path,
+        string expectedHash,
+        string description,
+        ICollection<string> errors)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return true;
+            }
+
+            // Test/external-race boundary must occur BEFORE the final ownership verification.
+            OnBeforeDeleteFileHook?.Invoke(path);
+
+            if (!File.Exists(path))
+            {
+                return true;
+            }
+
+            var actualHash = ComputeSha256(path);
+
+            if (!string.Equals(
+                    actualHash,
+                    expectedHash,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                errors.Add(
+                    $"{description} at '{path}' changed before deletion. File preserved.");
+
+                return false;
+            }
+
+            File.Delete(path);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errors.Add(
+                $"Could not delete {description} '{path}': {ex.Message}");
+
+            return false;
+        }
+    }
+
     private static void TryDeleteFileWithError(
         string path,
         ICollection<string> errors)
@@ -200,6 +248,73 @@ public sealed partial class AssetProcessorService
         {
             errors.Add(
                 $"Could not delete empty directory '{path}': {ex.Message}");
+        }
+    }
+
+    // BUG-R12-001: Restore file only after verifying exact hash ownership immediately before restore (after hook)
+    private bool TryRestoreHashOwnedFileWithError(
+        string backupPath,
+        string destinationPath,
+        string expectedHash,
+        string description,
+        ICollection<string> errors)
+    {
+        try
+        {
+            if (!File.Exists(backupPath))
+            {
+                errors.Add(
+                    $"{description} backup is missing: {backupPath}");
+
+                return false;
+            }
+
+            if (File.Exists(destinationPath))
+            {
+                errors.Add(
+                    $"Could not restore {description}: destination already exists: {destinationPath}");
+
+                return false;
+            }
+
+            OnBeforeRestoreFileHook?.Invoke(
+                backupPath,
+                destinationPath);
+
+            if (!File.Exists(backupPath))
+            {
+                errors.Add(
+                    $"{description} backup disappeared before restore.");
+
+                return false;
+            }
+
+            var actualHash = ComputeSha256(backupPath);
+
+            if (!string.Equals(
+                    actualHash,
+                    expectedHash,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                errors.Add(
+                    $"{description} backup changed before restore. Backup preserved.");
+
+                return false;
+            }
+
+            File.Move(
+                backupPath,
+                destinationPath,
+                overwrite: false);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errors.Add(
+                $"Could not restore {description}: {ex.Message}");
+
+            return false;
         }
     }
 
