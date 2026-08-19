@@ -28,6 +28,15 @@ public sealed class SessionService
     [ThreadStatic]
     internal static Action<AssetSession>? OnBeforeSaveSessionHook;
 
+    [ThreadStatic]
+    internal static Action<string>? OnBeforeCancelFileMoveHook;
+
+    [ThreadStatic]
+    internal static Action<string>? OnBeforeCancelFileDeleteHook;
+
+    [ThreadStatic]
+    internal static Action<string, string>? OnBeforeCancelRestoreHook;
+
     private readonly string _sessionPath;
     private readonly TemplateService? _templateService;
     private readonly ValidationService? _validationService;
@@ -243,6 +252,8 @@ public sealed class SessionService
 
             var provenanceJustMoved = false;
 
+            string? expectedProvHash = session.ReferenceProvenanceHash;
+
             if (origProvExists && !tempProvExists)
             {
                 // BUG-R19-002: Re-verify exact provenance ownership immediately before moving
@@ -258,14 +269,28 @@ public sealed class SessionService
                     throw new InvalidDataException($"Reference provenance on disk does not match expected session provenance: {string.Join("; ", provValidation.Errors)}");
                 }
 
-                EnsureCancelPathsAreSafe(session);
-                File.Move(session.ReferenceProvenancePath, tempProvenancePath, overwrite: false);
+                if (expectedProvHash is null)
+                {
+                    expectedProvHash = ValidationService.ComputeSha256(session.ReferenceProvenancePath);
+                }
+
+                MoveHashOwnedCancelFile(
+                    session.ReferenceProvenancePath,
+                    tempProvenancePath,
+                    expectedProvHash,
+                    "reference provenance",
+                    session);
+
                 provenanceJustMoved = true;
                 OnCancelProvenanceMovedHook?.Invoke(session);
             }
             else if (!origProvExists && tempProvExists)
             {
                 // Already moved in a previous attempt
+                if (expectedProvHash is null)
+                {
+                    expectedProvHash = ValidationService.ComputeSha256(tempProvenancePath);
+                }
             }
             else if (origProvExists && tempProvExists)
             {
@@ -293,11 +318,14 @@ public sealed class SessionService
                     throw new IOException($"Could not verify reference image ownership before rename: {ex.Message}", ex);
                 }
 
-                EnsureCancelPathsAreSafe(session);
-
                 try
                 {
-                    File.Move(session.ReferenceDestinationPath, tempDestinationPath, overwrite: false);
+                    MoveHashOwnedCancelFile(
+                        session.ReferenceDestinationPath,
+                        tempDestinationPath,
+                        session.ReferenceHash!,
+                        "reference image",
+                        session);
                 }
                 catch (Exception moveEx)
                 {
@@ -317,7 +345,12 @@ public sealed class SessionService
 
                         try
                         {
-                            File.Move(tempProvenancePath, session.ReferenceProvenancePath, overwrite: false);
+                            RestoreHashOwnedCancelFile(
+                                tempProvenancePath,
+                                session.ReferenceProvenancePath,
+                                expectedProvHash!,
+                                "reference provenance",
+                                session);
 
                             session.CancelPhase = CancelPhase.None;
                             session.CancellationId = null;
@@ -392,6 +425,8 @@ public sealed class SessionService
                 }
             }
 
+            string? expectedProvHash = session.ReferenceProvenanceHash;
+
             if (File.Exists(tempProvenancePath) && _templateService != null)
             {
                 var validator = _validationService ?? new ValidationService();
@@ -407,6 +442,11 @@ public sealed class SessionService
                     throw new InvalidDataException(
                         $"Cancel-temp reference provenance '{tempProvenancePath}' content no longer matches expected session provenance: {string.Join("; ", provValidation.Errors)}. File preserved.");
                 }
+
+                if (expectedProvHash is null)
+                {
+                    expectedProvHash = ValidationService.ComputeSha256(tempProvenancePath);
+                }
             }
 
             EnsureCancelPathsAreSafe(session);
@@ -417,7 +457,11 @@ public sealed class SessionService
             {
                 try
                 {
-                    File.Delete(tempProvenancePath);
+                    DeleteHashOwnedCancelFile(
+                        tempProvenancePath,
+                        expectedProvHash!,
+                        "reference provenance",
+                        session);
                 }
                 catch (Exception ex)
                 {
@@ -429,7 +473,11 @@ public sealed class SessionService
             {
                 try
                 {
-                    File.Delete(tempDestinationPath);
+                    DeleteHashOwnedCancelFile(
+                        tempDestinationPath,
+                        session.ReferenceHash!,
+                        "reference image",
+                        session);
                 }
                 catch (Exception ex)
                 {
@@ -478,6 +526,95 @@ public sealed class SessionService
 
             Delete();
         }
+    }
+
+    private void MoveHashOwnedCancelFile(
+        string sourcePath,
+        string destinationPath,
+        string expectedHash,
+        string description,
+        AssetSession session)
+    {
+        OnBeforeCancelFileMoveHook?.Invoke(sourcePath);
+
+        EnsureCancelPathsAreSafe(session);
+
+        if (!File.Exists(sourcePath))
+        {
+            throw new IOException($"Cancel {description} at '{sourcePath}' is missing before move.");
+        }
+
+        if (File.Exists(destinationPath))
+        {
+            throw new IOException($"Cancel destination '{destinationPath}' already exists before move.");
+        }
+
+        var actualHash = ValidationService.ComputeSha256(sourcePath);
+        if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"Cancel {description} at '{sourcePath}' hash changed before move.");
+        }
+
+        File.Move(sourcePath, destinationPath, overwrite: false);
+    }
+
+    private void RestoreHashOwnedCancelFile(
+        string sourcePath,
+        string destinationPath,
+        string expectedHash,
+        string description,
+        AssetSession session)
+    {
+        OnBeforeCancelRestoreHook?.Invoke(sourcePath, destinationPath);
+
+        EnsureCancelPathsAreSafe(session);
+
+        if (!File.Exists(sourcePath))
+        {
+            throw new IOException($"Cancel restore {description} at '{sourcePath}' is missing.");
+        }
+
+        if (File.Exists(destinationPath))
+        {
+            throw new IOException($"Cancel destination '{destinationPath}' already exists before restore.");
+        }
+
+        var actualHash = ValidationService.ComputeSha256(sourcePath);
+        if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"Cancel restore {description} at '{sourcePath}' hash changed before restore.");
+        }
+
+        File.Move(sourcePath, destinationPath, overwrite: false);
+    }
+
+    private void DeleteHashOwnedCancelFile(
+        string path,
+        string expectedHash,
+        string description,
+        AssetSession session)
+    {
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        OnBeforeCancelFileDeleteHook?.Invoke(path);
+
+        EnsureCancelPathsAreSafe(session);
+
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        var actualHash = ValidationService.ComputeSha256(path);
+        if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"Cancel temporary {description} at '{path}' hash changed before deletion. File preserved.");
+        }
+
+        File.Delete(path);
     }
 
     private void EnsureCancelPathsAreSafe(

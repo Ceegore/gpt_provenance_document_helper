@@ -617,7 +617,7 @@ public sealed partial class AssetProcessorService
                 ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant()
                 : null);
 
-            // BUG-R16-001 & BUG-R11-001 & BUG-R12-001: Verify current hash ownership at deletion boundary
+            // BUG-R16-001 & BUG-R11-001 & BUG-R12-001 & BUG-R13-001: Verify current path safety and hash ownership at deletion boundary
             if (provenanceWritten)
             {
                 if (expectedProvHash is not null)
@@ -626,6 +626,7 @@ public sealed partial class AssetProcessorService
                         finalProvenance,
                         expectedProvHash,
                         "Final provenance",
+                        () => ValidateSessionDestructivePathSafety(session),
                         rollbackErrors);
                 }
                 else
@@ -643,6 +644,7 @@ public sealed partial class AssetProcessorService
                         rootMainDestination,
                         sourceHash,
                         "Main image",
+                        () => ValidateSessionDestructivePathSafety(session),
                         rollbackErrors);
                 }
                 else
@@ -660,6 +662,7 @@ public sealed partial class AssetProcessorService
                         ingameDestination,
                         sourceHash,
                         "Ingame image",
+                        () => ValidateSessionDestructivePathSafety(session),
                         rollbackErrors);
                 }
                 else
@@ -669,7 +672,7 @@ public sealed partial class AssetProcessorService
                 }
             }
 
-            // BUG-R17-002 & BUG-R12-001: Verify current temp main image ownership before deleting
+            // BUG-R17-002 & BUG-R12-001 & BUG-R13-001: Verify current temp main image ownership before deleting
             if (tempCopied && !mainPromoted)
             {
                 if (File.Exists(tempMainPath))
@@ -680,6 +683,7 @@ public sealed partial class AssetProcessorService
                             tempMainPath,
                             sourceHash,
                             "Main temp image",
+                            () => ValidateSessionDestructivePathSafety(session),
                             rollbackErrors);
                     }
                     else
@@ -700,6 +704,7 @@ public sealed partial class AssetProcessorService
                             tempIngamePath,
                             sourceHash,
                             "Ingame temp image",
+                            () => ValidateSessionDestructivePathSafety(session),
                             rollbackErrors);
                     }
                     else
@@ -710,7 +715,7 @@ public sealed partial class AssetProcessorService
                 }
             }
 
-            // BUG-R13-004, BUG-R17-002, BUG-R11-001 & BUG-R12-001: Verify temp provenance ownership before deleting
+            // BUG-R13-004, BUG-R17-002, BUG-R11-001, BUG-R12-001 & BUG-R13-001: Verify temp provenance ownership before deleting
             if (tempProvenanceCreatedByThisCall)
             {
                 if (File.Exists(tempProvenancePath))
@@ -721,6 +726,7 @@ public sealed partial class AssetProcessorService
                             tempProvenancePath,
                             expectedProvHash,
                             "Main temp provenance",
+                            () => ValidateSessionDestructivePathSafety(session),
                             rollbackErrors);
                     }
                     else
@@ -970,6 +976,7 @@ public sealed partial class AssetProcessorService
                 provenancePath,
                 expectedProvHash,
                 "Final provenance",
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -979,6 +986,7 @@ public sealed partial class AssetProcessorService
                 rootMainPath,
                 session.MainHash!,
                 "Main image",
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -988,6 +996,7 @@ public sealed partial class AssetProcessorService
                 ingamePath,
                 session.MainHash!,
                 "Ingame image",
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -997,6 +1006,7 @@ public sealed partial class AssetProcessorService
                 tempImage,
                 session.MainHash!,
                 "Main temp image",
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -1006,6 +1016,7 @@ public sealed partial class AssetProcessorService
                 tempIngame,
                 session.MainHash!,
                 "Ingame temp image",
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -1015,6 +1026,7 @@ public sealed partial class AssetProcessorService
                 tempProv,
                 expectedProvHash,
                 "Main temp provenance",
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -1022,6 +1034,7 @@ public sealed partial class AssetProcessorService
         {
             TryDeleteEmptyDirectoryWithError(
                 session.GetIngameFolderPath(),
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -1030,6 +1043,7 @@ public sealed partial class AssetProcessorService
         {
             TryDeleteEmptyDirectoryWithError(
                 session.AssetFolder,
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 

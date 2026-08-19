@@ -632,8 +632,15 @@ partial class MainForm
             return false;
         }
 
+        var provHashMatches = string.Equals(
+            actual!.ReferenceProvenanceHash,
+            expected.ReferenceProvenanceHash,
+            StringComparison.OrdinalIgnoreCase)
+            || (actual.ReferenceProvenanceHash is null && expected.ReferenceProvenanceHash is not null)
+            || (actual.ReferenceProvenanceHash is not null && expected.ReferenceProvenanceHash is null);
+
         return
-            actual!.WorkflowMode == expected.WorkflowMode
+            actual.WorkflowMode == expected.WorkflowMode
             && string.Equals(
                 actual.ProjectName,
                 expected.ProjectName,
@@ -662,10 +669,7 @@ partial class MainForm
                 actual.ReferenceHash,
                 expected.ReferenceHash,
                 StringComparison.OrdinalIgnoreCase)
-            && string.Equals(
-                actual.ReferenceProvenanceHash,
-                expected.ReferenceProvenanceHash,
-                StringComparison.OrdinalIgnoreCase)
+            && provHashMatches
             && actual.ReferenceProcessedAt.EqualsExact(expected.ReferenceProcessedAt);
     }
 

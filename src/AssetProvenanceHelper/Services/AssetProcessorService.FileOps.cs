@@ -156,13 +156,20 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    // BUG-R12-001: Delete file only after verifying exact hash ownership immediately before deletion (after hook)
+    // BUG-R12-001 & BUG-R13-001: Delete file only after verifying path safety and exact hash ownership immediately before deletion (after hook)
     private bool TryDeleteHashOwnedFileWithError(
         string path,
         string expectedHash,
         string description,
+        Func<ValidationResult> validatePathSafety,
         ICollection<string> errors)
     {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(expectedHash);
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(validatePathSafety);
+        ArgumentNullException.ThrowIfNull(errors);
+
         try
         {
             if (!File.Exists(path))
@@ -170,8 +177,17 @@ public sealed partial class AssetProcessorService
                 return true;
             }
 
-            // Test/external-race boundary must occur BEFORE the final ownership verification.
+            // Test/external-race boundary must occur BEFORE the final path and ownership verification.
             OnBeforeDeleteFileHook?.Invoke(path);
+
+            var pathSafety = validatePathSafety();
+            if (!pathSafety.IsValid)
+            {
+                errors.Add(
+                    $"{description} at '{path}' was preserved because path safety changed before deletion: {string.Join("; ", pathSafety.Errors)}");
+
+                return false;
+            }
 
             if (!File.Exists(path))
             {
@@ -223,10 +239,16 @@ public sealed partial class AssetProcessorService
         }
     }
 
+    // BUG-R13-001: Delete empty directory with path safety recheck after hook
     private static void TryDeleteEmptyDirectoryWithError(
         string path,
+        Func<ValidationResult> validatePathSafety,
         ICollection<string> errors)
     {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(validatePathSafety);
+        ArgumentNullException.ThrowIfNull(errors);
+
         try
         {
             if (!Directory.Exists(path))
@@ -242,6 +264,34 @@ public sealed partial class AssetProcessorService
             }
 
             OnBeforeDeleteDirectoryHook?.Invoke(path);
+
+            var pathSafety = validatePathSafety();
+            if (!pathSafety.IsValid)
+            {
+                errors.Add(
+                    $"Directory at '{path}' was not deleted because path safety changed: {string.Join("; ", pathSafety.Errors)}");
+                return;
+            }
+
+            if (!Directory.Exists(path))
+            {
+                return;
+            }
+
+            if (Directory
+                .EnumerateFileSystemEntries(path)
+                .Any())
+            {
+                return;
+            }
+
+            if (ValidationService.IsReparsePoint(path))
+            {
+                errors.Add(
+                    $"Directory at '{path}' was not deleted because it is a reparse point.");
+                return;
+            }
+
             Directory.Delete(path);
         }
         catch (Exception ex)
@@ -251,14 +301,22 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    // BUG-R12-001: Restore file only after verifying exact hash ownership immediately before restore (after hook)
+    // BUG-R12-001 & BUG-R13-001: Restore file only after verifying path safety and exact hash ownership immediately before restore (after hook)
     private bool TryRestoreHashOwnedFileWithError(
         string backupPath,
         string destinationPath,
         string expectedHash,
         string description,
+        Func<ValidationResult> validatePathSafety,
         ICollection<string> errors)
     {
+        ArgumentNullException.ThrowIfNull(backupPath);
+        ArgumentNullException.ThrowIfNull(destinationPath);
+        ArgumentNullException.ThrowIfNull(expectedHash);
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(validatePathSafety);
+        ArgumentNullException.ThrowIfNull(errors);
+
         try
         {
             if (!File.Exists(backupPath))
@@ -281,10 +339,27 @@ public sealed partial class AssetProcessorService
                 backupPath,
                 destinationPath);
 
+            var pathSafety = validatePathSafety();
+            if (!pathSafety.IsValid)
+            {
+                errors.Add(
+                    $"{description} was not restored because path safety changed before restore: {string.Join("; ", pathSafety.Errors)}");
+
+                return false;
+            }
+
             if (!File.Exists(backupPath))
             {
                 errors.Add(
                     $"{description} backup disappeared before restore.");
+
+                return false;
+            }
+
+            if (File.Exists(destinationPath))
+            {
+                errors.Add(
+                    $"Could not restore {description}: destination appeared before restore: {destinationPath}");
 
                 return false;
             }
@@ -318,36 +393,32 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    private static void TryRestoreFileWithError(
-        string backupPath,
-        string destinationPath,
-        string description,
-        ICollection<string> errors)
+    // BUG-R13-001: Validate full session path hierarchy and reparse states for destructive operations
+    private ValidationResult ValidateSessionDestructivePathSafety(AssetSession session)
     {
-        try
+        var pathSafety = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+        if (!pathSafety.IsValid)
         {
-            if (!File.Exists(backupPath))
-            {
-                return;
-            }
-
-            if (File.Exists(destinationPath))
-            {
-                errors.Add(
-                    $"Could not restore {description}: destination already exists: {destinationPath}");
-
-                return;
-            }
-
-            File.Move(
-                backupPath,
-                destinationPath,
-                overwrite: false);
+            return pathSafety;
         }
-        catch (Exception ex)
+
+        if (ValidationService.IsReparsePoint(session.AssetFolder))
         {
-            errors.Add(
-                $"Could not restore {description}: {ex.Message}");
+            return ValidationResult.Failure("Asset folder is a reparse point.");
         }
+
+        var refFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+        if (Directory.Exists(refFolder) && ValidationService.IsReparsePoint(refFolder))
+        {
+            return ValidationResult.Failure("Reference folder is a reparse point.");
+        }
+
+        var ingameFolder = session.GetIngameFolderPath();
+        if (Directory.Exists(ingameFolder) && ValidationService.IsReparsePoint(ingameFolder))
+        {
+            return ValidationResult.Failure("Ingame folder is a reparse point.");
+        }
+
+        return ValidationResult.Success();
     }
 }

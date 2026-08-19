@@ -311,7 +311,12 @@ public sealed partial class AssetProcessorService
             {
                 if (expectedProvHash is not null)
                 {
-                    TryDeleteHashOwnedFileWithError(tempProvenancePath, expectedProvHash, "Reference temp provenance", rollbackErrors);
+                    TryDeleteHashOwnedFileWithError(
+                        tempProvenancePath,
+                        expectedProvHash,
+                        "Reference temp provenance",
+                        () => ValidateSessionDestructivePathSafety(session),
+                        rollbackErrors);
                 }
                 else
                 {
@@ -321,14 +326,24 @@ public sealed partial class AssetProcessorService
 
             if (tempImageCopied && File.Exists(tempImagePath))
             {
-                TryDeleteHashOwnedFileWithError(tempImagePath, session.ReferenceHash, "Reference temp image", rollbackErrors);
+                TryDeleteHashOwnedFileWithError(
+                    tempImagePath,
+                    session.ReferenceHash,
+                    "Reference temp image",
+                    () => ValidateSessionDestructivePathSafety(session),
+                    rollbackErrors);
             }
 
             if (provenancePromoted && File.Exists(referenceProvenance))
             {
                 if (expectedProvHash is not null)
                 {
-                    TryDeleteHashOwnedFileWithError(referenceProvenance, expectedProvHash, "Reference provenance", rollbackErrors);
+                    TryDeleteHashOwnedFileWithError(
+                        referenceProvenance,
+                        expectedProvHash,
+                        "Reference provenance",
+                        () => ValidateSessionDestructivePathSafety(session),
+                        rollbackErrors);
                 }
                 else
                 {
@@ -338,17 +353,28 @@ public sealed partial class AssetProcessorService
 
             if (imagePromoted && File.Exists(referenceDestination))
             {
-                TryDeleteHashOwnedFileWithError(referenceDestination, session.ReferenceHash, "Reference image", rollbackErrors);
+                TryDeleteHashOwnedFileWithError(
+                    referenceDestination,
+                    session.ReferenceHash,
+                    "Reference image",
+                    () => ValidateSessionDestructivePathSafety(session),
+                    rollbackErrors);
             }
 
             if (!referenceFolderExisted && Directory.Exists(referenceFolder))
             {
-                TryDeleteEmptyDirectoryWithError(referenceFolder, rollbackErrors);
+                TryDeleteEmptyDirectoryWithError(
+                    referenceFolder,
+                    () => ValidateSessionDestructivePathSafety(session),
+                    rollbackErrors);
             }
 
             if (!assetFolderExisted && Directory.Exists(assetFolder))
             {
-                TryDeleteEmptyDirectoryWithError(assetFolder, rollbackErrors);
+                TryDeleteEmptyDirectoryWithError(
+                    assetFolder,
+                    () => ValidateSessionDestructivePathSafety(session),
+                    rollbackErrors);
             }
 
             if (rollbackErrors.Count > 0)
@@ -475,28 +501,49 @@ public sealed partial class AssetProcessorService
 
         if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
         {
-            TryDeleteHashOwnedFileWithError(tempProv, session.ReferenceProvenanceHash!, "Reference temp provenance", errors);
+            TryDeleteHashOwnedFileWithError(
+                tempProv,
+                session.ReferenceProvenanceHash!,
+                "Reference temp provenance",
+                () => ValidateSessionDestructivePathSafety(session),
+                errors);
         }
 
         if (!string.IsNullOrWhiteSpace(tempImage) && File.Exists(tempImage))
         {
-            TryDeleteHashOwnedFileWithError(tempImage, session.ReferenceHash!, "Reference temp image", errors);
+            TryDeleteHashOwnedFileWithError(
+                tempImage,
+                session.ReferenceHash!,
+                "Reference temp image",
+                () => ValidateSessionDestructivePathSafety(session),
+                errors);
         }
 
         if (File.Exists(session.ReferenceProvenancePath))
         {
-            TryDeleteHashOwnedFileWithError(session.ReferenceProvenancePath, session.ReferenceProvenanceHash!, "Reference provenance", errors);
+            TryDeleteHashOwnedFileWithError(
+                session.ReferenceProvenancePath,
+                session.ReferenceProvenanceHash!,
+                "Reference provenance",
+                () => ValidateSessionDestructivePathSafety(session),
+                errors);
         }
 
         if (File.Exists(session.ReferenceDestinationPath))
         {
-            TryDeleteHashOwnedFileWithError(session.ReferenceDestinationPath, session.ReferenceHash!, "Reference image", errors);
+            TryDeleteHashOwnedFileWithError(
+                session.ReferenceDestinationPath,
+                session.ReferenceHash!,
+                "Reference image",
+                () => ValidateSessionDestructivePathSafety(session),
+                errors);
         }
 
         if (session.WasReferenceFolderCreatedByTool)
         {
             TryDeleteEmptyDirectoryWithError(
                 referenceFolder,
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -504,6 +551,7 @@ public sealed partial class AssetProcessorService
         {
             TryDeleteEmptyDirectoryWithError(
                 session.AssetFolder,
+                () => ValidateSessionDestructivePathSafety(session),
                 errors);
         }
 
@@ -569,6 +617,35 @@ public sealed partial class AssetProcessorService
         var newProvenance = _templateService.RenderReference(newFilename, oldSession.ProjectName, generationDate);
         var newProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(newProvenance))).ToLowerInvariant();
 
+        // BUG-R13-002: Materialize legacy ReferenceProvenanceHash on transaction OldSession authority
+        var oldProvHash = !string.IsNullOrWhiteSpace(oldSession.ReferenceProvenanceHash)
+            ? oldSession.ReferenceProvenanceHash
+            : ComputeSha256(oldSession.ReferenceProvenancePath);
+
+        var oldSessionAuthority = new AssetSession
+        {
+            ProjectName = oldSession.ProjectName,
+            AssetRootFolder = oldSession.AssetRootFolder,
+            AssetFolderName = oldSession.AssetFolderName,
+            AssetFolder = oldSession.AssetFolder,
+            ReferenceSourcePath = oldSession.ReferenceSourcePath,
+            ReferenceDestinationPath = oldSession.ReferenceDestinationPath,
+            ReferenceFilename = oldSession.ReferenceFilename,
+            ReferenceProvenancePath = oldSession.ReferenceProvenancePath,
+            ReferenceHash = oldSession.ReferenceHash,
+            ReferenceProvenanceHash = oldProvHash,
+            ReferenceProcessedAt = oldSession.ReferenceProcessedAt,
+            MainFilename = oldSession.MainFilename,
+            MainPrompt = oldSession.MainPrompt,
+            MainHash = oldSession.MainHash,
+            MainProvenanceHash = oldSession.MainProvenanceHash,
+            MainProcessedAt = oldSession.MainProcessedAt,
+            WorkflowMode = oldSession.WorkflowMode,
+            IsMainCommitting = oldSession.IsMainCommitting,
+            WasAssetFolderCreatedByTool = oldSession.WasAssetFolderCreatedByTool,
+            WasReferenceFolderCreatedByTool = oldSession.WasReferenceFolderCreatedByTool
+        };
+
         var newSession = new AssetSession
         {
             ProjectName = oldSession.ProjectName,
@@ -589,7 +666,7 @@ public sealed partial class AssetProcessorService
         return new ReferenceReplacementTransaction
         {
             TransactionId = id,
-            OldSession = oldSession,
+            OldSession = oldSessionAuthority,
             NewSession = newSession,
             BackupReferencePath = backupReferencePath,
             BackupProvenancePath = backupProvenancePath,
@@ -937,6 +1014,7 @@ public sealed partial class AssetProcessorService
                 transaction.BackupReferencePath,
                 transaction.OldSession.ReferenceHash!,
                 "backup reference image",
+                () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                 errors);
         }
 
@@ -946,6 +1024,7 @@ public sealed partial class AssetProcessorService
                 transaction.BackupProvenancePath,
                 transaction.OldSession.ReferenceProvenanceHash!,
                 "backup reference provenance",
+                () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                 errors);
         }
 
@@ -1174,6 +1253,7 @@ public sealed partial class AssetProcessorService
                         transaction.OldSession.ReferenceProvenancePath,
                         currProvHash,
                         "current reference provenance",
+                        () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                         errors);
                 }
                 else
@@ -1188,6 +1268,7 @@ public sealed partial class AssetProcessorService
                 transaction.OldSession.ReferenceProvenancePath,
                 transaction.OldSession.ReferenceProvenanceHash!,
                 "old reference provenance",
+                () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                 errors);
         }
 
@@ -1200,6 +1281,7 @@ public sealed partial class AssetProcessorService
                     transaction.NewSession.ReferenceDestinationPath,
                     transaction.NewSession.ReferenceHash!,
                     "new reference image",
+                    () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                     errors);
             }
 
@@ -1215,6 +1297,7 @@ public sealed partial class AssetProcessorService
                     transaction.OldSession.ReferenceDestinationPath,
                     expectedDestHash,
                     "old reference destination",
+                    () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                     errors);
             }
 
@@ -1223,6 +1306,7 @@ public sealed partial class AssetProcessorService
                 transaction.OldSession.ReferenceDestinationPath,
                 transaction.OldSession.ReferenceHash!,
                 "old reference image",
+                () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                 errors);
         }
         else
@@ -1234,6 +1318,7 @@ public sealed partial class AssetProcessorService
                     transaction.NewSession.ReferenceDestinationPath,
                     transaction.NewSession.ReferenceHash!,
                     "new reference image",
+                    () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                     errors);
             }
         }
@@ -1245,6 +1330,7 @@ public sealed partial class AssetProcessorService
                 transaction.TempNewReferencePath,
                 transaction.NewSession.ReferenceHash!,
                 "replacement temp Reference",
+                () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                 errors);
         }
 
@@ -1254,6 +1340,7 @@ public sealed partial class AssetProcessorService
                 transaction.TempNewProvenancePath,
                 transaction.NewSession.ReferenceProvenanceHash!,
                 "replacement temp provenance",
+                () => _validationService.ValidateReferenceReplacementTransaction(transaction),
                 errors);
         }
 
