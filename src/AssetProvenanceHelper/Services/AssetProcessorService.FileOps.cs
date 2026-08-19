@@ -22,6 +22,43 @@ public sealed partial class AssetProcessorService
             overwrite: false);
     }
 
+    internal static void WriteTextDurablyToReservedPath(
+        string path,
+        string content)
+    {
+        if (File.Exists(path))
+        {
+            throw new IOException(
+                $"Target staging file already exists: {path}");
+        }
+
+        var directory =
+            Path.GetDirectoryName(path)
+            ?? throw new InvalidOperationException(
+                $"Could not determine directory for '{path}'.");
+
+        Directory.CreateDirectory(directory);
+
+        using var stream =
+            new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None);
+
+        OnReservedTextStagingOpenedHook?.Invoke(path);
+
+        using var writer =
+            new StreamWriter(
+                stream,
+                new UTF8Encoding(
+                    encoderShouldEmitUTF8Identifier: false));
+
+        writer.Write(content);
+        writer.Flush();
+        stream.Flush(true);
+    }
+
     internal void WriteTextAtomic(
         string targetPath,
         string content)

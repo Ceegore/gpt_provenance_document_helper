@@ -387,6 +387,11 @@ public partial class MainForm : Form
         string context,
         Exception ex)
     {
+        if (IsDisposed)
+        {
+            return;
+        }
+
         AddStatus($"{context} {ex.Message}");
 
         ShowMessageBox(
@@ -400,6 +405,11 @@ public partial class MainForm : Form
         string caption,
         ValidationResult validation)
     {
+        if (IsDisposed)
+        {
+            return;
+        }
+
         AddStatus($"{caption}: {string.Join("; ", validation.Errors)}");
 
         ShowMessageBox(
@@ -413,6 +423,11 @@ public partial class MainForm : Form
 
     private void AddStatus(string message)
     {
+        if (IsDisposed || !IsHandleCreated || txtStatusHistory.IsDisposed)
+        {
+            return;
+        }
+
         var line = $"{DateTime.Now:HH:mm:ss} {message}";
 
         if (txtStatusHistory.TextLength > 0)
@@ -445,4 +460,7 @@ public partial class MainForm : Form
 
     [ThreadStatic]
     internal static Action? OnCancelDurableCommitHook;
+
+    [ThreadStatic]
+    internal static Action? OnReplacementRollbackDurableCommitHook;
 }

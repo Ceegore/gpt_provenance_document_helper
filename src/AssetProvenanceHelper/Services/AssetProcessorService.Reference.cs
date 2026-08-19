@@ -256,7 +256,7 @@ public sealed partial class AssetProcessorService
             }
 
             // 2. Stage pre-rendered verified provenance in deterministic temp path
-            WriteTextAtomic(tempProvenancePath, verifiedProvenance);
+            WriteTextDurablyToReservedPath(tempProvenancePath, verifiedProvenance);
             tempProvenanceWritten = true;
 
             var tempProvHash = Convert.ToHexString(
@@ -658,7 +658,7 @@ public sealed partial class AssetProcessorService
                 "Replacement provenance changed after the Prepared transaction was created.");
         }
 
-        WriteTextAtomic(transaction.TempNewProvenancePath, newProvenance);
+        WriteTextDurablyToReservedPath(transaction.TempNewProvenancePath, newProvenance);
     }
 
     /// <summary>
@@ -674,14 +674,18 @@ public sealed partial class AssetProcessorService
 
         if (!File.Exists(transaction.OldSession.ReferenceDestinationPath))
         {
-            throw new IOException($"Old reference image does not exist: {transaction.OldSession.ReferenceDestinationPath}");
+            throw new IOException($"Old reference destination not found: {transaction.OldSession.ReferenceDestinationPath}");
+        }
+
+        if (!File.Exists(transaction.OldSession.ReferenceProvenancePath))
+        {
+            throw new IOException($"Old reference provenance not found: {transaction.OldSession.ReferenceProvenancePath}");
         }
 
         var oldRefHash = ComputeSha256(transaction.OldSession.ReferenceDestinationPath);
         if (!string.Equals(oldRefHash, transaction.OldSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidDataException(
-                $"Old reference image on disk does not match session ReferenceHash (expected {transaction.OldSession.ReferenceHash}, found {oldRefHash}).");
+            throw new InvalidDataException("Old reference image on disk does not match session ReferenceHash.");
         }
 
         var oldProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
@@ -691,12 +695,6 @@ public sealed partial class AssetProcessorService
 
         if (!oldProvValidation.IsValid)
         {
-            if (oldProvValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new IOException(
-                    $"Could not verify old reference provenance ownership before backup: {string.Join("; ", oldProvValidation.Errors)}");
-            }
-
             throw new InvalidDataException(
                 $"Old reference provenance on disk does not match expected session provenance: {string.Join("; ", oldProvValidation.Errors)}");
         }
@@ -726,6 +724,28 @@ public sealed partial class AssetProcessorService
         ArgumentNullException.ThrowIfNull(transaction);
 
         RequireSafeReferenceReplacementTransaction(transaction);
+
+        if (!File.Exists(transaction.TempNewReferencePath))
+        {
+            throw new IOException("Replacement temp Reference is missing.");
+        }
+
+        var tempRefHash = ComputeSha256(transaction.TempNewReferencePath);
+        if (!string.Equals(tempRefHash, transaction.NewSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Replacement temp Reference no longer matches Prepared ReferenceHash.");
+        }
+
+        if (!File.Exists(transaction.TempNewProvenancePath))
+        {
+            throw new IOException("Replacement temp provenance is missing.");
+        }
+
+        var tempProvHash = ComputeSha256(transaction.TempNewProvenancePath);
+        if (!string.Equals(tempProvHash, transaction.NewSession.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Replacement temp provenance no longer matches Prepared ReferenceProvenanceHash.");
+        }
 
         File.Move(
             transaction.TempNewReferencePath,

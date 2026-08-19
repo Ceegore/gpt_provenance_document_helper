@@ -279,7 +279,7 @@ partial class MainForm
                     return;
                 }
 
-                if (!FinalizeLiveReplacementRollback(transaction))
+                if (!FinalizeLiveReplacementRollback(transaction) || IsDisposed)
                 {
                     return;
                 }
@@ -313,7 +313,7 @@ partial class MainForm
                     return;
                 }
 
-                if (!FinalizeLiveReplacementRollback(transaction))
+                if (!FinalizeLiveReplacementRollback(transaction) || IsDisposed)
                 {
                     return;
                 }
@@ -381,7 +381,7 @@ partial class MainForm
                     var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
                     if (rollback.IsValid)
                     {
-                        if (FinalizeLiveReplacementRollback(transaction))
+                        if (FinalizeLiveReplacementRollback(transaction) && !IsDisposed)
                         {
                             ShowError("Reference replacement encountered an error and previous reference was restored.", ex);
                         }
@@ -485,12 +485,45 @@ partial class MainForm
             return false;
         }
 
+        // Durable rollback commit point.
         _currentSession = tx.OldSession;
-        lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
-        SetSelectedImage(ImageSlot.Reference, null);
         _state = UiState.ReferenceReady;
-        ApplyState();
+
+        CompleteReplacementRollbackUiAfterDurableCommit(tx.OldSession);
+
         return true;
+    }
+
+    private void CompleteReplacementRollbackUiAfterDurableCommit(
+        AssetSession oldSession)
+    {
+        try
+        {
+            OnReplacementRollbackDurableCommitHook?.Invoke();
+
+            lblReference.Text = $"Saved reference: {oldSession.ReferenceFilename}";
+            SetSelectedImage(ImageSlot.Reference, null);
+            ApplyState();
+        }
+        catch (Exception uiEx)
+        {
+            try
+            {
+                ShowMessageBox(
+                    "The previous Reference was restored successfully, but the interface could not be refreshed."
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + uiEx.Message,
+                    "Post-Rollback UI Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch
+            {
+            }
+
+            Close();
+        }
     }
 
     private void HandleCancel()

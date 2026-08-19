@@ -26,6 +26,9 @@ public sealed partial class AssetProcessorService
     [ThreadStatic]
     internal static Action? OnPreparedReferenceAuthorityVerifiedHook;
 
+    [ThreadStatic]
+    internal static Action<string>? OnReservedTextStagingOpenedHook;
+
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
 
