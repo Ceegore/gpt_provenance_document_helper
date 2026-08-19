@@ -41,6 +41,21 @@ public sealed partial class AssetProcessorService
     [ThreadStatic]
     internal static Action<string>? OnBeforeDeleteDirectoryHook;
 
+    [ThreadStatic]
+    internal static Action<AssetSession>? OnBeforeRollbackMainFinalPathGate;
+
+    [ThreadStatic]
+    internal static Action<AssetSession>? OnBeforeRollbackReferenceFinalPathGate;
+
+    [ThreadStatic]
+    internal static Action<ReferenceReplacementTransaction>? OnBeforeRollbackReferenceReplacementFinalPathGate;
+
+    [ThreadStatic]
+    internal static Action<ReferenceReplacementTransaction>? OnBeforeReplacementCleanupFinalPathGate;
+
+    [ThreadStatic]
+    internal static Action<ReferenceReplacementTransaction>? OnBeforeReplacementFinalPathGate;
+
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
 

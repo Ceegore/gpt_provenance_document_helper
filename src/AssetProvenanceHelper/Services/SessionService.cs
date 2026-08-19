@@ -258,6 +258,7 @@ public sealed class SessionService
                     throw new InvalidDataException($"Reference provenance on disk does not match expected session provenance: {string.Join("; ", provValidation.Errors)}");
                 }
 
+                EnsureCancelPathsAreSafe(session);
                 File.Move(session.ReferenceProvenancePath, tempProvenancePath, overwrite: false);
                 provenanceJustMoved = true;
                 OnCancelProvenanceMovedHook?.Invoke(session);
@@ -291,6 +292,8 @@ public sealed class SessionService
                 {
                     throw new IOException($"Could not verify reference image ownership before rename: {ex.Message}", ex);
                 }
+
+                EnsureCancelPathsAreSafe(session);
 
                 try
                 {
@@ -406,6 +409,8 @@ public sealed class SessionService
                 }
             }
 
+            EnsureCancelPathsAreSafe(session);
+
             var deletionErrors = new List<string>();
 
             if (File.Exists(tempProvenancePath))
@@ -441,6 +446,11 @@ public sealed class SessionService
             }
 
             OnBeforeFolderCleanupHook?.Invoke();
+
+            if (ValidationService.IsReparsePoint(session.AssetFolder) || (Directory.Exists(referenceFolder) && ValidationService.IsReparsePoint(referenceFolder)))
+            {
+                throw new IOException("Folder hierarchy became a reparse point before folder cleanup. Preserving session.");
+            }
 
             if (session.WasReferenceFolderCreatedByTool &&
                 Directory.Exists(referenceFolder))

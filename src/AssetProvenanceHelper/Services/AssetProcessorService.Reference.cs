@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using AssetProvenanceHelper.Models;
 
 namespace AssetProvenanceHelper.Services;
@@ -302,15 +303,19 @@ public sealed partial class AssetProcessorService
 
             var rollbackErrors = new List<string>();
 
+            var expectedProvHash = session.ReferenceProvenanceHash ?? (verifiedProvenance is not null
+                ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(verifiedProvenance))).ToLowerInvariant()
+                : null);
+
             if (tempProvenanceWritten && File.Exists(tempProvenancePath))
             {
-                if (TryVerifyTextFileOwnership(tempProvenancePath, verifiedProvenance))
+                if (expectedProvHash is not null && TryVerifyFileHashOwnership(tempProvenancePath, expectedProvHash))
                 {
                     TryDeleteFileWithError(tempProvenancePath, rollbackErrors);
                 }
                 else
                 {
-                    rollbackErrors.Add($"Reference temp provenance at '{tempProvenancePath}' content no longer matches expected text. File preserved.");
+                    rollbackErrors.Add($"Reference temp provenance at '{tempProvenancePath}' hash no longer matches expected hash. File preserved.");
                 }
             }
 
@@ -328,13 +333,13 @@ public sealed partial class AssetProcessorService
 
             if (provenancePromoted && File.Exists(referenceProvenance))
             {
-                if (TryVerifyTextFileOwnership(referenceProvenance, verifiedProvenance))
+                if (expectedProvHash is not null && TryVerifyFileHashOwnership(referenceProvenance, expectedProvHash))
                 {
                     TryDeleteFileWithError(referenceProvenance, rollbackErrors);
                 }
                 else
                 {
-                    rollbackErrors.Add($"Reference provenance at '{referenceProvenance}' content no longer matches tool-written provenance. File preserved.");
+                    rollbackErrors.Add($"Reference provenance at '{referenceProvenance}' hash no longer matches tool-written provenance. File preserved.");
                 }
             }
 
@@ -391,7 +396,7 @@ public sealed partial class AssetProcessorService
     internal ValidationResult RollbackReference(
         AssetSession session)
     {
-        // BUG-013 & BUG-R13-003: Validate full session path hierarchy and verify exact ownership before deletion
+        // Phase A: Verification only - Validate full session path hierarchy and verify exact ownership
         var ownershipValidation =
             _validationService.ValidateReferenceOwnershipForDeletion(
                 session,
@@ -403,9 +408,6 @@ public sealed partial class AssetProcessorService
         {
             return ownershipValidation;
         }
-
-        var errors =
-            new List<string>();
 
         var normalizedAssetFolder = ValidationService.NormalizePath(session.AssetFolder);
         var expectedReferenceFolder = ValidationService.NormalizePath(Path.Combine(normalizedAssetFolder, AppConstants.ReferenceFolderName));
@@ -430,11 +432,7 @@ public sealed partial class AssetProcessorService
             try
             {
                 var hash = ComputeSha256(tempImage);
-                if (string.Equals(hash, session.ReferenceHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    TryDeleteFileWithError(tempImage, errors);
-                }
-                else
+                if (!string.Equals(hash, session.ReferenceHash, StringComparison.OrdinalIgnoreCase))
                 {
                     return ValidationResult.Failure($"Reference temp image at '{tempImage}' hash does not match session ReferenceHash. Refusing to delete unknown file.");
                 }
@@ -454,12 +452,8 @@ public sealed partial class AssetProcessorService
 
             try
             {
-                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(tempProv))).ToLowerInvariant();
-                if (string.Equals(hash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    TryDeleteFileWithError(tempProv, errors);
-                }
-                else
+                var hash = ComputeSha256(tempProv);
+                if (!string.Equals(hash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
                 {
                     return ValidationResult.Failure($"Reference temp provenance at '{tempProv}' hash does not match session ReferenceProvenanceHash. Refusing to delete unknown file.");
                 }
@@ -470,6 +464,39 @@ public sealed partial class AssetProcessorService
             }
         }
 
+        // Final Path / Reparse Gate
+        OnBeforeRollbackReferenceFinalPathGate?.Invoke(session);
+
+        var finalPathSafety = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+        if (!finalPathSafety.IsValid)
+        {
+            return finalPathSafety;
+        }
+
+        var referenceFolder =
+            Path.Combine(
+                session.AssetFolder,
+                AppConstants.ReferenceFolderName);
+
+        if (ValidationService.IsReparsePoint(session.AssetFolder) || (Directory.Exists(referenceFolder) && ValidationService.IsReparsePoint(referenceFolder)))
+        {
+            return ValidationResult.Failure("Reference folder hierarchy became a reparse point before rollback. No files were deleted.");
+        }
+
+        // Phase B: Execution / Mutation
+        var errors =
+            new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
+        {
+            TryDeleteFileWithError(tempProv, errors);
+        }
+
+        if (!string.IsNullOrWhiteSpace(tempImage) && File.Exists(tempImage))
+        {
+            TryDeleteFileWithError(tempImage, errors);
+        }
+
         TryDeleteFileWithError(
             session.ReferenceProvenancePath,
             errors);
@@ -477,11 +504,6 @@ public sealed partial class AssetProcessorService
         TryDeleteFileWithError(
             session.ReferenceDestinationPath,
             errors);
-
-        var referenceFolder =
-            Path.Combine(
-                session.AssetFolder,
-                AppConstants.ReferenceFolderName);
 
         if (session.WasReferenceFolderCreatedByTool)
         {
@@ -750,6 +772,8 @@ public sealed partial class AssetProcessorService
             throw new InvalidDataException("Replacement temp provenance no longer matches Prepared ReferenceProvenanceHash.");
         }
 
+        OnBeforeReplacementFinalPathGate?.Invoke(transaction);
+
         // Final confinement/reparse gate after hash work immediately before canonical promotion
         RequireSafeReferenceReplacementTransaction(transaction);
 
@@ -888,6 +912,14 @@ public sealed partial class AssetProcessorService
                 return ValidationResult.Failure(
                     $"Backup reference provenance at '{transaction.BackupProvenancePath}' does not match old session provenance. Refusing to delete unknown file.");
             }
+        }
+
+        OnBeforeReplacementCleanupFinalPathGate?.Invoke(transaction);
+
+        var finalSafety = _validationService.ValidateReferenceReplacementTransaction(transaction);
+        if (!finalSafety.IsValid)
+        {
+            return finalSafety;
         }
 
         TryDeleteFileWithError(
@@ -1095,6 +1127,14 @@ public sealed partial class AssetProcessorService
         if (verificationErrors.Count > 0)
         {
             return ValidationResult.Failure(verificationErrors);
+        }
+
+        OnBeforeRollbackReferenceReplacementFinalPathGate?.Invoke(transaction);
+
+        var finalTransactionSafety = _validationService.ValidateReferenceReplacementTransaction(transaction);
+        if (!finalTransactionSafety.IsValid)
+        {
+            return finalTransactionSafety;
         }
 
         // Phase B: Execution / Mutation (Old state is proven restorable and new files verified)

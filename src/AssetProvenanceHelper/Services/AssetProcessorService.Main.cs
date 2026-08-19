@@ -613,10 +613,14 @@ public sealed partial class AssetProcessorService
             var rollbackErrors =
                 new List<string>();
 
-            // BUG-R16-001: Verify current content ownership before deleting promoted files
+            var expectedProvHash = session.MainProvenanceHash ?? (provenance is not null
+                ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant()
+                : null);
+
+            // BUG-R16-001 & BUG-R11-001: Verify current hash ownership before deleting promoted files
             if (provenanceWritten)
             {
-                if (provenance is not null && TryVerifyTextFileOwnership(finalProvenance, provenance))
+                if (expectedProvHash is not null && TryVerifyFileHashOwnership(finalProvenance, expectedProvHash))
                 {
                     TryDeleteFileWithError(
                         finalProvenance,
@@ -625,7 +629,7 @@ public sealed partial class AssetProcessorService
                 else
                 {
                     rollbackErrors.Add(
-                        $"Final provenance at '{finalProvenance}' content no longer matches tool-written provenance. File preserved.");
+                        $"Final provenance at '{finalProvenance}' hash no longer matches tool-written provenance. File preserved.");
                 }
             }
 
@@ -696,12 +700,12 @@ public sealed partial class AssetProcessorService
                 }
             }
 
-            // BUG-R13-004 & BUG-R17-002: Verify temp provenance ownership before deleting
+            // BUG-R13-004, BUG-R17-002 & BUG-R11-001: Verify temp provenance ownership before deleting
             if (tempProvenanceCreatedByThisCall)
             {
                 if (File.Exists(tempProvenancePath))
                 {
-                    if (provenance is not null && TryVerifyTextFileOwnership(tempProvenancePath, provenance))
+                    if (expectedProvHash is not null && TryVerifyFileHashOwnership(tempProvenancePath, expectedProvHash))
                     {
                         TryDeleteFileWithError(
                             tempProvenancePath,
@@ -710,7 +714,7 @@ public sealed partial class AssetProcessorService
                     else
                     {
                         rollbackErrors.Add(
-                            $"Main temp provenance at '{tempProvenancePath}' content no longer matches tool-written provenance. File preserved.");
+                            $"Main temp provenance at '{tempProvenancePath}' hash no longer matches tool-written provenance. File preserved.");
                     }
                 }
             }
@@ -915,11 +919,27 @@ public sealed partial class AssetProcessorService
             }
         }
 
+        OnBeforeRollbackMainFinalPathGate?.Invoke(session);
+
+        var finalPathSafety =
+            ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+
+        if (!finalPathSafety.IsValid)
+        {
+            return finalPathSafety;
+        }
+
+        if (ValidationService.IsReparsePoint(session.AssetFolder))
+        {
+            return ValidationResult.Failure(
+                "Asset folder became a reparse point before Main rollback. No files were deleted.");
+        }
+
         var ingameFolder = session.GetIngameFolderPath();
         if (Directory.Exists(ingameFolder) && ValidationService.IsReparsePoint(ingameFolder))
         {
             return ValidationResult.Failure(
-                "Ingame folder became a reparse point before rollback. No Main files were deleted.");
+                "Ingame folder became a reparse point before Main rollback. No files were deleted.");
         }
 
         var errors =

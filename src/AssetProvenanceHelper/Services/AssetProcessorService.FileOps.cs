@@ -156,25 +156,6 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    // BUG-R16-001: Verify text file content ownership before allowing deletion
-    private static bool TryVerifyTextFileOwnership(
-        string path,
-        string expectedContent)
-    {
-        try
-        {
-            if (!File.Exists(path))
-                return false;
-
-            var currentContent = File.ReadAllText(path, new UTF8Encoding(false));
-            return string.Equals(currentContent, expectedContent, StringComparison.Ordinal);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private static void TryDeleteFileWithError(
         string path,
         ICollection<string> errors)

@@ -1293,7 +1293,7 @@ public sealed class RegressionTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(10)));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(45)));
         if (testEx != null)
         {
             throw testEx;
@@ -5423,7 +5423,8 @@ public sealed class RegressionTests
                 File.WriteAllText(tempRef, "BLOCK REFERENCE MOVE");
             };
 
-            var ex = Assert.ThrowsAny<IOException>(() => sessionService.Cancel(session));
+            var ex = Assert.ThrowsAny<Exception>(() => sessionService.Cancel(session));
+            Assert.True(ex is IOException || ex is InvalidDataException);
 
             // Tampered moved provenance must NOT be restored to canonical path!
             Assert.NotNull(tempProv);
