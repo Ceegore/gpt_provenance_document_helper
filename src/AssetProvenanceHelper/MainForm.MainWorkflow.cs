@@ -87,6 +87,7 @@ partial class MainForm
 
         try
         {
+            OnNoReferenceJournalSavedBeforeStatusHook?.Invoke();
             AddStatus("No-reference Main session saved.");
         }
         catch

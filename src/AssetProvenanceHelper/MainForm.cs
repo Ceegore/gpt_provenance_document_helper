@@ -423,7 +423,7 @@ public partial class MainForm : Form
 
     private void AddStatus(string message)
     {
-        if (IsDisposed || !IsHandleCreated || txtStatusHistory.IsDisposed)
+        if (IsDisposed || Disposing || txtStatusHistory.IsDisposed)
         {
             return;
         }
@@ -463,4 +463,10 @@ public partial class MainForm : Form
 
     [ThreadStatic]
     internal static Action? OnReplacementRollbackDurableCommitHook;
+
+    [ThreadStatic]
+    internal static Action? OnNoReferenceJournalSavedBeforeStatusHook;
+
+    [ThreadStatic]
+    internal static Action? OnReplacementDurableCommitUiHook;
 }

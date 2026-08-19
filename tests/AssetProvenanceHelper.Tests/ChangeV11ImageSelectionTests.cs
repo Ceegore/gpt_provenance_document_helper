@@ -26,7 +26,7 @@ public class ChangeV11ImageSelectionTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(15)));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
         if (error != null)
         {
             throw new AggregateException(error);

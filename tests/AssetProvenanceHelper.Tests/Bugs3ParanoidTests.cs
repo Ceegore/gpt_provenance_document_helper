@@ -2190,6 +2190,13 @@ public sealed class Bugs3ParanoidTests
 
         RunOnSta(() =>
         {
+            var statusHookInvoked = false;
+            MainForm.OnNoReferenceJournalSavedBeforeStatusHook = () =>
+            {
+                statusHookInvoked = true;
+                throw new InvalidOperationException("Simulated post-journal status failure.");
+            };
+
             MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
 
             using var form = new MainForm(
@@ -2218,11 +2225,13 @@ public sealed class Bugs3ParanoidTests
                 var handleMainMethod = typeof(MainForm).GetMethod("HandleMainImage", BindingFlags.NonPublic | BindingFlags.Instance);
                 handleMainMethod?.Invoke(form, null);
 
+                Assert.True(statusHookInvoked);
                 Assert.False(sessionService.Exists(), "session.json must be removed on complete commit");
                 Assert.True(File.Exists(Path.Combine(settings.AssetRootFolder, "asset_r7_noref_status_throw", "main1.png")));
             }
             finally
             {
+                MainForm.OnNoReferenceJournalSavedBeforeStatusHook = null;
                 MainForm.MessageBoxProvider = null;
             }
         });
@@ -2245,13 +2254,19 @@ public sealed class Bugs3ParanoidTests
 
         RunOnSta(() =>
         {
+            var uiErrorShown = false;
             TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
             MainForm.MessageBoxProvider = (_, message, caption, _, _) =>
             {
                 if (caption == "Post-Commit UI Error")
                 {
-                    // Simulated expected post-commit UI error handler invocation
+                    uiErrorShown = true;
                 }
+            };
+
+            MainForm.OnReplacementDurableCommitUiHook = () =>
+            {
+                throw new InvalidOperationException("Simulated post-commit UI failure.");
             };
 
             using var form = new MainForm(
@@ -2277,6 +2292,7 @@ public sealed class Bugs3ParanoidTests
                 var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
                 handleReplaceMethod?.Invoke(form, null);
 
+                Assert.True(uiErrorShown, "Post-Commit UI Error must be reported");
                 Assert.False(sessionService.ReplacementJournalExists(), "Replacement journal must remain deleted");
                 Assert.True(sessionService.Exists(), "New session must remain on disk");
                 var loaded = sessionService.Load()!;
@@ -2286,6 +2302,7 @@ public sealed class Bugs3ParanoidTests
             }
             finally
             {
+                MainForm.OnReplacementDurableCommitUiHook = null;
                 TwoChoiceDialog.CustomChoiceProvider = null;
                 MainForm.MessageBoxProvider = null;
             }
@@ -2534,5 +2551,348 @@ public sealed class Bugs3ParanoidTests
         Assert.True(File.Exists(oldSession.ReferenceDestinationPath), "OLD reference must be restored");
         Assert.True(File.Exists(oldSession.ReferenceProvenancePath), "OLD provenance must be restored");
         Assert.True(File.Exists(tamperTarget == "image" ? tx.TempNewReferencePath : tx.TempNewProvenancePath), "Tampered temp file must be preserved");
+    }
+
+    [Fact]
+    public void Startup_ValidTemplates_StatusContainsTemplatesValidated()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        RunOnSta(() =>
+        {
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var txtStatus = typeof(MainForm).GetField("txtStatusHistory", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
+            Assert.NotNull(txtStatus);
+            Assert.Contains("Templates validated.", txtStatus.Text);
+        });
+    }
+
+    [Theory]
+    [InlineData(AssetWorkflowMode.ReferenceAssisted)]
+    [InlineData(AssetWorkflowMode.NoReference)]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_TempMainTamperedBeforePromotion_RejectsBeforeCanonicalMutation(AssetWorkflowMode workflowMode)
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        AssetSession session;
+        string mainSource;
+
+        if (workflowMode == AssetWorkflowMode.ReferenceAssisted)
+        {
+            var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+            session = processor.ProcessReference(settings, "asset_r9_tamper_main_assisted", refImg, DateTimeOffset.Now);
+            sessionService.Save(session);
+            mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+            session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+            sessionService.Save(session);
+        }
+        else
+        {
+            mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+            session = processor.CreateNoReferenceMainSession(settings, "asset_r9_tamper_main_noref", mainSource, "prompt", DateTimeOffset.Now);
+            sessionService.Save(session);
+        }
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+        {
+            var tempMain = s.GetMainTempImagePath();
+            File.WriteAllBytes(tempMain, TestWorkspace.EnsureMagicBytes(tempMain, new byte[] { 99, 99, 99 }));
+        };
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
+            Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
+
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_TempIngameTamperedBeforePromotion_RejectsBeforeCanonicalMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r9_tamper_ingame", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+        {
+            var tempIngame = s.GetMainTempIngamePath();
+            File.WriteAllBytes(tempIngame, TestWorkspace.EnsureMagicBytes(tempIngame, new byte[] { 99, 99, 99 }));
+        };
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
+            Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
+
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_TempProvenanceTamperedBeforePromotion_RejectsBeforeCanonicalMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r9_tamper_prov", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+        {
+            var tempProv = s.GetMainTempProvenancePath();
+            File.WriteAllText(tempProv, "TAMPERED PROVENANCE BYTES");
+        };
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
+            Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
+
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_IngameBecomesReparseBeforePromotion_RejectsBeforeCanonicalMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r9_reparse_ingame", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+        {
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, s.GetIngameFolderPath()))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
+            Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
+
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_TempImageTamperedImmediatelyBeforePromotion_NoCanonicalMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "asset_r9_tamper_init_img", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = s =>
+        {
+            var tempImg = s.GetReferenceTempImagePath();
+            File.WriteAllBytes(tempImg, TestWorkspace.EnsureMagicBytes(tempImg, new byte[] { 99, 99, 99 }));
+        };
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+            Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
+
+            Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical reference image must not exist");
+            Assert.False(File.Exists(prepared.ReferenceProvenancePath), "Canonical reference provenance must not exist");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = null;
+        }
+    }
+
+    [Theory]
+    [InlineData("corrupted")]
+    [InlineData("utf8bom")]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_TempProvenanceTamperedImmediatelyBeforePromotion_NoCanonicalMutation(string mode)
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "asset_r9_tamper_init_prov_" + mode, source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = s =>
+        {
+            var tempProv = s.GetReferenceTempProvenancePath();
+            if (mode == "utf8bom")
+            {
+                var content = File.ReadAllBytes(tempProv);
+                var bom = new byte[] { 0xEF, 0xBB, 0xBF };
+                var withBom = bom.Concat(content).ToArray();
+                File.WriteAllBytes(tempProv, withBom);
+            }
+            else
+            {
+                File.WriteAllText(tempProv, "CORRUPTED PROVENANCE DATA");
+            }
+        };
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+            Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
+
+            Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical reference image must not exist");
+            Assert.False(File.Exists(prepared.ReferenceProvenancePath), "Canonical reference provenance must not exist");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void PreparedReference_PartialDeterministicProvenance_PreservesJournalAndFailsClosed()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "asset_r9_partial_init_prov", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        var refFolder = Path.Combine(prepared.AssetFolder, AppConstants.ReferenceFolderName);
+        Directory.CreateDirectory(refFolder);
+
+        // Valid temp image
+        File.Copy(source, prepared.GetReferenceTempImagePath());
+
+        // Partial temp provenance
+        File.WriteAllText(prepared.GetReferenceTempProvenancePath(), "PARTIAL PROVENANCE INCOMPLETE");
+
+        var rollback = processor.RollbackReference(prepared);
+
+        Assert.False(rollback.IsValid, "Rollback must fail closed when provenance is partial/unknown");
+        Assert.True(File.Exists(prepared.GetReferenceTempProvenancePath()), "Partial temp provenance must be preserved");
+        Assert.False(File.Exists(prepared.ReferenceDestinationPath), "No canonical reference");
+        Assert.False(File.Exists(prepared.ReferenceProvenancePath), "No canonical provenance");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Replacement_PartialDeterministicProvenance_FailsClosedWithoutOldMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r9_partial_repl_prov", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+
+        // Partially overwrite temp provenance
+        File.WriteAllText(tx.TempNewProvenancePath, "PARTIAL PROVENANCE");
+
+        var rollback = processor.RollbackReferenceReplacement(tx);
+
+        Assert.False(rollback.IsValid, "Rollback must fail closed when replacement temp provenance hash is unknown");
+        Assert.True(File.Exists(oldSession.ReferenceDestinationPath), "OLD reference image must be restored");
+        Assert.True(File.Exists(oldSession.ReferenceProvenancePath), "OLD reference provenance must be restored");
+        Assert.True(File.Exists(tx.TempNewProvenancePath), "Partial temp provenance must be preserved");
     }
 }

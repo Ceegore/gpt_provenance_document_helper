@@ -422,6 +422,8 @@ partial class MainForm
 
         try
         {
+            OnReplacementDurableCommitUiHook?.Invoke();
+
             lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
             SetSelectedImage(ImageSlot.Reference, null);
             SetSelectedImage(ImageSlot.Main, null);

@@ -525,19 +525,12 @@ public sealed partial class AssetProcessorService
             }
 
             // BUG-R13-004: Write temporary provenance without silently overwriting pre-existing files
-            using (var stream = new FileStream(
-                tempProvenancePath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None))
-            using (var writer = new StreamWriter(
-                stream,
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
-            {
-                writer.Write(provenance);
-            }
-
+            WriteTextDurablyToReservedPath(tempProvenancePath, provenance);
             tempProvenanceCreatedByThisCall = true;
+
+            OnBeforeMainStagingAuthorityGate?.Invoke(session);
+
+            RequireMainStagingAuthority(session, tempMainPath, tempIngamePath, tempProvenancePath);
 
             File.Move(
                 tempProvenancePath,
@@ -975,5 +968,77 @@ public sealed partial class AssetProcessorService
         }
 
         return ValidationResult.Failure(errors);
+    }
+
+    private void RequireMainStagingAuthority(
+        AssetSession session,
+        string tempMainPath,
+        string tempIngamePath,
+        string tempProvenancePath)
+    {
+        if (!session.IsMainCommitting)
+        {
+            throw new InvalidOperationException("No active Main transaction exists.");
+        }
+
+        if (string.IsNullOrWhiteSpace(session.MainHash))
+        {
+            throw new InvalidDataException("MainHash is missing.");
+        }
+
+        if (string.IsNullOrWhiteSpace(session.MainProvenanceHash))
+        {
+            throw new InvalidDataException("MainProvenanceHash is missing.");
+        }
+
+        if (!File.Exists(tempMainPath))
+        {
+            throw new IOException("Main staging image is missing.");
+        }
+
+        var tempMainHash = ComputeSha256(tempMainPath);
+        if (!string.Equals(tempMainHash, session.MainHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Main staging image no longer matches the durable MainHash.");
+        }
+
+        if (!File.Exists(tempIngamePath))
+        {
+            throw new IOException("Ingame staging image is missing.");
+        }
+
+        var tempIngameHash = ComputeSha256(tempIngamePath);
+        if (!string.Equals(tempIngameHash, session.MainHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Ingame staging image no longer matches the durable MainHash.");
+        }
+
+        if (!File.Exists(tempProvenancePath))
+        {
+            throw new IOException("Main staging provenance is missing.");
+        }
+
+        var tempProvHash = ComputeSha256(tempProvenancePath);
+        if (!string.Equals(tempProvHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Main staging provenance no longer matches the durable MainProvenanceHash.");
+        }
+
+        var pathValidation = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+        if (!pathValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, pathValidation.Errors));
+        }
+
+        if (ValidationService.IsReparsePoint(session.AssetFolder))
+        {
+            throw new IOException("Asset folder became a reparse point before Main promotion.");
+        }
+
+        var ingameFolder = session.GetIngameFolderPath();
+        if (ValidationService.IsReparsePoint(ingameFolder))
+        {
+            throw new IOException("Ingame folder became a reparse point before Main promotion.");
+        }
     }
 }

@@ -29,6 +29,12 @@ public sealed partial class AssetProcessorService
     [ThreadStatic]
     internal static Action<string>? OnReservedTextStagingOpenedHook;
 
+    [ThreadStatic]
+    internal static Action<AssetSession>? OnBeforeMainStagingAuthorityGate;
+
+    [ThreadStatic]
+    internal static Action<AssetSession>? OnBeforeInitialReferenceStagingAuthorityGate;
+
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
 

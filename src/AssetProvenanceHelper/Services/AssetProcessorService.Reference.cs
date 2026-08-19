@@ -259,21 +259,15 @@ public sealed partial class AssetProcessorService
             WriteTextDurablyToReservedPath(tempProvenancePath, verifiedProvenance);
             tempProvenanceWritten = true;
 
-            var tempProvHash = Convert.ToHexString(
-                System.Security.Cryptography.SHA256.HashData(
-                    new System.Text.UTF8Encoding(false).GetBytes(File.ReadAllText(tempProvenancePath))))
-                .ToLowerInvariant();
-
-            if (!string.Equals(session.ReferenceProvenanceHash, tempProvHash, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidDataException("Copied reference temp provenance does not match Prepared ReferenceProvenanceHash.");
-            }
-
             // Re-validate reparse safety before canonical promotion
             if (ValidationService.IsReparsePoint(assetFolder) || ValidationService.IsReparsePoint(referenceFolder))
             {
                 throw new IOException("Reference folder hierarchy became a reparse point before promotion.");
             }
+
+            OnBeforeInitialReferenceStagingAuthorityGate?.Invoke(session);
+
+            RequireInitialReferenceStagingAuthority(session, tempImagePath, tempProvenancePath);
 
             // 3. Promote staged artifacts to canonical paths
             File.Move(tempImagePath, referenceDestination, overwrite: false);
@@ -1205,5 +1199,33 @@ public sealed partial class AssetProcessorService
         }
 
         return ValidationResult.Success();
+    }
+
+    private void RequireInitialReferenceStagingAuthority(
+        AssetSession session,
+        string tempImagePath,
+        string tempProvenancePath)
+    {
+        if (!File.Exists(tempImagePath))
+        {
+            throw new IOException("Initial Reference staging image is missing.");
+        }
+
+        var imageHash = ComputeSha256(tempImagePath);
+        if (!string.Equals(imageHash, session.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Initial Reference staging image no longer matches Prepared ReferenceHash.");
+        }
+
+        if (!File.Exists(tempProvenancePath))
+        {
+            throw new IOException("Initial Reference staging provenance is missing.");
+        }
+
+        var provenanceHash = ComputeSha256(tempProvenancePath);
+        if (!string.Equals(provenanceHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Initial Reference staging provenance no longer matches Prepared ReferenceProvenanceHash.");
+        }
     }
 }

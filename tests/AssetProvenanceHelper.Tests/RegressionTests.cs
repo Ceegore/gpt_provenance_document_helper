@@ -5088,12 +5088,7 @@ public sealed class RegressionTests
         var processedAt = DateTimeOffset.Now;
 
         var session = processor.ProcessReference(settings, "asset_reg184", ref1, processedAt);
-        session.IsMainCommitting = true;
-        session.MainTransactionId = "0123456789abcdef0123456789abcdef";
-        session.MainFilename = "main1.png";
-        session.MainPrompt = "prompt";
-        session.MainProcessedAt = processedAt;
-        session.MainHash = ValidationService.ComputeSha256(main1);
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, main1, "prompt", processedAt);
 
         var result = processor.ProcessMainImage(session, settings.AcceptedExtensions, main1, "prompt", processedAt);
         Assert.Equal("main1.png", result);
@@ -5495,12 +5490,7 @@ public sealed class RegressionTests
         var t2 = new DateTimeOffset(2026, 8, 18, 0, 30, 0, TimeSpan.FromHours(3)); // Same instant, different offset
 
         var session = processor.ProcessReference(settings, "asset_reg195", ref1, t1);
-        session.IsMainCommitting = true;
-        session.MainTransactionId = "0123456789abcdef0123456789abcdef";
-        session.MainFilename = "main.png";
-        session.MainPrompt = "prompt";
-        session.MainProcessedAt = t1;
-        session.MainHash = ValidationService.ComputeSha256(main1);
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, main1, "prompt", t1);
 
         // Calling with t2 (different offset/representation) fails
         var ex = Assert.Throws<InvalidOperationException>(() =>
