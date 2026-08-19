@@ -2622,9 +2622,9 @@ public sealed class Bugs3ParanoidTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
             Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
 
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
+            Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Main provenance must not exist");
         }
         finally
         {
@@ -2661,9 +2661,9 @@ public sealed class Bugs3ParanoidTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
             Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
 
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
+            Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Main provenance must not exist");
         }
         finally
         {
@@ -2700,9 +2700,9 @@ public sealed class Bugs3ParanoidTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
             Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
 
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
+            Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Main provenance must not exist");
         }
         finally
         {
@@ -2745,9 +2745,9 @@ public sealed class Bugs3ParanoidTests
                 processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
             Assert.True(ex is InvalidDataException || ex is AssetProcessingException || ex is IOException);
 
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, Path.GetFileName(mainSource))), "Root main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.GetIngameFolderPath(), Path.GetFileName(mainSource))), "Ingame main must not exist");
-            Assert.False(File.Exists(Path.Combine(session.AssetFolder, $"{Path.GetFileNameWithoutExtension(mainSource)}.md")), "Main provenance must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
+            Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Main provenance must not exist");
         }
         finally
         {
@@ -2894,5 +2894,281 @@ public sealed class Bugs3ParanoidTests
         Assert.True(File.Exists(oldSession.ReferenceDestinationPath), "OLD reference image must be restored");
         Assert.True(File.Exists(oldSession.ReferenceProvenancePath), "OLD reference provenance must be restored");
         Assert.True(File.Exists(tx.TempNewProvenancePath), "Partial temp provenance must be preserved");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_FinalGateDetectsIngameReparse_PerformsZeroLocalDeletes()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r10_ingame_reparse_zero_delete", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var deleteFileCount = 0;
+        var deleteDirectoryCount = 0;
+
+        AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
+        AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+        {
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, s.GetIngameFolderPath()))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            var ex = Assert.Throws<AssetProcessingException>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
+            Assert.False(ex.RollbackComplete, "Rollback must not be completed on unsafe path");
+
+            Assert.Equal(0, deleteFileCount);
+            Assert.Equal(0, deleteDirectoryCount);
+            Assert.True(sessionService.Exists(), "Journal must remain durable");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
+            Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Final provenance must not exist");
+            Assert.True(File.Exists(session.GetMainTempImagePath()), "Temp main must be preserved");
+            Assert.True(File.Exists(session.GetMainTempIngamePath()), "Temp ingame must be preserved");
+            Assert.True(File.Exists(session.GetMainTempProvenancePath()), "Temp provenance must be preserved");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeDeleteFileHook = null;
+            AssetProcessorService.OnBeforeDeleteDirectoryHook = null;
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_FinalGateDetectsAssetFolderReparse_PerformsZeroLocalDeletes()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var refImg = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r10_asset_reparse_zero_delete", refImg, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var deleteFileCount = 0;
+        var deleteDirectoryCount = 0;
+
+        AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
+        AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+        {
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, s.AssetFolder))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            var ex = Assert.Throws<AssetProcessingException>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, session.MainPrompt!, session.MainProcessedAt!.Value));
+            Assert.False(ex.RollbackComplete, "Rollback must not be completed on unsafe path");
+
+            Assert.Equal(0, deleteFileCount);
+            Assert.Equal(0, deleteDirectoryCount);
+            Assert.True(sessionService.Exists(), "Journal must remain durable");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)), "Root main must not exist");
+            Assert.False(File.Exists(session.GetIngameImagePath()), "Ingame main must not exist");
+            Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Final provenance must not exist");
+            Assert.True(File.Exists(session.GetMainTempImagePath()), "Temp main must be preserved");
+            Assert.True(File.Exists(session.GetMainTempIngamePath()), "Temp ingame must be preserved");
+            Assert.True(File.Exists(session.GetMainTempProvenancePath()), "Temp provenance must be preserved");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeDeleteFileHook = null;
+            AssetProcessorService.OnBeforeDeleteDirectoryHook = null;
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_DetectsReferenceFolderReparse_PerformsZeroLocalDeletes()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "asset_r10_init_ref_reparse_zero_delete", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        var deleteFileCount = 0;
+        var deleteDirectoryCount = 0;
+
+        AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
+        AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
+
+        AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = s =>
+        {
+            ValidationService.FileAttributesProvider = path =>
+            {
+                var refFolder = Path.Combine(s.AssetFolder, AppConstants.ReferenceFolderName);
+                if (ValidationService.PathsEqual(path, refFolder))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            var ex = Assert.Throws<IOException>(() =>
+                processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+            Assert.Contains("destination hierarchy is no longer safe", ex.Message);
+
+            Assert.Equal(0, deleteFileCount);
+            Assert.Equal(0, deleteDirectoryCount);
+            Assert.True(sessionService.Exists(), "Journal must remain durable");
+            Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical reference must not exist");
+            Assert.False(File.Exists(prepared.ReferenceProvenancePath), "Canonical provenance must not exist");
+            Assert.True(File.Exists(prepared.GetReferenceTempImagePath()), "Temp image must be preserved");
+            Assert.True(File.Exists(prepared.GetReferenceTempProvenancePath()), "Temp provenance must be preserved");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeDeleteFileHook = null;
+            AssetProcessorService.OnBeforeDeleteDirectoryHook = null;
+            AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_DetectsAssetFolderReparse_PerformsZeroLocalDeletes()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "asset_r10_init_asset_reparse_zero_delete", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        var deleteFileCount = 0;
+        var deleteDirectoryCount = 0;
+
+        AssetProcessorService.OnBeforeDeleteFileHook = _ => deleteFileCount++;
+        AssetProcessorService.OnBeforeDeleteDirectoryHook = _ => deleteDirectoryCount++;
+
+        AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = s =>
+        {
+            ValidationService.FileAttributesProvider = path =>
+            {
+                if (ValidationService.PathsEqual(path, s.AssetFolder))
+                {
+                    return FileAttributes.Directory | FileAttributes.ReparsePoint;
+                }
+                return File.GetAttributes(path);
+            };
+        };
+
+        try
+        {
+            var ex = Assert.Throws<IOException>(() =>
+                processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+            Assert.Contains("destination hierarchy is no longer safe", ex.Message);
+
+            Assert.Equal(0, deleteFileCount);
+            Assert.Equal(0, deleteDirectoryCount);
+            Assert.True(sessionService.Exists(), "Journal must remain durable");
+            Assert.False(File.Exists(prepared.ReferenceDestinationPath), "Canonical reference must not exist");
+            Assert.False(File.Exists(prepared.ReferenceProvenancePath), "Canonical provenance must not exist");
+            Assert.True(File.Exists(prepared.GetReferenceTempImagePath()), "Temp image must be preserved");
+            Assert.True(File.Exists(prepared.GetReferenceTempProvenancePath()), "Temp provenance must be preserved");
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeDeleteFileHook = null;
+            AssetProcessorService.OnBeforeDeleteDirectoryHook = null;
+            AssetProcessorService.OnBeforeInitialReferenceStagingAuthorityGate = null;
+            ValidationService.FileAttributesProvider = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Replacement_ReparseChangesAfterFinalHash_NoCanonicalMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r10_repl_reparse_after_hash", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+
+        // Make reference folder a reparse point
+        ValidationService.FileAttributesProvider = path =>
+        {
+            var refFolder = Path.Combine(oldSession.AssetFolder, AppConstants.ReferenceFolderName);
+            if (ValidationService.PathsEqual(path, refFolder))
+            {
+                return FileAttributes.Directory | FileAttributes.ReparsePoint;
+            }
+            return File.GetAttributes(path);
+        };
+
+        try
+        {
+            Assert.Throws<InvalidDataException>(() =>
+                processor.PromoteNewReference(tx));
+
+            // NEW canonical destination must not exist
+            if (!ValidationService.PathsEqual(oldSession.ReferenceDestinationPath, tx.NewSession.ReferenceDestinationPath))
+            {
+                Assert.False(File.Exists(tx.NewSession.ReferenceDestinationPath), "NEW canonical image must not exist on reparse detection");
+            }
+        }
+        finally
+        {
+            ValidationService.FileAttributesProvider = null;
+        }
     }
 }

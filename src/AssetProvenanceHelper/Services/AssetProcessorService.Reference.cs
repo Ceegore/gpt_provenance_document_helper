@@ -259,12 +259,6 @@ public sealed partial class AssetProcessorService
             WriteTextDurablyToReservedPath(tempProvenancePath, verifiedProvenance);
             tempProvenanceWritten = true;
 
-            // Re-validate reparse safety before canonical promotion
-            if (ValidationService.IsReparsePoint(assetFolder) || ValidationService.IsReparsePoint(referenceFolder))
-            {
-                throw new IOException("Reference folder hierarchy became a reparse point before promotion.");
-            }
-
             OnBeforeInitialReferenceStagingAuthorityGate?.Invoke(session);
 
             RequireInitialReferenceStagingAuthority(session, tempImagePath, tempProvenancePath);
@@ -291,6 +285,21 @@ public sealed partial class AssetProcessorService
         }
         catch (Exception primaryException)
         {
+            var rollbackPathSafety = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+            var refFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+            if (!rollbackPathSafety.IsValid || ValidationService.IsReparsePoint(session.AssetFolder) || ValidationService.IsReparsePoint(refFolder))
+            {
+                var errorDetails = rollbackPathSafety.IsValid
+                    ? "Asset or Reference folder is a reparse point."
+                    : string.Join(Environment.NewLine, rollbackPathSafety.Errors);
+
+                throw new IOException(
+                    "Reference processing failed and automatic rollback was not attempted because the destination hierarchy is no longer safe."
+                    + Environment.NewLine
+                    + errorDetails,
+                    primaryException);
+            }
+
             var rollbackErrors = new List<string>();
 
             if (tempProvenanceWritten && File.Exists(tempProvenancePath))
@@ -740,6 +749,9 @@ public sealed partial class AssetProcessorService
         {
             throw new InvalidDataException("Replacement temp provenance no longer matches Prepared ReferenceProvenanceHash.");
         }
+
+        // Final confinement/reparse gate after hash work immediately before canonical promotion
+        RequireSafeReferenceReplacementTransaction(transaction);
 
         File.Move(
             transaction.TempNewReferencePath,
@@ -1226,6 +1238,18 @@ public sealed partial class AssetProcessorService
         if (!string.Equals(provenanceHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException("Initial Reference staging provenance no longer matches Prepared ReferenceProvenanceHash.");
+        }
+
+        var pathValidation = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+        if (!pathValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, pathValidation.Errors));
+        }
+
+        var referenceFolder = Path.Combine(session.AssetFolder, AppConstants.ReferenceFolderName);
+        if (ValidationService.IsReparsePoint(session.AssetFolder) || ValidationService.IsReparsePoint(referenceFolder))
+        {
+            throw new IOException("Reference folder hierarchy became a reparse point before promotion.");
         }
     }
 }

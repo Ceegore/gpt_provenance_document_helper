@@ -595,6 +595,21 @@ public sealed partial class AssetProcessorService
         }
         catch (Exception primaryException)
         {
+            var pathSafety = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
+            if (!pathSafety.IsValid || ValidationService.IsReparsePoint(session.AssetFolder) || ValidationService.IsReparsePoint(session.GetIngameFolderPath()))
+            {
+                var errorDetails = pathSafety.IsValid
+                    ? "Asset or Ingame folder is a reparse point."
+                    : string.Join(Environment.NewLine, pathSafety.Errors);
+
+                throw new AssetProcessingException(
+                    "Main Image processing failed and local rollback was not attempted because the destination hierarchy is no longer safe."
+                    + Environment.NewLine
+                    + errorDetails,
+                    primaryException,
+                    rollbackComplete: false);
+            }
+
             var rollbackErrors =
                 new List<string>();
 

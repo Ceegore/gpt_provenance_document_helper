@@ -35,6 +35,12 @@ public sealed partial class AssetProcessorService
     [ThreadStatic]
     internal static Action<AssetSession>? OnBeforeInitialReferenceStagingAuthorityGate;
 
+    [ThreadStatic]
+    internal static Action<string>? OnBeforeDeleteFileHook;
+
+    [ThreadStatic]
+    internal static Action<string>? OnBeforeDeleteDirectoryHook;
+
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
 

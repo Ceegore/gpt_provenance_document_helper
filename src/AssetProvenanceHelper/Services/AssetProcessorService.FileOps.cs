@@ -183,6 +183,7 @@ public sealed partial class AssetProcessorService
         {
             if (File.Exists(path))
             {
+                OnBeforeDeleteFileHook?.Invoke(path);
                 File.Delete(path);
             }
         }
@@ -211,6 +212,7 @@ public sealed partial class AssetProcessorService
                 return;
             }
 
+            OnBeforeDeleteDirectoryHook?.Invoke(path);
             Directory.Delete(path);
         }
         catch (Exception ex)
