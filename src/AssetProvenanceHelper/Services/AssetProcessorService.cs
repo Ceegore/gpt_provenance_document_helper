@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using AssetProvenanceHelper.Models;
 
 namespace AssetProvenanceHelper.Services;
 
@@ -18,6 +19,9 @@ public sealed partial class AssetProcessorService
 
     [ThreadStatic]
     internal static Action<string, string>? OnPrepareReplacementOldBackedUpHook;
+
+    [ThreadStatic]
+    internal static Action<ReferenceReplacementTransaction>? OnRollbackReferenceReplacementInvoked;
 
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;

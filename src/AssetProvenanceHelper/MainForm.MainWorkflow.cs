@@ -76,7 +76,6 @@ partial class MainForm
                 processedAt);
 
             _sessionService.Save(session);
-            AddStatus("No-reference Main session saved.");
         }
         catch (Exception ex)
         {
@@ -84,6 +83,15 @@ partial class MainForm
                 "Could not initialize and save no-reference asset session.",
                 ex);
             return;
+        }
+
+        try
+        {
+            AddStatus("No-reference Main session saved.");
+        }
+        catch
+        {
+            // Best-effort UI update; proceed with commit
         }
 
         ExecuteMainCommit(session, sourceImage, prompt, processedAt);
@@ -104,29 +112,25 @@ partial class MainForm
             return;
         }
 
-        var referenceValidation =
-            _validationService.ValidateExactReferenceOutput(
-                session,
-                _templateService);
-
-        if (!referenceValidation.IsValid)
+        var exactValidation = _validationService.ValidateExactReferenceOutput(session, _templateService);
+        if (!exactValidation.IsValid)
         {
             ShowValidationError(
                 "Reference provenance is inconsistent or modified",
-                referenceValidation);
+                exactValidation);
             return;
         }
 
-        var destValidation = _validationService.ValidateMainDestinationAvailability(
+        var destinationCheck = _validationService.ValidateMainDestinationAvailability(
             session,
             settings.AcceptedExtensions,
             sourceImage);
 
-        if (!destValidation.IsValid)
+        if (!destinationCheck.IsValid)
         {
             ShowValidationError(
                 "Main image destination is unavailable",
-                destValidation);
+                destinationCheck);
             return;
         }
 
@@ -167,9 +171,11 @@ partial class MainForm
         string prompt,
         DateTimeOffset processedAt)
     {
+        string committedFilename;
+
         try
         {
-            var committedFilename = _assetProcessorService.ProcessMainImage(
+            committedFilename = _assetProcessorService.ProcessMainImage(
                 session,
                 _settings.AcceptedExtensions,
                 sourceImage,
@@ -251,11 +257,42 @@ partial class MainForm
                     }
                 }
             }
+        }
+        catch (AssetProcessingException ape) when (!ape.RollbackComplete)
+        {
+            ShowMessageBox(
+                "CRITICAL: Main Image processing failed and automatic rollback was incomplete.\n\n" + ape.Message,
+                "Critical Main Processing Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
 
-            _lastCompletedAssetFolderPath = session.AssetFolder;
-            _currentSession = null;
-            _state = UiState.Idle;
+            Close();
+            return;
+        }
+        catch (Exception ex)
+        {
+            var isNoReference = session.WorkflowMode == AssetWorkflowMode.NoReference;
+            if (TryReconcileFailedMainCommit(session, isNoReference))
+            {
+                ShowError("Main Image processing failed.", ex);
+            }
+            return;
+        }
 
+        // DURABLE COMMIT POINT: Complete outputs exist and active session.json is deleted.
+        CompleteMainUiAfterDurableCommit(session, committedFilename);
+    }
+
+    private void CompleteMainUiAfterDurableCommit(
+        AssetSession session,
+        string committedFilename)
+    {
+        _lastCompletedAssetFolderPath = session.AssetFolder;
+        _currentSession = null;
+        _state = UiState.Idle;
+
+        try
+        {
             txtPrompt.Clear();
             txtAssetFolderName.Clear();
             lblReference.Text = "Saved reference: none";
@@ -277,23 +314,25 @@ partial class MainForm
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
-        catch (AssetProcessingException ape) when (!ape.RollbackComplete)
-        {
-            ShowMessageBox(
-                "CRITICAL: Main Image processing failed and automatic rollback was incomplete.\n\n" + ape.Message,
-                "Critical Main Processing Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
-
-            Close();
-        }
         catch (Exception ex)
         {
-            var isNoReference = session.WorkflowMode == AssetWorkflowMode.NoReference;
-            if (TryReconcileFailedMainCommit(session, isNoReference))
+            // Never roll back a committed asset.
+            try
             {
-                ShowError("Main Image processing failed.", ex);
+                ShowMessageBox(
+                    "The asset was completed successfully, but the interface could not be refreshed."
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + ex.Message,
+                    "Post-Commit UI Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
             }
+            catch
+            {
+            }
+
+            Close();
         }
     }
 

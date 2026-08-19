@@ -1551,6 +1551,12 @@ public sealed class Bugs3ParanoidTests
                 }
             };
 
+            var rollbackCount = 0;
+            AssetProcessorService.OnRollbackReferenceReplacementInvoked = tx =>
+            {
+                rollbackCount++;
+            };
+
             try
             {
                 // Perform live replacement
@@ -1559,10 +1565,12 @@ public sealed class Bugs3ParanoidTests
 
                 // Check message reported previous reference was restored
                 Assert.Contains(messages, m => m.Contains("previous Reference was restored") || m.Contains("previous reference was restored") || m.Contains("CRITICAL"));
+                Assert.Equal(1, rollbackCount);
             }
             finally
             {
                 SessionService.OnBeforeSaveSessionHook = null;
+                AssetProcessorService.OnRollbackReferenceReplacementInvoked = null;
                 TwoChoiceDialog.CustomChoiceProvider = null;
                 MainForm.MessageBoxProvider = null;
             }
@@ -1627,5 +1635,344 @@ public sealed class Bugs3ParanoidTests
         var result = validationService.ValidateImageFile(customPath, new[] { ".customimg" });
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, e => e.Contains("header does not match expected signature") || e.Contains("signature"));
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_Prepared_SourceChangesBeforeProcess_NoMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r6_source_drift", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        // Change source after durable Prepared authority exists
+        File.WriteAllBytes(source, TestWorkspace.EnsureMagicBytes(source, new byte[] { 9, 9, 9 }));
+
+        Assert.Throws<IOException>(() =>
+            processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+
+        Assert.False(Directory.Exists(prepared.AssetFolder), "Authority drift must be rejected before folder creation.");
+        Assert.True(sessionService.Exists(), "Prepared journal remains durable.");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_Prepared_TemplateChangesBeforeProcess_NoMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r6_template_drift", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        // Modify reference.md after durable Prepared authority exists
+        var templateFile = Path.Combine(workspace.Root, "templates", "reference.md");
+        File.WriteAllText(templateFile, "# ALTERED TEMPLATE CONTENT {{ProjectName}}");
+
+        Assert.Throws<InvalidDataException>(() =>
+            processor.ProcessReference(prepared, settings, source, prepared.ReferenceProcessedAt));
+
+        Assert.False(Directory.Exists(prepared.AssetFolder), "Template drift must be rejected before folder creation.");
+        Assert.True(sessionService.Exists(), "Prepared journal remains durable.");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void InitialReference_Prepared_ProcessedAtMismatch_NoMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var now = DateTimeOffset.Now;
+        var prepared = processor.CreateReferenceSession(settings, "r6_time_mismatch", source, now);
+        sessionService.Save(prepared);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            processor.ProcessReference(prepared, settings, source, now.AddMinutes(5)));
+
+        Assert.False(Directory.Exists(prepared.AssetFolder), "Timestamp mismatch must be rejected before folder creation.");
+        Assert.True(sessionService.Exists(), "Prepared journal remains durable.");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void PreparedReference_ForeignCanonicalImage_PreservesAndCloses()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r6_foreign_image", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        // Create reference folder and put foreign image there
+        Directory.CreateDirectory(Path.Combine(prepared.AssetFolder, AppConstants.ReferenceFolderName));
+        File.WriteAllBytes(prepared.ReferenceDestinationPath, TestWorkspace.EnsureMagicBytes(prepared.ReferenceDestinationPath, new byte[] { 99, 99, 99 }));
+
+        RunStartupRecovery(workspace, settings, processor, sessionService);
+
+        Assert.True(sessionService.Exists(), "Prepared journal must be preserved on foreign file");
+        Assert.True(File.Exists(prepared.ReferenceDestinationPath), "Foreign file must not be deleted");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void PreparedReference_ForeignCanonicalProvenance_PreservesAndCloses()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var source = workspace.CreateImage("reference.png", new byte[] { 1, 2, 3 });
+        var prepared = processor.CreateReferenceSession(settings, "r6_foreign_prov", source, DateTimeOffset.Now);
+        sessionService.Save(prepared);
+
+        Directory.CreateDirectory(Path.Combine(prepared.AssetFolder, AppConstants.ReferenceFolderName));
+        File.WriteAllText(prepared.ReferenceProvenancePath, "FOREIGN PROVENANCE CONTENT");
+
+        RunStartupRecovery(workspace, settings, processor, sessionService);
+
+        Assert.True(sessionService.Exists(), "Prepared journal must be preserved on foreign file");
+        Assert.True(File.Exists(prepared.ReferenceProvenancePath), "Foreign provenance file must not be deleted");
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_PostCommitSuccessMessageThrows_DoesNotRollbackCompletedAsset()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r6_main_ui_throw", ref1, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var main1 = workspace.CreateImage("main1.png", new byte[] { 4, 5, 6 });
+
+        RunOnSta(() =>
+        {
+            MainForm.MessageBoxProvider = (_, message, caption, _, _) =>
+            {
+                if (caption == "Asset Complete")
+                {
+                    throw new InvalidOperationException("Simulated post-commit UI failure.");
+                }
+            };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+            sessionField?.SetValue(form, session);
+            stateField?.SetValue(form, 1);
+
+            form.SetSelectedImage(ImageSlot.Main, main1);
+            var promptBox = typeof(MainForm).GetField("txtPrompt", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
+            if (promptBox != null) promptBox.Text = "prompt text";
+
+            try
+            {
+                var handleMainMethod = typeof(MainForm).GetMethod("HandleMainImage", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleMainMethod?.Invoke(form, null);
+
+                Assert.False(sessionService.Exists(), "session.json must remain deleted after durable commit");
+                Assert.True(File.Exists(Path.Combine(session.AssetFolder, "main1.png")), "Root main image must exist");
+                Assert.True(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)), "Final provenance must exist");
+                Assert.True(File.Exists(Path.Combine(session.GetIngameFolderPath(), "asset_r6_main_ui_throw.png")), "Ingame copy must exist");
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Main_PostCommitUiFailure_DoesNotRecreateReferenceSession()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r6_main_no_recreate", ref1, DateTimeOffset.Now);
+        sessionService.Save(session);
+
+        var main1 = workspace.CreateImage("main1.png", new byte[] { 4, 5, 6 });
+
+        RunOnSta(() =>
+        {
+            MainForm.MessageBoxProvider = (_, message, caption, _, _) =>
+            {
+                if (caption == "Asset Complete")
+                {
+                    throw new InvalidOperationException("Simulated post-commit UI failure.");
+                }
+            };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+            sessionField?.SetValue(form, session);
+            stateField?.SetValue(form, 1);
+
+            form.SetSelectedImage(ImageSlot.Main, main1);
+            var promptBox = typeof(MainForm).GetField("txtPrompt", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
+            if (promptBox != null) promptBox.Text = "prompt text";
+
+            try
+            {
+                var handleMainMethod = typeof(MainForm).GetMethod("HandleMainImage", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleMainMethod?.Invoke(form, null);
+
+                Assert.False(sessionService.Exists(), "Reference session must NOT be re-persisted upon post-commit UI failure");
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Reference_PostStableSaveUiFailure_DoesNotRollbackReference()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+
+        RunOnSta(() =>
+        {
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            MainForm.OnReferenceStableSessionSavedHook = s =>
+            {
+                throw new InvalidOperationException("Simulated UI failure after stable session save.");
+            };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var folderBox = typeof(MainForm).GetField("txtAssetFolderName", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
+            if (folderBox != null) folderBox.Text = "asset_r6_ref_post_ui_throw";
+
+            form.SetSelectedImage(ImageSlot.Reference, ref1);
+
+            try
+            {
+                var handleRefMethod = typeof(MainForm).GetMethod("HandleReference", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleRefMethod?.Invoke(form, null);
+
+                Assert.True(sessionService.Exists(), "Stable Reference session must remain on disk");
+                var loaded = sessionService.Load()!;
+                Assert.Equal(ReferenceCommitPhase.None, loaded.ReferenceCommitPhase);
+                Assert.True(File.Exists(loaded.ReferenceDestinationPath), "Reference image must not be rolled back");
+                Assert.True(File.Exists(loaded.ReferenceProvenancePath), "Reference provenance must not be rolled back");
+            }
+            finally
+            {
+                MainForm.OnReferenceStableSessionSavedHook = null;
+                MainForm.MessageBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void NoReference_JournalSaved_PostSaveUiFailure_DoesNotLeaveUsableUntrackedTransaction()
+    {
+        using var workspace = new TestWorkspace();
+        var settings = workspace.CreateSettings();
+        var processor = workspace.CreateAssetProcessor();
+        var sessionService = workspace.CreateSessionService();
+
+        var main1 = workspace.CreateImage("main1.png", new byte[] { 10, 20, 30 });
+
+        RunOnSta(() =>
+        {
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var _ = form.Handle;
+
+            var chkNoRef = typeof(MainForm).GetField("chkNoReference", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as CheckBox;
+            if (chkNoRef != null) chkNoRef.Checked = true;
+
+            var folderBox = typeof(MainForm).GetField("txtAssetFolderName", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
+            if (folderBox != null) folderBox.Text = "asset_r6_noref_test";
+
+            form.SetSelectedImage(ImageSlot.Main, main1);
+            var promptBox = typeof(MainForm).GetField("txtPrompt", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as TextBox;
+            if (promptBox != null) promptBox.Text = "prompt text";
+
+            try
+            {
+                var handleMainMethod = typeof(MainForm).GetMethod("HandleMainImage", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleMainMethod?.Invoke(form, null);
+
+                Assert.False(sessionService.Exists(), "session.json must be removed on complete commit");
+                Assert.True(File.Exists(Path.Combine(settings.AssetRootFolder, "asset_r6_noref_test", "main1.png")));
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+            }
+        });
     }
 }

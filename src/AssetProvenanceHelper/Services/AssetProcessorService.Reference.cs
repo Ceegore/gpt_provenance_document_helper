@@ -104,7 +104,7 @@ public sealed partial class AssetProcessorService
         };
     }
 
-    internal AssetSession ProcessReference(
+    private void RequirePreparedReferenceAuthority(
         AssetSession session,
         AppSettings settings,
         string sourceImagePath,
@@ -117,6 +117,55 @@ public sealed partial class AssetProcessorService
         {
             throw new InvalidOperationException("ProcessReference requires a prepared Reference session.");
         }
+
+        if (!ValidationService.PathsEqual(sourceImagePath, session.ReferenceSourcePath))
+        {
+            throw new InvalidOperationException("Reference source path does not match the Prepared session authority.");
+        }
+
+        if (processedAt != session.ReferenceProcessedAt)
+        {
+            throw new InvalidOperationException("Reference processedAt does not match the Prepared session authority.");
+        }
+
+        var sourceValidation = _validationService.ValidateImageFile(session.ReferenceSourcePath, settings.AcceptedExtensions);
+        if (!sourceValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, sourceValidation.Errors));
+        }
+
+        var currentSourceHash = ComputeSha256(session.ReferenceSourcePath);
+        if (!string.Equals(currentSourceHash, session.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException("Reference source changed after the Prepared session was persisted.");
+        }
+
+        var generationDate = session.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var provenance = _templateService.RenderReference(session.ReferenceFilename, session.ProjectName, generationDate);
+        var provenanceHash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                new System.Text.UTF8Encoding(false).GetBytes(provenance)))
+            .ToLowerInvariant();
+
+        if (!string.Equals(provenanceHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException("Reference provenance changed after the Prepared session was persisted.");
+        }
+    }
+
+    internal AssetSession ProcessReference(
+        AssetSession session,
+        AppSettings settings,
+        string? sourceImagePath = null,
+        DateTimeOffset? processedAt = null)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(settings);
+
+        var actualSourcePath = sourceImagePath ?? session.ReferenceSourcePath;
+        var actualProcessedAt = processedAt ?? session.ReferenceProcessedAt;
+
+        RequirePreparedReferenceAuthority(session, settings, actualSourcePath, actualProcessedAt);
 
         var pathValidation = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
         if (!pathValidation.IsValid)
@@ -153,11 +202,9 @@ public sealed partial class AssetProcessorService
             Directory.CreateDirectory(assetFolder);
             Directory.CreateDirectory(referenceFolder);
 
-            sourceHash = ComputeSha256(sourceImagePath);
-
-            CopyFileWithoutOverwrite(sourceImagePath, referenceDestination);
+            CopyFileWithoutOverwrite(actualSourcePath, referenceDestination);
             imageCopied = true;
-            OnFileCopiedHook?.Invoke(sourceImagePath, referenceDestination);
+            OnFileCopiedHook?.Invoke(actualSourcePath, referenceDestination);
 
             var copiedValidation = _validationService.ValidateImageFile(referenceDestination, settings.AcceptedExtensions);
             if (!copiedValidation.IsValid)
@@ -166,12 +213,12 @@ public sealed partial class AssetProcessorService
             }
 
             var hash = ComputeSha256(referenceDestination);
-            if (!string.Equals(sourceHash, hash, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(session.ReferenceHash, hash, StringComparison.OrdinalIgnoreCase))
             {
-                throw new IOException("Reference source image changed during copy.");
+                throw new IOException("Copied Reference does not match Prepared ReferenceHash.");
             }
 
-            var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var generationDate = actualProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             provenance = _templateService.RenderReference(referenceFilename, session.ProjectName, generationDate);
 
             WriteTextAtomic(referenceProvenance, provenance);
@@ -700,6 +747,8 @@ public sealed partial class AssetProcessorService
     internal ValidationResult RollbackReferenceReplacement(
         ReferenceReplacementTransaction transaction)
     {
+        OnRollbackReferenceReplacementInvoked?.Invoke(transaction);
+
         var transactionValidation = _validationService.ValidateReferenceReplacementTransaction(transaction);
         if (!transactionValidation.IsValid)
         {

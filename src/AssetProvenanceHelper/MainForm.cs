@@ -439,4 +439,7 @@ public partial class MainForm : Form
 
     [ThreadStatic]
     internal static Action<ReferenceReplacementTransaction>? OnBeforeReferenceReplacementCommit;
+
+    [ThreadStatic]
+    internal static Action<AssetSession>? OnReferenceStableSessionSavedHook;
 }

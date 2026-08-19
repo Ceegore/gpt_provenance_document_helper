@@ -16,6 +16,7 @@ partial class MainForm
         }
 
         AssetSession? preparedSession = null;
+        AssetSession? completedSession = null;
 
         try
         {
@@ -49,25 +50,13 @@ partial class MainForm
 
             _sessionService.Save(preparedSession);
 
-            var completedSession = _assetProcessorService.ProcessReference(
+            completedSession = _assetProcessorService.ProcessReference(
                 preparedSession,
                 settings,
                 sourceImage,
                 now);
 
             _sessionService.Save(completedSession);
-
-            _currentSession = completedSession;
-            _state = UiState.ReferenceReady;
-
-            lblReference.Text = $"Saved reference: {completedSession.ReferenceFilename}";
-            SetSelectedImage(ImageSlot.Reference, null);
-
-            AddStatus($"Reference copied: {completedSession.ReferenceFilename}");
-            AddStatus("Reference provenance created.");
-            AddStatus("Reference session saved.");
-
-            ApplyState();
         }
         catch (Exception ex)
         {
@@ -127,6 +116,51 @@ partial class MainForm
             ShowError(
                 "Reference processing failed. The prepared transaction was rolled back safely.",
                 ex);
+
+            return;
+        }
+
+        // DURABLE COMMIT POINT: completedSession is safely persisted.
+        CompleteReferenceUiAfterDurableCommit(completedSession);
+    }
+
+    private void CompleteReferenceUiAfterDurableCommit(
+        AssetSession completedSession)
+    {
+        _currentSession = completedSession;
+        _state = UiState.ReferenceReady;
+
+        try
+        {
+            OnReferenceStableSessionSavedHook?.Invoke(completedSession);
+
+            lblReference.Text = $"Saved reference: {completedSession.ReferenceFilename}";
+            SetSelectedImage(ImageSlot.Reference, null);
+
+            AddStatus($"Reference copied: {completedSession.ReferenceFilename}");
+            AddStatus("Reference provenance created.");
+            AddStatus("Reference session saved.");
+
+            ApplyState();
+        }
+        catch (Exception uiException)
+        {
+            try
+            {
+                ShowMessageBox(
+                    "Reference was saved successfully, but the interface could not be refreshed."
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + uiException.Message,
+                    "Post-Commit UI Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch
+            {
+            }
+
+            Close();
         }
     }
 
@@ -336,20 +370,6 @@ partial class MainForm
                 Close();
                 return;
             }
-
-            _currentSession = transaction.NewSession;
-            lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
-            SetSelectedImage(ImageSlot.Reference, null);
-            SetSelectedImage(ImageSlot.Main, null);
-            txtPrompt.Clear();
-            ClearValidationVisuals();
-
-            AddStatus($"Reference replaced: {_currentSession.ReferenceFilename}");
-            AddStatus("Reference provenance updated.");
-            AddStatus("Reference session updated.");
-            AddStatus("Main candidate and prompt cleared because the Reference changed.");
-
-            ApplyState();
         }
         catch (Exception ex)
         {
@@ -388,6 +408,51 @@ partial class MainForm
                 }
             }
             ShowError("Reference replacement failed.", ex);
+            return;
+        }
+
+        // DURABLE COMMIT POINT: New reference is active and replacement journal is deleted.
+        CompleteReplacementUiAfterDurableCommit(transaction);
+    }
+
+    private void CompleteReplacementUiAfterDurableCommit(
+        ReferenceReplacementTransaction transaction)
+    {
+        _currentSession = transaction.NewSession;
+
+        try
+        {
+            lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
+            SetSelectedImage(ImageSlot.Reference, null);
+            SetSelectedImage(ImageSlot.Main, null);
+            txtPrompt.Clear();
+            ClearValidationVisuals();
+
+            AddStatus($"Reference replaced: {_currentSession.ReferenceFilename}");
+            AddStatus("Reference provenance updated.");
+            AddStatus("Reference session updated.");
+            AddStatus("Main candidate and prompt cleared because the Reference changed.");
+
+            ApplyState();
+        }
+        catch (Exception uiEx)
+        {
+            try
+            {
+                ShowMessageBox(
+                    "Reference replacement succeeded, but the interface could not be refreshed."
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + uiEx.Message,
+                    "Post-Commit UI Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch
+            {
+            }
+
+            Close();
         }
     }
 
