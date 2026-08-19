@@ -114,6 +114,10 @@ try {
     Write-Warning "Could not verify application icon: $_"
 }
 
+if (-not $iconVerified) {
+    throw "Application icon could not be extracted from published executable."
+}
+
 $gracefulShutdown = $false
 # Attempt graceful shutdown
 $proc.CloseMainWindow() | Out-Null
@@ -176,6 +180,7 @@ $smokeResults = [ordered]@{
     TemplatesVerified = $true
     CoreAssembliesVerified = $true
     ProcessStartupVerified = $true
+    StartupElapsedMs = $elapsedMs
     MainWindowCreated = $hasWindow
     MainWindowTitle = $windowTitle
     IconVerified = $iconVerified

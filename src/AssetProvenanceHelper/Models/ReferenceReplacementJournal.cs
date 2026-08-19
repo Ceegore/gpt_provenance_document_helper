@@ -3,9 +3,13 @@ namespace AssetProvenanceHelper.Models;
 public enum ReferenceReplacementPhase
 {
     Prepared = 0,
-    OldBackedUp = 1,
-    NewPromoted = 2,
-    SessionSwitched = 3
+    OldBackupPending = 1,
+    OldBackedUp = 2,
+    NewPromotionPending = 3,
+    NewPromoted = 4,
+    SessionSwitchPending = 5,
+    SessionSwitched = 6,
+    CleanupPending = 7
 }
 
 public sealed class ReferenceReplacementJournal

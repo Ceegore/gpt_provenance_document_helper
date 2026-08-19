@@ -386,7 +386,6 @@ partial class MainForm
             }
 
             txtPrompt.Text = text;
-            ClearMainValidationVisuals();
         }
         catch (Exception ex)
         {

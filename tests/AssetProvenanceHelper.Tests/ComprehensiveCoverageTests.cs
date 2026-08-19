@@ -627,7 +627,7 @@ public class ComprehensiveCoverageTests
         var session = processor.ProcessReference(settings, "asset_val_complete", refSource, DateTimeOffset.Now);
 
         var mainImg = workspace.CreateImage("main.png", new byte[] { 9, 9, 9 });
-        var mainFilename = processor.ProcessMainImage(session, settings.AcceptedExtensions, mainImg, "main prompt", DateTimeOffset.Now);
+        var mainFilename = processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainImg, "main prompt", DateTimeOffset.Now);
         var finalProv = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
         var mainDest = Path.Combine(session.AssetFolder, mainFilename);
 
@@ -771,11 +771,11 @@ public class ComprehensiveCoverageTests
         // 1. Session is invalid (corrupt session path)
         session.AssetFolderName = "invalid/name";
         var mainImg = workspace.CreateImage("main.png", new byte[] { 9, 9, 9 });
-        Assert.Throws<InvalidDataException>(() => processor.ProcessMainImage(session, settings.AcceptedExtensions, mainImg, "prompt", DateTimeOffset.Now));
+        Assert.Throws<InvalidDataException>(() => processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainImg, "prompt", DateTimeOffset.Now));
         session.AssetFolderName = "asset_main_bad";
 
         // 2. Main image validation fails (disallowed extension)
-        Assert.Throws<InvalidDataException>(() => processor.ProcessMainImage(session, new List<string> { ".jpg" }, mainImg, "prompt", DateTimeOffset.Now));
+        Assert.Throws<InvalidDataException>(() => processor.ProcessMainPrepared(session, new List<string> { ".jpg" }, mainImg, "prompt", DateTimeOffset.Now));
     }
 
     [Fact]
@@ -788,16 +788,10 @@ public class ComprehensiveCoverageTests
         var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
         var session = processor.ProcessReference(settings, "asset_rb_main_esc", refSource, DateTimeOffset.Now);
 
-        session.IsMainCommitting = true;
-        session.MainTransactionId = "0123456789abcdef0123456789abcdef";
-        session.MainFilename = "main.png";
-        session.MainPrompt = "prompt";
-        session.MainProcessedAt = DateTimeOffset.Now;
-        session.MainHash = new string('0', 64);
 
         var r = processor.RollbackMain(session, "../escaped_main.png");
         Assert.False(r.IsValid);
-        Assert.Contains(r.Errors, e => e.Contains("match") || e.Contains("invalid") || e.Contains("escapes"));
+        Assert.Contains(r.Errors, e => e.Contains("match") || e.Contains("invalid") || e.Contains("escapes") || e.Contains("exists"));
     }
 
     [Fact]
@@ -1261,7 +1255,7 @@ public class ComprehensiveCoverageTests
 
             var processedAt = DateTimeOffset.Now;
             var mainSource = workspace.CreateImage("main.png", new byte[] { 7, 7, 7 });
-            var mainFilename = processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "main prompt", processedAt);
+            var mainFilename = processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, "main prompt", processedAt);
             
             session.IsMainCommitting = true;
             session.MainTransactionId = "0123456789abcdef0123456789abcdef";

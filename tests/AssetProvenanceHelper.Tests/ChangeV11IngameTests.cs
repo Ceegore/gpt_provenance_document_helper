@@ -18,7 +18,7 @@ public sealed class ChangeV11IngameTests
         var session = processor.ProcessReference(settings, "onboarding1", refSource, DateTimeOffset.Now);
 
         var mainSource = workspace.CreateImage("ChatGPT Image 2026-08-18.png", new byte[] { 4, 5, 6 });
-        var result = processor.ProcessMainImage(
+        var result = processor.ProcessMainPrepared(
             session,
             settings.AcceptedExtensions,
             mainSource,
@@ -46,7 +46,7 @@ public sealed class ChangeV11IngameTests
         var session = processor.ProcessReference(settings, "onboarding1", refSource, DateTimeOffset.Now);
 
         var mainSource = workspace.CreateImage("ChatGPT Image 2026-08-18.png", new byte[] { 4, 5, 6 });
-        processor.ProcessMainImage(
+        processor.ProcessMainPrepared(
             session,
             settings.AcceptedExtensions,
             mainSource,
@@ -74,7 +74,7 @@ public sealed class ChangeV11IngameTests
         var session = processor.ProcessReference(settings, "onboarding1", refSource, DateTimeOffset.Now);
 
         var mainSource = workspace.CreateImage("ChatGPT Image 2026-08-18.png", new byte[] { 4, 5, 6 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session,
             settings.AcceptedExtensions,
             mainSource,

@@ -241,7 +241,10 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    public AssetSession ProcessReference(
+    /// <summary>
+    /// Test convenience overload. Internalized to prevent production callers from bypassing durable session persistence (R2-006).
+    /// </summary>
+    internal AssetSession ProcessReference(
         AppSettings settings,
         string assetFolderName,
         string sourceImagePath,
@@ -311,472 +314,248 @@ public sealed partial class AssetProcessorService
             : ValidationResult.Failure(errors);
     }
 
+    /// <summary>
+    /// R2-002: Creates a reference replacement transaction authority in memory without performing filesystem mutations.
+    /// </summary>
+    public ReferenceReplacementTransaction CreateReferenceReplacementTransaction(
+        AssetSession oldSession,
+        IReadOnlyCollection<string> acceptedExtensions,
+        string newSourceImagePath,
+        DateTimeOffset processedAt)
+    {
+        ArgumentNullException.ThrowIfNull(oldSession);
+        ArgumentNullException.ThrowIfNull(acceptedExtensions);
+        ArgumentNullException.ThrowIfNull(newSourceImagePath);
+
+        var oldValidation = _validationService.ValidateSession(oldSession);
+        if (!oldValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, oldValidation.Errors));
+        }
+
+        var imageValidation = _validationService.ValidateImageFile(newSourceImagePath, acceptedExtensions);
+        if (!imageValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, imageValidation.Errors));
+        }
+
+        var referenceFolder = Path.Combine(oldSession.AssetFolder, AppConstants.ReferenceFolderName);
+        var newFilename = Path.GetFileName(newSourceImagePath);
+        var newFinalReferencePath = Path.Combine(referenceFolder, newFilename);
+        var finalProvenancePath = oldSession.ReferenceProvenancePath;
+
+        if (!ValidationService.PathsEqual(newFinalReferencePath, oldSession.ReferenceDestinationPath) &&
+            File.Exists(newFinalReferencePath))
+        {
+            throw new IOException($"Replacement reference destination already exists: {newFinalReferencePath}");
+        }
+
+        var id = Guid.NewGuid().ToString("N");
+        var extension = Path.GetExtension(newFilename);
+        var tempReferencePath = Path.Combine(referenceFolder, $".__new_reference_{id}{extension}");
+        var tempProvenancePath = Path.Combine(referenceFolder, $".__new_provenance_{id}.tmp");
+        var backupReferencePath = oldSession.ReferenceDestinationPath + "." + id + ".old";
+        var backupProvenancePath = oldSession.ReferenceProvenancePath + "." + id + ".old";
+
+        var sourceHash = ComputeSha256(newSourceImagePath);
+        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var newProvenance = _templateService.RenderReference(newFilename, oldSession.ProjectName, generationDate);
+        var newProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(newProvenance))).ToLowerInvariant();
+
+        var newSession = new AssetSession
+        {
+            ProjectName = oldSession.ProjectName,
+            AssetRootFolder = oldSession.AssetRootFolder,
+            AssetFolderName = oldSession.AssetFolderName,
+            AssetFolder = oldSession.AssetFolder,
+            ReferenceSourcePath = newSourceImagePath,
+            ReferenceDestinationPath = newFinalReferencePath,
+            ReferenceFilename = newFilename,
+            ReferenceProvenancePath = finalProvenancePath,
+            ReferenceHash = sourceHash,
+            ReferenceProvenanceHash = newProvHash,
+            ReferenceProcessedAt = processedAt,
+            WasAssetFolderCreatedByTool = oldSession.WasAssetFolderCreatedByTool,
+            WasReferenceFolderCreatedByTool = oldSession.WasReferenceFolderCreatedByTool
+        };
+
+        return new ReferenceReplacementTransaction
+        {
+            TransactionId = id,
+            OldSession = oldSession,
+            NewSession = newSession,
+            BackupReferencePath = backupReferencePath,
+            BackupProvenancePath = backupProvenancePath,
+            TempNewReferencePath = tempReferencePath,
+            TempNewProvenancePath = tempProvenancePath
+        };
+    }
+
+    /// <summary>
+    /// R2-002: Creates temporary replacement reference image and provenance files on disk and verifies integrity.
+    /// </summary>
+    public void CreateReplacementTempFiles(
+        ReferenceReplacementTransaction transaction,
+        IReadOnlyCollection<string> acceptedExtensions)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(acceptedExtensions);
+
+        var sourceHash = ComputeSha256(transaction.NewSession.ReferenceSourcePath);
+        CopyFileWithoutOverwrite(transaction.NewSession.ReferenceSourcePath, transaction.TempNewReferencePath);
+        OnFileCopiedHook?.Invoke(transaction.NewSession.ReferenceSourcePath, transaction.TempNewReferencePath);
+
+        var copiedValidation = _validationService.ValidateImageFile(transaction.TempNewReferencePath, acceptedExtensions);
+        if (!copiedValidation.IsValid)
+        {
+            throw new InvalidDataException("Copied replacement reference image is invalid: " + string.Join("; ", copiedValidation.Errors));
+        }
+
+        var newHash = ComputeSha256(transaction.TempNewReferencePath);
+        if (!string.Equals(sourceHash, newHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException("Replacement reference image changed during copy.");
+        }
+
+        var generationDate = transaction.NewSession.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var newProvenance = _templateService.RenderReference(
+            transaction.NewSession.ReferenceFilename,
+            transaction.OldSession.ProjectName,
+            generationDate);
+
+        WriteTextAtomic(transaction.TempNewProvenancePath, newProvenance);
+    }
+
+    /// <summary>
+    /// R2-002: Moves old canonical reference image and provenance to deterministic backup paths.
+    /// </summary>
+    public void BackupOldReference(
+        ReferenceReplacementTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        if (!File.Exists(transaction.OldSession.ReferenceDestinationPath))
+        {
+            throw new IOException($"Old reference image does not exist: {transaction.OldSession.ReferenceDestinationPath}");
+        }
+
+        var oldRefHash = ComputeSha256(transaction.OldSession.ReferenceDestinationPath);
+        if (!string.Equals(oldRefHash, transaction.OldSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Old reference image on disk does not match session ReferenceHash (expected {transaction.OldSession.ReferenceHash}, found {oldRefHash}).");
+        }
+
+        var oldProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
+            transaction.OldSession,
+            transaction.OldSession.ReferenceProvenancePath,
+            _templateService);
+
+        if (!oldProvValidation.IsValid)
+        {
+            if (oldProvValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new IOException(
+                    $"Could not verify old reference provenance ownership before backup: {string.Join("; ", oldProvValidation.Errors)}");
+            }
+
+            throw new InvalidDataException(
+                $"Old reference provenance on disk does not match expected session provenance: {string.Join("; ", oldProvValidation.Errors)}");
+        }
+
+        File.Move(
+            transaction.OldSession.ReferenceDestinationPath,
+            transaction.BackupReferencePath,
+            overwrite: false);
+
+        File.Move(
+            transaction.OldSession.ReferenceProvenancePath,
+            transaction.BackupProvenancePath,
+            overwrite: false);
+
+        OnPrepareReplacementOldBackedUpHook?.Invoke(
+            transaction.BackupReferencePath,
+            transaction.BackupProvenancePath);
+    }
+
+    /// <summary>
+    /// R2-002: Promotes temporary replacement files to canonical destination paths.
+    /// </summary>
+    public void PromoteNewReference(
+        ReferenceReplacementTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        File.Move(
+            transaction.TempNewReferencePath,
+            transaction.NewSession.ReferenceDestinationPath,
+            overwrite: false);
+
+        File.Move(
+            transaction.TempNewProvenancePath,
+            transaction.NewSession.ReferenceProvenancePath,
+            overwrite: false);
+
+        var validation = _validationService.ValidateExactReferenceOutput(
+            transaction.NewSession,
+            _templateService);
+
+        if (!validation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, validation.Errors));
+        }
+    }
+
+    /// <summary>
+    /// R2-002: Cleans up old backup files after successful commit. Alias for CommitReferenceReplacement.
+    /// </summary>
+    public ValidationResult CleanupReplacementBackups(
+        ReferenceReplacementTransaction transaction)
+    {
+        return CommitReferenceReplacement(transaction);
+    }
+
     public ReferenceReplacementTransaction PrepareReferenceReplacement(
         AssetSession oldSession,
         IReadOnlyCollection<string> acceptedExtensions,
         string newSourceImagePath,
         DateTimeOffset processedAt)
     {
-        var oldValidation =
-            _validationService
-                .ValidateSession(
-                    oldSession);
-
-        if (!oldValidation.IsValid)
-        {
-            throw new InvalidDataException(
-                string.Join(
-                    Environment.NewLine,
-                    oldValidation.Errors));
-        }
-
-        var imageValidation =
-            _validationService
-                .ValidateImageFile(
-                    newSourceImagePath,
-                    acceptedExtensions);
-
-        if (!imageValidation.IsValid)
-        {
-            throw new InvalidDataException(
-                string.Join(
-                    Environment.NewLine,
-                    imageValidation.Errors));
-        }
-
-        var referenceFolder =
-            Path.Combine(
-                oldSession.AssetFolder,
-                AppConstants.ReferenceFolderName);
-
-        var newFilename =
-            Path.GetFileName(
-                newSourceImagePath);
-
-        var newFinalReferencePath =
-            Path.Combine(
-                referenceFolder,
-                newFilename);
-
-        var finalProvenancePath =
-            oldSession.ReferenceProvenancePath;
-
-        if (!ValidationService.PathsEqual(
-                newFinalReferencePath,
-                oldSession.ReferenceDestinationPath) &&
-            File.Exists(
-                newFinalReferencePath))
-        {
-            throw new IOException(
-                $"Replacement reference destination already exists: {newFinalReferencePath}");
-        }
-
-        var id =
-            Guid
-                .NewGuid()
-                .ToString("N");
-
-        var extension =
-            Path.GetExtension(
-                newFilename);
-
-        var tempReferencePath =
-            Path.Combine(
-                referenceFolder,
-                $".__new_reference_{id}{extension}");
-
-        var tempProvenancePath =
-            Path.Combine(
-                referenceFolder,
-                $".__new_provenance_{id}.tmp");
-
-        var backupReferencePath =
-            oldSession.ReferenceDestinationPath + "." + id + ".old";
-
-        var backupProvenancePath =
-            oldSession.ReferenceProvenancePath + "." + id + ".old";
-
-        var oldReferenceMoved =
-            false;
-
-        var oldProvenanceMoved =
-            false;
-
-        var newReferencePromoted =
-            false;
-
-        var newProvenancePromoted =
-            false;
-
-        // BUG-R17-001: Declare outside try so catch block can verify ownership
-        string? sourceHash = null;
-        string? newHash = null;
-        string? newProvenance = null;
-
+        var tx = CreateReferenceReplacementTransaction(oldSession, acceptedExtensions, newSourceImagePath, processedAt);
         try
         {
-            sourceHash =
-                ComputeSha256(
-                    newSourceImagePath);
-
-            CopyFileWithoutOverwrite(
-                newSourceImagePath,
-                tempReferencePath);
-
-            OnFileCopiedHook?.Invoke(
-                newSourceImagePath,
-                tempReferencePath);
-
-            var copiedValidation =
-                _validationService
-                    .ValidateImageFile(
-                        tempReferencePath,
-                        acceptedExtensions);
-
-            if (!copiedValidation.IsValid)
-            {
-                throw new InvalidDataException(
-                    "Copied replacement reference image is invalid: "
-                    + string.Join("; ", copiedValidation.Errors));
-            }
-
-            newHash =
-                ComputeSha256(
-                    tempReferencePath);
-
-            if (!string.Equals(
-                    sourceHash,
-                    newHash,
-                    StringComparison.OrdinalIgnoreCase))
+            CreateReplacementTempFiles(tx, acceptedExtensions);
+            BackupOldReference(tx);
+            PromoteNewReference(tx);
+            return tx;
+        }
+        catch (Exception ex)
+        {
+            var rollback = RollbackReferenceReplacement(tx);
+            if (!rollback.IsValid)
             {
                 throw new IOException(
-                    "Replacement reference image changed during copy.");
-            }
-
-            var generationDate =
-                processedAt
-                    .ToString(
-                        "yyyy-MM-dd",
-                        CultureInfo.InvariantCulture);
-
-            newProvenance =
-                _templateService.RenderReference(
-                    newFilename,
-                    oldSession.ProjectName,
-                    generationDate);
-
-            WriteTextAtomic(
-                tempProvenancePath,
-                newProvenance);
-
-            // BUG-R20-001: Freshly verify old canonical reference image and exact provenance ownership immediately before moving to backup paths
-            if (!File.Exists(oldSession.ReferenceDestinationPath))
-            {
-                throw new IOException(
-                    $"Old reference image does not exist: {oldSession.ReferenceDestinationPath}");
-            }
-
-            try
-            {
-                var oldRefHash = ComputeSha256(oldSession.ReferenceDestinationPath);
-                if (!string.Equals(oldRefHash, oldSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidDataException(
-                        $"Old reference image on disk does not match session ReferenceHash (expected {oldSession.ReferenceHash}, found {oldRefHash}).");
-                }
-            }
-            catch (InvalidDataException) { throw; }
-            catch (Exception ex)
-            {
-                throw new IOException(
-                    $"Could not verify old reference image before backup: {ex.Message}",
+                    "Reference replacement failed and automatic rollback was incomplete.\n" +
+                    string.Join(Environment.NewLine, rollback.Errors),
                     ex);
             }
 
-            var oldProvValidation =
-                _validationService.ValidateExactReferenceProvenanceOwnership(
-                    oldSession,
-                    oldSession.ReferenceProvenancePath,
-                    _templateService);
-
-            if (!oldProvValidation.IsValid)
+            if (ex is IOException ioEx)
             {
-                if (oldProvValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
-                {
-                    throw new IOException(
-                        $"Could not verify old reference provenance ownership before backup: {string.Join("; ", oldProvValidation.Errors)}");
-                }
-
-                throw new InvalidDataException(
-                    $"Old reference provenance on disk does not match expected session provenance: {string.Join("; ", oldProvValidation.Errors)}");
+                throw new IOException($"Reference replacement failed: {ioEx.Message}", ioEx);
             }
 
-            File.Move(
-                oldSession.ReferenceDestinationPath,
-                backupReferencePath,
-                overwrite: false);
-
-            oldReferenceMoved =
-                true;
-
-            File.Move(
-                oldSession.ReferenceProvenancePath,
-                backupProvenancePath,
-                overwrite: false);
-
-            oldProvenanceMoved =
-                true;
-
-            OnPrepareReplacementOldBackedUpHook?.Invoke(
-                backupReferencePath,
-                backupProvenancePath);
-
-            File.Move(
-                tempReferencePath,
-                newFinalReferencePath,
-                overwrite: false);
-
-            newReferencePromoted =
-                true;
-
-            File.Move(
-                tempProvenancePath,
-                finalProvenancePath,
-                overwrite: false);
-
-            newProvenancePromoted =
-                true;
-
-            var newProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(newProvenance))).ToLowerInvariant();
-
-            var newSession =
-                new AssetSession
-                {
-                    ProjectName =
-                        oldSession.ProjectName,
-
-                    AssetRootFolder =
-                        oldSession.AssetRootFolder,
-
-                    AssetFolderName =
-                        oldSession.AssetFolderName,
-
-                    AssetFolder =
-                        oldSession.AssetFolder,
-
-                    ReferenceSourcePath =
-                        newSourceImagePath,
-
-                    ReferenceDestinationPath =
-                        newFinalReferencePath,
-
-                    ReferenceFilename =
-                        newFilename,
-
-                    ReferenceProvenancePath =
-                        finalProvenancePath,
-
-                    ReferenceHash =
-                        newHash,
-
-                    ReferenceProvenanceHash =
-                        newProvHash,
-
-                    ReferenceProcessedAt =
-                        processedAt,
-
-                    WasAssetFolderCreatedByTool =
-                        oldSession.WasAssetFolderCreatedByTool,
-
-                    WasReferenceFolderCreatedByTool =
-                        oldSession.WasReferenceFolderCreatedByTool
-                };
-
-            var validation =
-                _validationService
-                    .ValidateExactReferenceOutput(
-                        newSession,
-                        _templateService);
-
-            if (!validation.IsValid)
+            if (ex is InvalidDataException idEx)
             {
-                throw new InvalidDataException(
-                    string.Join(
-                        Environment.NewLine,
-                        validation.Errors));
+                throw new InvalidDataException($"Reference replacement failed: {idEx.Message}", idEx);
             }
 
-            return new ReferenceReplacementTransaction
-            {
-                TransactionId =
-                    id,
-
-                OldSession =
-                    oldSession,
-
-                NewSession =
-                    newSession,
-
-                BackupReferencePath =
-                    backupReferencePath,
-
-                BackupProvenancePath =
-                    backupProvenancePath,
-
-                TempNewReferencePath =
-                    tempReferencePath,
-
-                TempNewProvenancePath =
-                    tempProvenancePath
-            };
-        }
-        catch (Exception primaryException)
-        {
-            var rollbackErrors =
-                new List<string>();
-
-            // BUG-R17-001: Verify current content ownership before deleting promoted provenance
-            if (newProvenancePromoted)
-            {
-                if (newProvenance is not null && TryVerifyTextFileOwnership(finalProvenancePath, newProvenance))
-                {
-                    TryDeleteFileWithError(
-                        finalProvenancePath,
-                        rollbackErrors);
-                }
-                else
-                {
-                    rollbackErrors.Add(
-                        $"Replacement reference provenance at '{finalProvenancePath}' content no longer matches tool-written provenance. File preserved.");
-                }
-            }
-
-            // BUG-R17-001: Verify current content ownership before deleting promoted reference
-            if (newReferencePromoted)
-            {
-                if (sourceHash is not null && TryVerifyFileHashOwnership(newFinalReferencePath, sourceHash))
-                {
-                    TryDeleteFileWithError(
-                        newFinalReferencePath,
-                        rollbackErrors);
-                }
-                else
-                {
-                    rollbackErrors.Add(
-                        $"Replacement reference image at '{newFinalReferencePath}' hash no longer matches expected hash. File preserved.");
-                }
-            }
-
-            // BUG-R20-001: Verify backup ownership and integrity before restoring to canonical paths
-            if (oldProvenanceMoved)
-            {
-                if (File.Exists(backupProvenancePath))
-                {
-                    var backupProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
-                        oldSession,
-                        backupProvenancePath,
-                        _templateService);
-
-                    if (backupProvValidation.IsValid)
-                    {
-                        TryRestoreFileWithError(
-                            backupProvenancePath,
-                            oldSession.ReferenceProvenancePath,
-                            "old reference provenance",
-                            rollbackErrors);
-                    }
-                    else
-                    {
-                        rollbackErrors.Add(
-                            $"Old reference provenance backup at '{backupProvenancePath}' content no longer matches tool-written provenance. Backup preserved and not restored.");
-                    }
-                }
-                else
-                {
-                    rollbackErrors.Add(
-                        $"Old reference provenance backup at '{backupProvenancePath}' not found for rollback.");
-                }
-            }
-
-            if (oldReferenceMoved)
-            {
-                if (File.Exists(backupReferencePath))
-                {
-                    if (oldSession.ReferenceHash is not null && TryVerifyFileHashOwnership(backupReferencePath, oldSession.ReferenceHash))
-                    {
-                        TryRestoreFileWithError(
-                            backupReferencePath,
-                            oldSession.ReferenceDestinationPath,
-                            "old reference image",
-                            rollbackErrors);
-                    }
-                    else
-                    {
-                        rollbackErrors.Add(
-                            $"Old reference image backup at '{backupReferencePath}' hash no longer matches expected hash. Backup preserved and not restored.");
-                    }
-                }
-                else
-                {
-                    rollbackErrors.Add(
-                        $"Old reference image backup at '{backupReferencePath}' not found for rollback.");
-                }
-            }
-
-            // BUG-R17-001: Verify temp reference ownership before deleting
-            if (File.Exists(tempReferencePath) && !newReferencePromoted)
-            {
-                if (sourceHash is not null && TryVerifyFileHashOwnership(tempReferencePath, sourceHash))
-                {
-                    TryDeleteFileWithError(
-                        tempReferencePath,
-                        rollbackErrors);
-                }
-                else
-                {
-                    rollbackErrors.Add(
-                        $"Replacement temp reference image at '{tempReferencePath}' hash no longer matches expected hash. File preserved.");
-                }
-            }
-
-            // BUG-R17-001: Verify temp provenance ownership before deleting
-            if (File.Exists(tempProvenancePath) && !newProvenancePromoted)
-            {
-                if (newProvenance is not null && TryVerifyTextFileOwnership(tempProvenancePath, newProvenance))
-                {
-                    TryDeleteFileWithError(
-                        tempProvenancePath,
-                        rollbackErrors);
-                }
-                else
-                {
-                    rollbackErrors.Add(
-                        $"Replacement temp reference provenance at '{tempProvenancePath}' content no longer matches tool-written provenance. File preserved.");
-                }
-            }
-
-            if (rollbackErrors.Count > 0)
-            {
-                throw new IOException(
-                    "Reference replacement failed and automatic rollback was incomplete."
-                    + Environment.NewLine
-                    + Environment.NewLine
-                    + "Primary error:"
-                    + Environment.NewLine
-                    + primaryException.Message
-                    + Environment.NewLine
-                    + Environment.NewLine
-                    + "Rollback errors:"
-                    + Environment.NewLine
-                    + string.Join(
-                        Environment.NewLine,
-                        rollbackErrors),
-                    primaryException);
-            }
-
-            throw;
+            throw new InvalidOperationException(
+                $"Reference replacement failed: {ex.Message}",
+                ex);
         }
     }
+
 
     public ValidationResult CommitReferenceReplacement(
         ReferenceReplacementTransaction transaction)
@@ -1094,6 +873,36 @@ public sealed partial class AssetProcessorService
                 TryDeleteFileWithError(
                     transaction.NewSession.ReferenceDestinationPath,
                     errors);
+            }
+        }
+
+        // Clean up temporary files if they match expected ownership
+        if (!string.IsNullOrWhiteSpace(transaction.TempNewReferencePath) && File.Exists(transaction.TempNewReferencePath))
+        {
+            try
+            {
+                var tempRefHash = ComputeSha256(transaction.TempNewReferencePath);
+                if (string.Equals(tempRefHash, transaction.NewSession.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDeleteFileWithError(transaction.TempNewReferencePath, errors);
+                }
+            }
+            catch
+            {
+                // Preserve unknown/unreadable temp
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(transaction.TempNewProvenancePath) && File.Exists(transaction.TempNewProvenancePath))
+        {
+            var tempProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
+                transaction.NewSession,
+                transaction.TempNewProvenancePath,
+                _templateService);
+
+            if (tempProvValidation.IsValid)
+            {
+                TryDeleteFileWithError(transaction.TempNewProvenancePath, errors);
             }
         }
 

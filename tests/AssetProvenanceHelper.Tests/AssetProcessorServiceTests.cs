@@ -163,7 +163,7 @@ public sealed class AssetProcessorServiceTests
             "bitte gib mir 4 varianten davon";
 
         var filename =
-            processor.ProcessMainImage(
+            processor.ProcessMainPrepared(
                 session,
                 settings.AcceptedExtensions,
                 main,
@@ -249,7 +249,7 @@ public sealed class AssetProcessorServiceTests
 
         Assert.Throws<InvalidOperationException>(
             () =>
-                processor.ProcessMainImage(
+                processor.ProcessMainPrepared(
                     session,
                     settings.AcceptedExtensions,
                     main,
@@ -312,7 +312,7 @@ public sealed class AssetProcessorServiceTests
                 });
 
         var filename =
-            processor.ProcessMainImage(
+            processor.ProcessMainPrepared(
                 session,
                 settings.AcceptedExtensions,
                 main,

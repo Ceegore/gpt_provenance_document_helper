@@ -260,3 +260,18 @@ public sealed class TestWorkspace : IDisposable
         }
     }
 }
+
+public static class TestExtensions
+{
+    public static string ProcessMainPrepared(
+        this AssetProcessorService processor,
+        AssetSession session,
+        IReadOnlyCollection<string> acceptedExtensions,
+        string sourceImagePath,
+        string prompt,
+        DateTimeOffset processedAt)
+    {
+        processor.PrepareMainCommit(session, sourceImagePath, prompt, processedAt);
+        return processor.ProcessMainImage(session, acceptedExtensions, sourceImagePath, prompt, processedAt);
+    }
+}

@@ -169,21 +169,50 @@ partial class MainForm
         try
         {
             var now = DateTimeOffset.Now;
-            transaction = _assetProcessorService.PrepareReferenceReplacement(
+
+            // 1. Create transaction in memory without filesystem mutations
+            transaction = _assetProcessorService.CreateReferenceReplacementTransaction(
                 _currentSession,
                 _settings.AcceptedExtensions,
                 source,
                 now);
 
+            // 2. Write-ahead Phase: Prepared
             _sessionService.SaveReplacementJournal(
                 transaction.ToJournal(ReferenceReplacementPhase.Prepared));
 
+            // 3. Create temp new files
+            _assetProcessorService.CreateReplacementTempFiles(
+                transaction,
+                _settings.AcceptedExtensions);
+
+            // 4. Write-ahead Phase: OldBackupPending
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.OldBackupPending));
+
+            // 5. Move old files to backup paths
+            _assetProcessorService.BackupOldReference(transaction);
+
+            // 6. Write-ahead Phase: OldBackedUp
             _sessionService.SaveReplacementJournal(
                 transaction.ToJournal(ReferenceReplacementPhase.OldBackedUp));
 
+            // 7. Write-ahead Phase: NewPromotionPending
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.NewPromotionPending));
+
+            // 8. Promote new temp files to canonical destinations
+            _assetProcessorService.PromoteNewReference(transaction);
+
+            // 9. Write-ahead Phase: NewPromoted
             _sessionService.SaveReplacementJournal(
                 transaction.ToJournal(ReferenceReplacementPhase.NewPromoted));
 
+            // 10. Write-ahead Phase: SessionSwitchPending
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.SessionSwitchPending));
+
+            // 11. Save NewSession to session.json
             try
             {
                 _sessionService.Save(transaction.NewSession);
@@ -212,24 +241,79 @@ partial class MainForm
                     saveException);
             }
 
+            // 12. Write-ahead Phase: SessionSwitched
             _sessionService.SaveReplacementJournal(
                 transaction.ToJournal(ReferenceReplacementPhase.SessionSwitched));
 
+            // 13. Verify NewSession exact output
+            var newValidation = _validationService.ValidateExactReferenceOutput(transaction.NewSession, _templateService);
+            if (!newValidation.IsValid)
+            {
+                var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
+                if (!rollback.IsValid)
+                {
+                    ShowMessageBox(
+                        "CRITICAL: Reference replacement failed, new reference output was invalid, and previous reference could not be fully restored.\n\n"
+                        + string.Join(Environment.NewLine, rollback.Errors),
+                        "Critical Replacement Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+
+                    Close();
+                    return;
+                }
+
+                try
+                {
+                    _sessionService.Save(transaction.OldSession);
+                    _sessionService.DeleteReplacementJournal();
+                }
+                catch (Exception saveEx)
+                {
+                    ShowError(
+                        "CRITICAL: Reference replacement failed, previous reference files were restored, but old session record could not be saved.",
+                        saveEx);
+
+                    Close();
+                    return;
+                }
+
+                _currentSession = transaction.OldSession;
+                lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
+                SetSelectedImage(ImageSlot.Reference, null);
+                ApplyState();
+
+                ShowMessageBox(
+                    "Reference replacement failed because the new reference output was invalid. The previous reference state was restored.\n\n"
+                    + string.Join(Environment.NewLine, newValidation.Errors),
+                    "Reference Replacement Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+
+                return;
+            }
+
+            // 14. Write-ahead Phase: CleanupPending
+            _sessionService.SaveReplacementJournal(
+                transaction.ToJournal(ReferenceReplacementPhase.CleanupPending));
+
             OnBeforeReferenceReplacementCommit?.Invoke(transaction);
 
-            var cleanup = _assetProcessorService.CommitReferenceReplacement(transaction);
+            // 15. Delete backup files
+            var cleanup = _assetProcessorService.CleanupReplacementBackups(transaction);
 
+            // 16. Delete replacement journal upon complete success
             _sessionService.DeleteReplacementJournal();
 
             if (!cleanup.IsValid)
             {
-                var newValidation = _validationService.ValidateReferenceOutput(transaction.NewSession);
+                var postOutputVal = _validationService.ValidateReferenceOutput(transaction.NewSession);
                 var exactNewProvValidation = _validationService.ValidateExactReferenceProvenanceOwnership(
                     transaction.NewSession,
                     transaction.NewSession.ReferenceProvenancePath,
                     _templateService);
 
-                if (!newValidation.IsValid || !exactNewProvValidation.IsValid)
+                if (!postOutputVal.IsValid || !exactNewProvValidation.IsValid)
                 {
                     var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
                     if (!rollback.IsValid)
@@ -321,11 +405,43 @@ partial class MainForm
         {
             if (transaction != null && !transaction.IsCommitted)
             {
-                try { _sessionService.DeleteReplacementJournal(); } catch { }
+                // Attempt rollback to preserve invariants
+                try
+                {
+                    var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
+                    if (rollback.IsValid)
+                    {
+                        try
+                        {
+                            _sessionService.Save(transaction.OldSession);
+                            _sessionService.DeleteReplacementJournal();
+                        }
+                        catch { }
+                    }
+                    else
+                    {
+                        ShowMessageBox(
+                            "CRITICAL: Reference replacement encountered an error and automatic rollback was incomplete.\n\n"
+                            + string.Join(Environment.NewLine, rollback.Errors),
+                            "Critical Replacement Error",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error);
+                        Close();
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Preserve journal on unresolved error
+                    ShowError("Reference replacement failed and journal was preserved for recovery.", ex);
+                    Close();
+                    return;
+                }
             }
             ShowError("Reference replacement failed.", ex);
         }
     }
+
 
     private void HandleCancel()
     {

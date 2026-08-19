@@ -22,7 +22,7 @@ public sealed class AssetProcessorServiceBranchTests
         var mainSource = workspace.CreateImage("main.png", refBytes);
 
         var ex = Assert.Throws<InvalidOperationException>(() =>
-            processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "test prompt", DateTimeOffset.Now));
+            processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, "test prompt", DateTimeOffset.Now));
 
         Assert.Contains("identical to the reference image", ex.Message);
     }
@@ -39,10 +39,10 @@ public sealed class AssetProcessorServiceBranchTests
         var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
 
         Assert.Throws<ArgumentException>(() =>
-            processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "", DateTimeOffset.Now));
+            processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, "", DateTimeOffset.Now));
 
         Assert.Throws<ArgumentException>(() =>
-            processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "   ", DateTimeOffset.Now));
+            processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, "   ", DateTimeOffset.Now));
     }
 
     [Fact]

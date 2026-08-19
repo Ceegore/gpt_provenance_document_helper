@@ -145,6 +145,60 @@ public sealed partial class AssetProcessorService
         };
     }
 
+    /// <summary>
+    /// R2-006: Prepares Main commit metadata in memory without performing filesystem mutations.
+    /// Caller is responsible for persisting the session before calling ProcessMainImage.
+    /// </summary>
+    public AssetSession PrepareMainCommit(
+        AssetSession session,
+        string sourceImagePath,
+        string prompt,
+        DateTimeOffset processedAt)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(sourceImagePath);
+        ArgumentNullException.ThrowIfNull(prompt);
+
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            throw new ArgumentException("Prompt must not be empty.", nameof(prompt));
+        }
+
+        var imageValidation = _validationService.ValidateImageFile(sourceImagePath, AppConstants.DefaultImageExtensions);
+        if (!imageValidation.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, imageValidation.Errors));
+        }
+
+        var sourceHash = ComputeSha256(sourceImagePath);
+
+        if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted &&
+            !string.IsNullOrWhiteSpace(session.ReferenceHash) &&
+            string.Equals(sourceHash, session.ReferenceHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The selected main image is identical to the reference image.");
+        }
+
+        var mainFilename = Path.GetFileName(sourceImagePath);
+        var genDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var projLabel = session.ProjectName;
+        var provText = session.WorkflowMode == AssetWorkflowMode.NoReference
+            ? _templateService.RenderFinalNoReference(mainFilename, projLabel, genDate, prompt)
+            : _templateService.RenderFinal(mainFilename, session.ReferenceFilename, projLabel, genDate, prompt);
+        var provHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provText))).ToLowerInvariant();
+
+        session.IsMainCommitting = true;
+        session.MainFilename = mainFilename;
+        session.MainPrompt = prompt;
+        session.MainProcessedAt = processedAt;
+        session.MainHash = sourceHash;
+        session.MainTransactionId = Guid.NewGuid().ToString("N");
+        session.MainProvenanceHash = provHash;
+        session.WasIngameFolderCreatedByTool = !Directory.Exists(session.GetIngameFolderPath());
+
+        return session;
+    }
+
     public string ProcessMainImage(
         AssetSession session,
         IReadOnlyCollection<string> acceptedExtensions,
@@ -175,18 +229,8 @@ public sealed partial class AssetProcessorService
 
         if (!session.IsMainCommitting)
         {
-            session.IsMainCommitting = true;
-            session.MainFilename = !string.IsNullOrWhiteSpace(session.MainFilename) ? session.MainFilename : Path.GetFileName(sourceImagePath);
-            session.MainPrompt = !string.IsNullOrWhiteSpace(session.MainPrompt) ? session.MainPrompt : prompt;
-            session.MainProcessedAt = session.MainProcessedAt ?? processedAt;
-            session.MainHash = !string.IsNullOrWhiteSpace(session.MainHash) ? session.MainHash : ComputeSha256(sourceImagePath);
-            session.MainTransactionId = !string.IsNullOrWhiteSpace(session.MainTransactionId) ? session.MainTransactionId : Guid.NewGuid().ToString("N");
-            var genDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var projLabel = session.ProjectName;
-            var provText = session.WorkflowMode == AssetWorkflowMode.NoReference
-                ? _templateService.RenderFinalNoReference(session.MainFilename, projLabel, genDate, prompt)
-                : _templateService.RenderFinal(session.MainFilename, session.ReferenceFilename, projLabel, genDate, prompt);
-            session.MainProvenanceHash = !string.IsNullOrWhiteSpace(session.MainProvenanceHash) ? session.MainProvenanceHash : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provText))).ToLowerInvariant();
+            throw new InvalidOperationException(
+                "ProcessMainImage requires a prepared and durably persisted Main transaction.");
         }
 
         if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted)
@@ -667,6 +711,16 @@ public sealed partial class AssetProcessorService
                         rollbackErrors),
                     primaryException,
                     rollbackComplete: false);
+            }
+
+            if (primaryException is IOException ioEx)
+            {
+                throw new IOException($"Main Image processing failed: {ioEx.Message}", ioEx);
+            }
+
+            if (primaryException is InvalidDataException idEx)
+            {
+                throw new InvalidDataException($"Main Image processing failed: {idEx.Message}", idEx);
             }
 
             throw;

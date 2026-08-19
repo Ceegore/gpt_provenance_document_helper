@@ -61,6 +61,14 @@ jobs:
           --no-build
           --logger "trx;LogFileName=release.trx"
 
+      - name: RecoveryCritical tests
+        run: >
+          dotnet test tests/AssetProvenanceHelper.Tests/AssetProvenanceHelper.Tests.csproj
+          -c Release
+          --no-build
+          --filter "Category=RecoveryCritical"
+          --logger "trx;LogFileName=recovery-critical.trx"
+
       - name: Flakiness 20x test loop
         shell: pwsh
         run: |

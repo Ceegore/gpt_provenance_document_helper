@@ -58,7 +58,7 @@ public sealed class EndToEndTests
 
         // Step 6: Process main image
         var mainTimestamp = new DateTimeOffset(2026, 8, 17, 14, 35, 0, TimeSpan.FromHours(2));
-        var mainFilename = processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, prompt, mainTimestamp);
+        var mainFilename = processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, prompt, mainTimestamp);
 
         // Step 7: Delete session (simulating app completing the asset)
         sessionService.Delete();
@@ -129,7 +129,7 @@ public sealed class EndToEndTests
 
         // Step 3: Process main image
         var main = workspace.CreateImage("main.png", new byte[] { 3 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, main, "final version prompt", DateTimeOffset.Now);
 
         sessionService.Delete();
@@ -176,7 +176,7 @@ public sealed class EndToEndTests
 
         // Step 4: Complete it with main image
         var main = workspace.CreateImage("main.png", new byte[] { 3 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session2, settings.AcceptedExtensions, main, "prompt text", DateTimeOffset.Now);
         sessionService.Delete();
 
@@ -213,7 +213,7 @@ public sealed class EndToEndTests
 
         // Complete with main image using the recovered session
         var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             loaded, settings.AcceptedExtensions, mainSource, "recovered prompt", DateTimeOffset.Now);
 
         sessionService2.Delete();
@@ -244,7 +244,7 @@ public sealed class EndToEndTests
 
             var mainBytes = new byte[] { (byte)(i * 10 + 5), (byte)(i * 10 + 6) };
             var mainSource = workspace.CreateImage($"main_{i}.png", mainBytes);
-            var mainFilename = processor.ProcessMainImage(
+            var mainFilename = processor.ProcessMainPrepared(
                 session, settings.AcceptedExtensions, mainSource, $"prompt for asset {i}", DateTimeOffset.Now);
             sessionService.Delete();
 
@@ -276,7 +276,7 @@ public sealed class EndToEndTests
         Assert.True(File.Exists(session.ReferenceDestinationPath));
 
         var mainSource = workspace.CreateImage("main.webp", new byte[] { 3, 4 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.Equal("main.webp", mainFilename);
@@ -299,7 +299,7 @@ public sealed class EndToEndTests
         Assert.Equal("reference.jpeg", session.ReferenceFilename);
 
         var mainSource = workspace.CreateImage("main.jpg", new byte[] { 3, 4 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.Equal("main.jpg", mainFilename);
@@ -329,7 +329,7 @@ public sealed class EndToEndTests
         var longPrompt = string.Join("\n", Enumerable.Range(0, 500).Select(i =>
             $"Zeile {i}: bitte ändere den Kontrast und die Farben – spezifisch für Iteration #{i}"));
 
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, mainSource, longPrompt, DateTimeOffset.Now);
 
         var finalProvPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
@@ -409,7 +409,7 @@ public sealed class EndToEndTests
         const string adversarialPrompt =
             "{{PROJECT}} should be replaced with {{FINAL_FILENAME}} and {{PROMPT}} recursion test";
 
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, mainSource, adversarialPrompt, DateTimeOffset.Now);
 
         var finalProvPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
@@ -508,7 +508,7 @@ public sealed class EndToEndTests
         sessionService.Save(session);
 
         var mainSource = workspace.CreateImage("main.png", new byte[] { 2 });
-        var mainFilename = processor.ProcessMainImage(
+        var mainFilename = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         // Now delete session (simulating normal completion)
@@ -669,7 +669,7 @@ public sealed class EndToEndTests
 
         // First main image
         var main1 = workspace.CreateImage("main1.png", new byte[] { 2 });
-        var mainFilename1 = processor.ProcessMainImage(
+        var mainFilename1 = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, main1, "first prompt", DateTimeOffset.Now);
 
         // Rollback
@@ -678,7 +678,7 @@ public sealed class EndToEndTests
 
         // Second main image with different bytes
         var main2 = workspace.CreateImage("main2.png", new byte[] { 3 });
-        var mainFilename2 = processor.ProcessMainImage(
+        var mainFilename2 = processor.ProcessMainPrepared(
             session, settings.AcceptedExtensions, main2, "second prompt", DateTimeOffset.Now);
 
         // Verify only second main exists

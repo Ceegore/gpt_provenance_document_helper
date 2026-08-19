@@ -148,7 +148,7 @@ public sealed class WorkflowAndSecurityTests
 
         Assert.Throws<ArgumentException>(
             () =>
-                processor.ProcessMainImage(
+                processor.ProcessMainPrepared(
                     session,
                     settings.AcceptedExtensions,
                     mainSource,
@@ -187,7 +187,7 @@ public sealed class WorkflowAndSecurityTests
 
         Assert.Throws<ArgumentException>(
             () =>
-                processor.ProcessMainImage(
+                processor.ProcessMainPrepared(
                     session,
                     settings.AcceptedExtensions,
                     mainSource,
@@ -225,7 +225,7 @@ public sealed class WorkflowAndSecurityTests
         const string unicodePrompt = "größer – schöner 日本語 😀 特殊文字 & \"quotes\" 'single'";
 
         var filename =
-            processor.ProcessMainImage(
+            processor.ProcessMainPrepared(
                 session,
                 settings.AcceptedExtensions,
                 mainSource,
@@ -269,7 +269,7 @@ public sealed class WorkflowAndSecurityTests
         const string multilinePrompt = "Zeile 1: bitte 4 Varianten\nZeile 2: mehr Kontrast\r\nZeile 3: final";
 
         var filename =
-            processor.ProcessMainImage(
+            processor.ProcessMainPrepared(
                 session,
                 settings.AcceptedExtensions,
                 mainSource,
@@ -317,7 +317,7 @@ public sealed class WorkflowAndSecurityTests
 
         Assert.Throws<IOException>(
             () =>
-                processor.ProcessMainImage(
+                processor.ProcessMainPrepared(
                     session,
                     settings.AcceptedExtensions,
                     mainSource,
@@ -359,7 +359,7 @@ public sealed class WorkflowAndSecurityTests
 
         Assert.Throws<IOException>(
             () =>
-                processor.ProcessMainImage(
+                processor.ProcessMainPrepared(
                     session,
                     settings.AcceptedExtensions,
                     mainSource,

@@ -302,7 +302,7 @@ partial class MainForm
         btnRefreshReference.Name = "btnRefreshReference";
         btnChooseReference = CreateButton("Choose File...");
         btnChooseReference.Name = "btnChooseReference";
-        btnDropReference = CreateButton("Drop File");
+        btnDropReference = CreateButton("Drop file here");
         btnDropReference.Name = "btnDropReference";
         btnDropReference.AllowDrop = true;
         btnDropReference.DragEnter += (s, e) => ImageDrop_DragEnter(s, e);
@@ -412,7 +412,7 @@ partial class MainForm
         btnRefreshMain.Name = "btnRefreshMain";
         btnChooseMain = CreateButton("Choose File...");
         btnChooseMain.Name = "btnChooseMain";
-        btnDropMain = CreateButton("Drop File");
+        btnDropMain = CreateButton("Drop file here");
         btnDropMain.Name = "btnDropMain";
         btnDropMain.AllowDrop = true;
         btnDropMain.DragEnter += (s, e) => ImageDrop_DragEnter(s, e);

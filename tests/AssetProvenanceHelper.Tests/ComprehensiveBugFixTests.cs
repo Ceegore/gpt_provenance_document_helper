@@ -68,7 +68,7 @@ public sealed class ComprehensiveBugFixTests
 
         // ProcessMainImage must reject due to foreign file collision and preserve foreign file
         Assert.Throws<IOException>(() =>
-            processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now));
+            processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now));
 
         Assert.True(File.Exists(foreignDest));
         Assert.Equal(foreignBytes, File.ReadAllBytes(foreignDest));
@@ -105,7 +105,7 @@ public sealed class ComprehensiveBugFixTests
         Assert.True(ownershipResult.IsValid);
 
         var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
-        var mainFilename = processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
+        var mainFilename = processor.ProcessMainPrepared(session, settings.AcceptedExtensions, mainSource, "prompt", DateTimeOffset.Now);
 
         Assert.False(string.IsNullOrWhiteSpace(session.MainProvenanceHash));
         var finalProvPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);

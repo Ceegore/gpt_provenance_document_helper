@@ -95,7 +95,6 @@ public partial class MainForm : Form
         btnClearPrompt.Click += (_, _) =>
         {
             txtPrompt.Clear();
-            ClearMainValidationVisuals();
         };
 
         btnMainImage.Click += (_, _) => HandleMainImage();

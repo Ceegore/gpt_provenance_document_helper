@@ -749,57 +749,14 @@ public sealed partial class ValidationService
             }
         }
 
-        string expectedText;
-        try
-        {
-            expectedText = session.WorkflowMode switch
-            {
-                AssetWorkflowMode.ReferenceAssisted =>
-                    templateService.RenderFinal(
-                        mainFilename,
-                        session.ReferenceFilename,
-                        session.ProjectName,
-                        mainGenerationDate,
-                        prompt),
+        var finalProvValidation = ValidateExactFinalProvenanceOwnership(
+            session,
+            finalProvenancePath,
+            templateService);
 
-                AssetWorkflowMode.NoReference =>
-                    templateService.RenderFinalNoReference(
-                        mainFilename,
-                        session.ProjectName,
-                        mainGenerationDate,
-                        prompt),
-
-                _ => throw new InvalidOperationException($"Unsupported workflow mode: {session.WorkflowMode}")
-            };
-        }
-        catch (Exception ex)
+        if (!finalProvValidation.IsValid)
         {
-            errors.Add($"Could not render expected final provenance for validation: {ex.Message}");
-            expectedText = string.Empty;
-        }
-
-        if (!File.Exists(finalProvenancePath))
-        {
-            errors.Add($"Final provenance does not exist: {finalProvenancePath}");
-        }
-        else if (!string.IsNullOrEmpty(expectedText))
-        {
-            try
-            {
-                var actualText = File.ReadAllText(finalProvenancePath, Encoding.UTF8);
-                if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))
-                {
-                    errors.Add("Final provenance content does not match expected output.");
-                    if (!actualText.Contains($"- Main Asset ID: `{mainFilename}`"))
-                    {
-                        errors.Add($"Final provenance does not contain expected Main Asset ID: {mainFilename}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"Could not read final provenance at '{finalProvenancePath}': {ex.Message}");
-            }
+            errors.AddRange(finalProvValidation.Errors);
         }
 
         return errors.Count == 0
@@ -818,6 +775,24 @@ public sealed partial class ValidationService
                 $"Reference provenance file does not exist: {provenancePath}");
         }
 
+        if (!string.IsNullOrWhiteSpace(session.ReferenceProvenanceHash))
+        {
+            try
+            {
+                var actualHash = ComputeSha256(provenancePath);
+                return string.Equals(actualHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Failure(
+                        "Reference provenance SHA-256 hash does not match stored ReferenceProvenanceHash.");
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not compute reference provenance hash at '{provenancePath}': {ex.Message}");
+            }
+        }
+
+        // Legacy-session fallback only
         string expectedText;
         try
         {
@@ -831,26 +806,6 @@ public sealed partial class ValidationService
         {
             return ValidationResult.Failure(
                 $"Could not render expected reference provenance for ownership validation: {ex.Message}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(session.ReferenceProvenanceHash))
-        {
-            try
-            {
-                var actualHash = ComputeSha256(provenancePath);
-                if (!string.Equals(actualHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    return ValidationResult.Failure(
-                        "Reference provenance SHA-256 hash does not match stored ReferenceProvenanceHash.");
-                }
-
-                return ValidationResult.Success();
-            }
-            catch (Exception ex)
-            {
-                return ValidationResult.Failure(
-                    $"Could not compute reference provenance hash at '{provenancePath}': {ex.Message}");
-            }
         }
 
         string actualText;
@@ -884,11 +839,29 @@ public sealed partial class ValidationService
                 $"Final provenance file does not exist: {finalProvenancePath}");
         }
 
+        if (!string.IsNullOrWhiteSpace(session.MainProvenanceHash))
+        {
+            try
+            {
+                var actualHash = ComputeSha256(finalProvenancePath);
+                return string.Equals(actualHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Failure(
+                        "Final provenance SHA-256 hash does not match stored MainProvenanceHash.");
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not compute final provenance hash at '{finalProvenancePath}': {ex.Message}");
+            }
+        }
+
+        // Legacy-session fallback only
         if (string.IsNullOrWhiteSpace(session.MainFilename) ||
             !session.MainProcessedAt.HasValue)
         {
             return ValidationResult.Failure(
-                "Session Main metadata is incomplete for final provenance ownership validation.");
+                "Legacy Main provenance authority is incomplete.");
         }
 
         string expectedText;
@@ -922,26 +895,6 @@ public sealed partial class ValidationService
                 $"Could not render expected final provenance for ownership validation: {ex.Message}");
         }
 
-        if (!string.IsNullOrWhiteSpace(session.MainProvenanceHash))
-        {
-            try
-            {
-                var actualHash = ComputeSha256(finalProvenancePath);
-                if (!string.Equals(actualHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    return ValidationResult.Failure(
-                        "Final provenance SHA-256 hash does not match stored MainProvenanceHash.");
-                }
-
-                return ValidationResult.Success();
-            }
-            catch (Exception ex)
-            {
-                return ValidationResult.Failure(
-                    $"Could not compute final provenance hash at '{finalProvenancePath}': {ex.Message}");
-            }
-        }
-
         string actualText;
         try
         {
@@ -961,6 +914,7 @@ public sealed partial class ValidationService
 
         return ValidationResult.Success();
     }
+
 
     public ValidationResult ValidateReferenceOwnershipForDeletion(
         AssetSession session,
@@ -1071,6 +1025,232 @@ public sealed partial class ValidationService
             {
                 errors.Add("Transaction BackupProvenancePath does not match expected deterministic backup path.");
             }
+        }
+
+        return errors.Count == 0
+            ? ValidationResult.Success()
+            : ValidationResult.Failure(errors);
+    }
+
+    /// <summary>
+    /// R2-001: Validates a replacement journal's structural integrity before any recovery mutation.
+    /// Proves all 14 path/phase/reparse constraints before trusting journal paths.
+    /// </summary>
+    public ValidationResult ValidateReferenceReplacementJournal(
+        ReferenceReplacementJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+
+        var errors = new List<string>();
+
+        if (!Enum.IsDefined(typeof(ReferenceReplacementPhase), journal.Phase))
+        {
+            errors.Add($"Unknown replacement phase '{journal.Phase}'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(journal.TransactionId)
+            || journal.TransactionId.Length != 32
+            || journal.TransactionId.Any(c => !Uri.IsHexDigit(c)))
+        {
+            errors.Add(
+                "Replacement TransactionId must be exactly 32 hexadecimal characters.");
+        }
+
+        if (journal.OldSession is null || journal.NewSession is null)
+        {
+            errors.Add("Replacement journal OldSession/NewSession is missing.");
+            return ValidationResult.Failure(errors);
+        }
+
+        var oldSession = journal.OldSession;
+        var newSession = journal.NewSession;
+
+        var oldPathValidation =
+            ValidateSessionPathsForDestructiveOperation(oldSession);
+
+        if (!oldPathValidation.IsValid)
+        {
+            errors.AddRange(
+                oldPathValidation.Errors.Select(
+                    e => "OldSession: " + e));
+        }
+
+        var newPathValidation =
+            ValidateSessionPathsForDestructiveOperation(newSession);
+
+        if (!newPathValidation.IsValid)
+        {
+            errors.AddRange(
+                newPathValidation.Errors.Select(
+                    e => "NewSession: " + e));
+        }
+
+        if (oldSession.WorkflowMode != AssetWorkflowMode.ReferenceAssisted
+            || newSession.WorkflowMode != AssetWorkflowMode.ReferenceAssisted)
+        {
+            errors.Add(
+                "Reference replacement journal must contain ReferenceAssisted sessions.");
+        }
+
+        if (!PathsEqual(
+                oldSession.AssetRootFolder,
+                newSession.AssetRootFolder))
+        {
+            errors.Add("Old/New AssetRootFolder mismatch.");
+        }
+
+        if (!string.Equals(
+                oldSession.AssetFolderName,
+                newSession.AssetFolderName,
+                StringComparison.Ordinal))
+        {
+            errors.Add("Old/New AssetFolderName mismatch.");
+        }
+
+        if (!PathsEqual(
+                oldSession.AssetFolder,
+                newSession.AssetFolder))
+        {
+            errors.Add("Old/New AssetFolder mismatch.");
+        }
+
+        if (!string.Equals(
+                oldSession.ProjectName,
+                newSession.ProjectName,
+                StringComparison.Ordinal))
+        {
+            errors.Add("Old/New ProjectName mismatch.");
+        }
+
+        if (errors.Count != 0)
+        {
+            return ValidationResult.Failure(errors);
+        }
+
+        var referenceFolder =
+            NormalizePath(
+                Path.Combine(
+                    oldSession.AssetFolder,
+                    AppConstants.ReferenceFolderName));
+
+        if (Directory.Exists(referenceFolder)
+            && IsReparsePoint(referenceFolder))
+        {
+            errors.Add(
+                "Replacement reference folder is a reparse point.");
+        }
+
+        var expectedBackupReference =
+            NormalizePath(
+                oldSession.ReferenceDestinationPath
+                + "."
+                + journal.TransactionId
+                + ".old");
+
+        var expectedBackupProvenance =
+            NormalizePath(
+                oldSession.ReferenceProvenancePath
+                + "."
+                + journal.TransactionId
+                + ".old");
+
+        var newExtension =
+            Path.GetExtension(newSession.ReferenceFilename);
+
+        var expectedTempReference =
+            NormalizePath(
+                Path.Combine(
+                    referenceFolder,
+                    $".__new_reference_{journal.TransactionId}{newExtension}"));
+
+        var expectedTempProvenance =
+            NormalizePath(
+                Path.Combine(
+                    referenceFolder,
+                    $".__new_provenance_{journal.TransactionId}.tmp"));
+
+        if (!PathsEqual(
+                journal.BackupReferencePath,
+                expectedBackupReference))
+        {
+            errors.Add(
+                "BackupReferencePath does not match deterministic transaction path.");
+        }
+
+        if (!PathsEqual(
+                journal.BackupProvenancePath,
+                expectedBackupProvenance))
+        {
+            errors.Add(
+                "BackupProvenancePath does not match deterministic transaction path.");
+        }
+
+        if (!PathsEqual(
+                journal.TempNewReferencePath,
+                expectedTempReference))
+        {
+            errors.Add(
+                "TempNewReferencePath does not match deterministic transaction path.");
+        }
+
+        if (!PathsEqual(
+                journal.TempNewProvenancePath,
+                expectedTempProvenance))
+        {
+            errors.Add(
+                "TempNewProvenancePath does not match deterministic transaction path.");
+        }
+
+        return errors.Count == 0
+            ? ValidationResult.Success()
+            : ValidationResult.Failure(errors);
+    }
+
+    /// <summary>
+    /// R2-003: Validates a session in ReferenceCommitPhase.Prepared without requiring files to exist on disk.
+    /// Used during startup recovery BEFORE running the full ValidateSession which would reject in-progress sessions.
+    /// </summary>
+    public ValidationResult ValidatePreparedReferenceSession(
+        AssetSession session)
+    {
+        var errors = new List<string>();
+
+        if (session.WorkflowMode != AssetWorkflowMode.ReferenceAssisted)
+        {
+            errors.Add("Prepared reference session must have ReferenceAssisted workflow mode.");
+        }
+
+        if (session.ReferenceCommitPhase != ReferenceCommitPhase.Prepared)
+        {
+            errors.Add("Session is not in ReferenceCommitPhase.Prepared.");
+        }
+
+        if (string.IsNullOrWhiteSpace(session.ReferenceTransactionId)
+            || session.ReferenceTransactionId.Length != 32
+            || session.ReferenceTransactionId.Any(c => !Uri.IsHexDigit(c)))
+        {
+            errors.Add("ReferenceTransactionId must be exactly 32 hexadecimal characters.");
+        }
+
+        // Validate path security (does not require directories to exist)
+        var pathValidation = ValidateSessionPathsForDestructiveOperation(session);
+        if (!pathValidation.IsValid)
+        {
+            errors.AddRange(pathValidation.Errors);
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.ReferenceHash)
+            && (session.ReferenceHash.Length != 64
+                || session.ReferenceHash.Any(c => !Uri.IsHexDigit(c))))
+        {
+            errors.Add("ReferenceHash must be exactly 64 hexadecimal characters.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.ReferenceProvenanceHash)
+            && (session.ReferenceProvenanceHash.Length != 64
+                || session.ReferenceProvenanceHash.Any(c => !Uri.IsHexDigit(c))))
+        {
+            errors.Add("ReferenceProvenanceHash must be exactly 64 hexadecimal characters.");
         }
 
         return errors.Count == 0
