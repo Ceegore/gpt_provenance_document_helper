@@ -258,21 +258,23 @@ public sealed class SessionService
             {
                 // BUG-R19-002: Re-verify exact provenance ownership immediately before moving
                 var validator = _validationService ?? new ValidationService();
-                var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService);
-                if (!provValidation.IsValid)
+                var provResult = validator.TryGetExactReferenceProvenanceRawHash(
+                    session,
+                    session.ReferenceProvenancePath,
+                    _templateService,
+                    out var verifiedProvHash);
+
+                if (!provResult.IsValid || string.IsNullOrWhiteSpace(verifiedProvHash))
                 {
-                    if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+                    if (provResult.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
                     {
-                        throw new IOException($"Could not verify reference provenance ownership before rename: {string.Join("; ", provValidation.Errors)}");
+                        throw new IOException($"Could not verify reference provenance ownership before rename: {string.Join("; ", provResult.Errors)}");
                     }
 
-                    throw new InvalidDataException($"Reference provenance on disk does not match expected session provenance: {string.Join("; ", provValidation.Errors)}");
+                    throw new InvalidDataException($"Reference provenance on disk does not match expected session provenance: {string.Join("; ", provResult.Errors)}");
                 }
 
-                if (expectedProvHash is null)
-                {
-                    expectedProvHash = ValidationService.ComputeSha256(session.ReferenceProvenancePath);
-                }
+                expectedProvHash = verifiedProvHash;
 
                 MoveHashOwnedCancelFile(
                     session.ReferenceProvenancePath,
@@ -287,10 +289,19 @@ public sealed class SessionService
             else if (!origProvExists && tempProvExists)
             {
                 // Already moved in a previous attempt
-                if (expectedProvHash is null)
+                var validator = _validationService ?? new ValidationService();
+                var provResult = validator.TryGetExactReferenceProvenanceRawHash(
+                    session,
+                    tempProvenancePath,
+                    _templateService,
+                    out var verifiedProvHash);
+
+                if (!provResult.IsValid || string.IsNullOrWhiteSpace(verifiedProvHash))
                 {
-                    expectedProvHash = ValidationService.ComputeSha256(tempProvenancePath);
+                    throw new InvalidDataException($"Cancel temp reference provenance on disk does not match expected session provenance: {string.Join("; ", provResult.Errors)}");
                 }
+
+                expectedProvHash = verifiedProvHash;
             }
             else if (origProvExists && tempProvExists)
             {
@@ -430,23 +441,25 @@ public sealed class SessionService
             if (File.Exists(tempProvenancePath) && _templateService != null)
             {
                 var validator = _validationService ?? new ValidationService();
-                var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProvenancePath, _templateService);
-                if (!provValidation.IsValid)
+                var provResult = validator.TryGetExactReferenceProvenanceRawHash(
+                    session,
+                    tempProvenancePath,
+                    _templateService,
+                    out var verifiedProvHash);
+
+                if (!provResult.IsValid || string.IsNullOrWhiteSpace(verifiedProvHash))
                 {
-                    if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
+                    if (provResult.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase)))
                     {
                         throw new IOException(
-                            $"Could not verify temporary canceling reference provenance '{tempProvenancePath}': {string.Join("; ", provValidation.Errors)}");
+                            $"Could not verify temporary canceling reference provenance '{tempProvenancePath}': {string.Join("; ", provResult.Errors)}");
                     }
 
                     throw new InvalidDataException(
-                        $"Cancel-temp reference provenance '{tempProvenancePath}' content no longer matches expected session provenance: {string.Join("; ", provValidation.Errors)}. File preserved.");
+                        $"Cancel-temp reference provenance '{tempProvenancePath}' content no longer matches expected session provenance: {string.Join("; ", provResult.Errors)}. File preserved.");
                 }
 
-                if (expectedProvHash is null)
-                {
-                    expectedProvHash = ValidationService.ComputeSha256(tempProvenancePath);
-                }
+                expectedProvHash = verifiedProvHash;
             }
 
             EnsureCancelPathsAreSafe(session);

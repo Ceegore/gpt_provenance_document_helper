@@ -265,11 +265,21 @@ public sealed partial class AssetProcessorService
             RequireInitialReferenceStagingAuthority(session, tempImagePath, tempProvenancePath);
 
             // 3. Promote staged artifacts to canonical paths
-            File.Move(tempImagePath, referenceDestination, overwrite: false);
+            MoveHashOwnedFileWithoutOverwrite(
+                tempImagePath,
+                referenceDestination,
+                session.ReferenceHash,
+                "Reference image",
+                () => ValidateSessionDestructivePathSafety(session));
             imagePromoted = true;
             tempImageCopied = false;
 
-            File.Move(tempProvenancePath, referenceProvenance, overwrite: false);
+            MoveHashOwnedFileWithoutOverwrite(
+                tempProvenancePath,
+                referenceProvenance,
+                session.ReferenceProvenanceHash!,
+                "Reference provenance",
+                () => ValidateSessionDestructivePathSafety(session));
             provenancePromoted = true;
             tempProvenanceWritten = false;
 
@@ -617,10 +627,19 @@ public sealed partial class AssetProcessorService
         var newProvenance = _templateService.RenderReference(newFilename, oldSession.ProjectName, generationDate);
         var newProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(newProvenance))).ToLowerInvariant();
 
-        // BUG-R13-002: Materialize legacy ReferenceProvenanceHash on transaction OldSession authority
-        var oldProvHash = !string.IsNullOrWhiteSpace(oldSession.ReferenceProvenanceHash)
-            ? oldSession.ReferenceProvenanceHash
-            : ComputeSha256(oldSession.ReferenceProvenancePath);
+        // BUG-R14-002: Materialize legacy ReferenceProvenanceHash from single snapshot proof on transaction OldSession authority
+        var oldProvResult = _validationService.TryGetExactReferenceProvenanceRawHash(
+            oldSession,
+            oldSession.ReferenceProvenancePath,
+            _templateService,
+            out var oldProvHash);
+
+        if (!oldProvResult.IsValid || string.IsNullOrWhiteSpace(oldProvHash))
+        {
+            throw new InvalidDataException(
+                "Could not establish exact byte authority for old reference provenance: "
+                + string.Join("; ", oldProvResult.Errors));
+        }
 
         var oldSessionAuthority = new AssetSession
         {
@@ -752,6 +771,62 @@ public sealed partial class AssetProcessorService
     }
 
     /// <summary>
+    /// BUG-R14-002 & BUG-R14-003: Ensures OldSession has proven raw SHA-256 byte authority.
+    /// For legacy sessions with null ReferenceProvenanceHash, hydrates from a single exact-text byte snapshot.
+    /// </summary>
+    internal ValidationResult EnsureOldProvenanceByteAuthority(
+        ReferenceReplacementTransaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        if (!string.IsNullOrWhiteSpace(transaction.OldSession.ReferenceProvenanceHash))
+        {
+            return ValidationResult.Success();
+        }
+
+        // Candidate 1: BackupProvenancePath
+        if (File.Exists(transaction.BackupProvenancePath))
+        {
+            var res = _validationService.TryGetExactReferenceProvenanceRawHash(
+                transaction.OldSession,
+                transaction.BackupProvenancePath,
+                _templateService,
+                out var hash);
+
+            if (res.IsValid && !string.IsNullOrWhiteSpace(hash))
+            {
+                transaction.OldSession.ReferenceProvenanceHash = hash;
+                return ValidationResult.Success();
+            }
+
+            return ValidationResult.Failure(
+                $"Could not establish byte authority for legacy backup reference provenance: {string.Join("; ", res.Errors)}");
+        }
+
+        // Candidate 2: Canonical OldSession.ReferenceProvenancePath
+        if (File.Exists(transaction.OldSession.ReferenceProvenancePath))
+        {
+            var res = _validationService.TryGetExactReferenceProvenanceRawHash(
+                transaction.OldSession,
+                transaction.OldSession.ReferenceProvenancePath,
+                _templateService,
+                out var hash);
+
+            if (res.IsValid && !string.IsNullOrWhiteSpace(hash))
+            {
+                transaction.OldSession.ReferenceProvenanceHash = hash;
+                return ValidationResult.Success();
+            }
+
+            return ValidationResult.Failure(
+                $"Could not establish byte authority for legacy canonical reference provenance: {string.Join("; ", res.Errors)}");
+        }
+
+        return ValidationResult.Failure(
+            "Could not locate old reference provenance to establish byte authority.");
+    }
+
+    /// <summary>
     /// R2-002: Moves old canonical reference image and provenance to deterministic backup paths.
     /// Note: Caller contract requires persisting an OldBackupPending replacement journal before invoking this mutator.
     /// </summary>
@@ -761,6 +836,12 @@ public sealed partial class AssetProcessorService
         ArgumentNullException.ThrowIfNull(transaction);
 
         RequireSafeReferenceReplacementTransaction(transaction);
+
+        var authorityResult = EnsureOldProvenanceByteAuthority(transaction);
+        if (!authorityResult.IsValid)
+        {
+            throw new InvalidDataException(string.Join(Environment.NewLine, authorityResult.Errors));
+        }
 
         if (!File.Exists(transaction.OldSession.ReferenceDestinationPath))
         {
@@ -810,15 +891,19 @@ public sealed partial class AssetProcessorService
                 "OLD Reference provenance changed before backup.");
         }
 
-        File.Move(
+        MoveHashOwnedFileWithoutOverwrite(
             transaction.OldSession.ReferenceDestinationPath,
             transaction.BackupReferencePath,
-            overwrite: false);
+            transaction.OldSession.ReferenceHash!,
+            "OLD Reference image",
+            () => _validationService.ValidateReferenceReplacementTransaction(transaction));
 
-        File.Move(
+        MoveHashOwnedFileWithoutOverwrite(
             transaction.OldSession.ReferenceProvenancePath,
             transaction.BackupProvenancePath,
-            overwrite: false);
+            transaction.OldSession.ReferenceProvenanceHash!,
+            "OLD Reference provenance",
+            () => _validationService.ValidateReferenceReplacementTransaction(transaction));
 
         OnPrepareReplacementOldBackedUpHook?.Invoke(
             transaction.BackupReferencePath,
@@ -863,15 +948,19 @@ public sealed partial class AssetProcessorService
         // Final confinement/reparse gate after hash work immediately before canonical promotion
         RequireSafeReferenceReplacementTransaction(transaction);
 
-        File.Move(
+        MoveHashOwnedFileWithoutOverwrite(
             transaction.TempNewReferencePath,
             transaction.NewSession.ReferenceDestinationPath,
-            overwrite: false);
+            transaction.NewSession.ReferenceHash!,
+            "New Reference image",
+            () => _validationService.ValidateReferenceReplacementTransaction(transaction));
 
-        File.Move(
+        MoveHashOwnedFileWithoutOverwrite(
             transaction.TempNewProvenancePath,
             transaction.NewSession.ReferenceProvenancePath,
-            overwrite: false);
+            transaction.NewSession.ReferenceProvenanceHash!,
+            "New Reference provenance",
+            () => _validationService.ValidateReferenceReplacementTransaction(transaction));
 
         var validation = _validationService.ValidateExactReferenceOutput(
             transaction.NewSession,
@@ -944,6 +1033,12 @@ public sealed partial class AssetProcessorService
         if (!transactionValidation.IsValid)
         {
             return transactionValidation;
+        }
+
+        var authorityResult = EnsureOldProvenanceByteAuthority(transaction);
+        if (!authorityResult.IsValid)
+        {
+            return authorityResult;
         }
 
         // BUG-R9-004: Re-validate current NewSession reference output (image, hash, provenance) before destroying old backups
@@ -1047,6 +1142,12 @@ public sealed partial class AssetProcessorService
         if (!transactionValidation.IsValid)
         {
             return transactionValidation;
+        }
+
+        var authorityResult = EnsureOldProvenanceByteAuthority(transaction);
+        if (!authorityResult.IsValid)
+        {
+            return authorityResult;
         }
 
         if (transaction.IsCommitted)

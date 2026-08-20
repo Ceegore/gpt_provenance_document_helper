@@ -421,4 +421,73 @@ public sealed partial class AssetProcessorService
 
         return ValidationResult.Success();
     }
+
+    // BUG-R14-001: Move file only after verifying path safety and exact hash ownership immediately before move (after hook)
+    [ThreadStatic]
+    internal static Action<string, string>? OnBeforeHashOwnedMoveHook;
+
+    internal void MoveHashOwnedFileWithoutOverwrite(
+        string sourcePath,
+        string destinationPath,
+        string expectedHash,
+        string description,
+        Func<ValidationResult> validatePathSafety)
+    {
+        ArgumentNullException.ThrowIfNull(sourcePath);
+        ArgumentNullException.ThrowIfNull(destinationPath);
+        ArgumentNullException.ThrowIfNull(expectedHash);
+        ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(validatePathSafety);
+
+        if (!File.Exists(sourcePath))
+        {
+            throw new IOException(
+                $"{description} source is missing: {sourcePath}");
+        }
+
+        if (File.Exists(destinationPath))
+        {
+            throw new IOException(
+                $"{description} destination already exists: {destinationPath}");
+        }
+
+        OnBeforeHashOwnedMoveHook?.Invoke(
+            sourcePath,
+            destinationPath);
+
+        var pathSafety = validatePathSafety();
+        if (!pathSafety.IsValid)
+        {
+            throw new InvalidDataException(
+                $"{description} path safety changed before move: {string.Join("; ", pathSafety.Errors)}");
+        }
+
+        if (!File.Exists(sourcePath))
+        {
+            throw new IOException(
+                $"{description} source disappeared before move.");
+        }
+
+        if (File.Exists(destinationPath))
+        {
+            throw new IOException(
+                $"{description} destination appeared before move.");
+        }
+
+        var actualHash = ComputeSha256(sourcePath);
+        if (!string.Equals(
+                actualHash,
+                expectedHash,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"{description} source changed before move.");
+        }
+
+        File.Move(
+            sourcePath,
+            destinationPath,
+            overwrite: false);
+    }
 }
+

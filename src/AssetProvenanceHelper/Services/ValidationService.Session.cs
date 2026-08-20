@@ -767,11 +767,14 @@ public sealed partial class ValidationService
             : ValidationResult.Failure(errors);
     }
 
-    public ValidationResult ValidateExactReferenceProvenanceOwnership(
+    public ValidationResult TryGetExactReferenceProvenanceRawHash(
         AssetSession session,
         string provenancePath,
-        TemplateService templateService)
+        TemplateService templateService,
+        out string? verifiedRawHash)
     {
+        verifiedRawHash = null;
+
         if (!File.Exists(provenancePath))
         {
             return ValidationResult.Failure(
@@ -783,10 +786,14 @@ public sealed partial class ValidationService
             try
             {
                 var actualHash = ComputeSha256(provenancePath);
-                return string.Equals(actualHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Failure(
-                        "Reference provenance SHA-256 hash does not match stored ReferenceProvenanceHash.");
+                if (string.Equals(actualHash, session.ReferenceProvenanceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    verifiedRawHash = actualHash;
+                    return ValidationResult.Success();
+                }
+
+                return ValidationResult.Failure(
+                    "Reference provenance SHA-256 hash does not match stored ReferenceProvenanceHash.");
             }
             catch (Exception ex)
             {
@@ -795,7 +802,30 @@ public sealed partial class ValidationService
             }
         }
 
-        // Legacy-session fallback only
+        // Legacy-session fallback: read ONE byte snapshot
+        byte[] rawBytes;
+        try
+        {
+            rawBytes = File.ReadAllBytes(provenancePath);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not read reference provenance at '{provenancePath}': {ex.Message}");
+        }
+
+        string actualText;
+        try
+        {
+            using var reader = new StreamReader(new MemoryStream(rawBytes), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            actualText = reader.ReadToEnd();
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not decode reference provenance at '{provenancePath}': {ex.Message}");
+        }
+
         string expectedText;
         try
         {
@@ -811,31 +841,32 @@ public sealed partial class ValidationService
                 $"Could not render expected reference provenance for ownership validation: {ex.Message}");
         }
 
-        string actualText;
-        try
-        {
-            actualText = File.ReadAllText(provenancePath, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            return ValidationResult.Failure(
-                $"Could not read reference provenance at '{provenancePath}': {ex.Message}");
-        }
-
         if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))
         {
             return ValidationResult.Failure(
                 "Reference provenance content does not exactly match expected tool-generated provenance.");
         }
 
+        verifiedRawHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(rawBytes)).ToLowerInvariant();
         return ValidationResult.Success();
     }
 
-    public ValidationResult ValidateExactFinalProvenanceOwnership(
+    public ValidationResult ValidateExactReferenceProvenanceOwnership(
         AssetSession session,
-        string finalProvenancePath,
+        string provenancePath,
         TemplateService templateService)
     {
+        return TryGetExactReferenceProvenanceRawHash(session, provenancePath, templateService, out _);
+    }
+
+    public ValidationResult TryGetExactFinalProvenanceRawHash(
+        AssetSession session,
+        string finalProvenancePath,
+        TemplateService templateService,
+        out string? verifiedRawHash)
+    {
+        verifiedRawHash = null;
+
         if (!File.Exists(finalProvenancePath))
         {
             return ValidationResult.Failure(
@@ -847,10 +878,14 @@ public sealed partial class ValidationService
             try
             {
                 var actualHash = ComputeSha256(finalProvenancePath);
-                return string.Equals(actualHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Failure(
-                        "Final provenance SHA-256 hash does not match stored MainProvenanceHash.");
+                if (string.Equals(actualHash, session.MainProvenanceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    verifiedRawHash = actualHash;
+                    return ValidationResult.Success();
+                }
+
+                return ValidationResult.Failure(
+                    "Final provenance SHA-256 hash does not match stored MainProvenanceHash.");
             }
             catch (Exception ex)
             {
@@ -865,6 +900,29 @@ public sealed partial class ValidationService
         {
             return ValidationResult.Failure(
                 "Legacy Main provenance authority is incomplete.");
+        }
+
+        byte[] rawBytes;
+        try
+        {
+            rawBytes = File.ReadAllBytes(finalProvenancePath);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not read final provenance at '{finalProvenancePath}': {ex.Message}");
+        }
+
+        string actualText;
+        try
+        {
+            using var reader = new StreamReader(new MemoryStream(rawBytes), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            actualText = reader.ReadToEnd();
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not decode final provenance at '{finalProvenancePath}': {ex.Message}");
         }
 
         string expectedText;
@@ -898,24 +956,22 @@ public sealed partial class ValidationService
                 $"Could not render expected final provenance for ownership validation: {ex.Message}");
         }
 
-        string actualText;
-        try
-        {
-            actualText = File.ReadAllText(finalProvenancePath, Encoding.UTF8);
-        }
-        catch (Exception ex)
-        {
-            return ValidationResult.Failure(
-                $"Could not read final provenance at '{finalProvenancePath}': {ex.Message}");
-        }
-
         if (!string.Equals(actualText, expectedText, StringComparison.Ordinal))
         {
             return ValidationResult.Failure(
                 "Final provenance content does not exactly match expected tool-generated provenance.");
         }
 
+        verifiedRawHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(rawBytes)).ToLowerInvariant();
         return ValidationResult.Success();
+    }
+
+    public ValidationResult ValidateExactFinalProvenanceOwnership(
+        AssetSession session,
+        string finalProvenancePath,
+        TemplateService templateService)
+    {
+        return TryGetExactFinalProvenanceRawHash(session, finalProvenancePath, templateService, out _);
     }
 
 

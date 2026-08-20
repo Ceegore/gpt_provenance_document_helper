@@ -695,6 +695,26 @@ partial class MainForm
     {
         var transaction = TransactionFromJournal(journal);
 
+        var authorityResult = _assetProcessorService.EnsureOldProvenanceByteAuthority(transaction);
+        if (!authorityResult.IsValid)
+        {
+            return FailReplacementRecovery(
+                $"Could not establish byte authority for replacement rollback:\n{string.Join(Environment.NewLine, authorityResult.Errors)}");
+        }
+
+        if (journal.OldSession.ReferenceProvenanceHash != transaction.OldSession.ReferenceProvenanceHash)
+        {
+            journal.OldSession.ReferenceProvenanceHash = transaction.OldSession.ReferenceProvenanceHash;
+            try
+            {
+                _sessionService.SaveReplacementJournal(journal);
+            }
+            catch (Exception ex)
+            {
+                return FailReplacementRecovery("Could not persist upgraded replacement journal before rollback.", ex);
+            }
+        }
+
         var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
 
         if (!rollback.IsValid)
@@ -754,6 +774,26 @@ partial class MainForm
         }
 
         var transaction = TransactionFromJournal(journal);
+
+        var authorityResult = _assetProcessorService.EnsureOldProvenanceByteAuthority(transaction);
+        if (!authorityResult.IsValid)
+        {
+            return FailReplacementRecovery(
+                $"Could not establish byte authority for replacement cleanup:\n{string.Join(Environment.NewLine, authorityResult.Errors)}");
+        }
+
+        if (journal.OldSession.ReferenceProvenanceHash != transaction.OldSession.ReferenceProvenanceHash)
+        {
+            journal.OldSession.ReferenceProvenanceHash = transaction.OldSession.ReferenceProvenanceHash;
+            try
+            {
+                _sessionService.SaveReplacementJournal(journal);
+            }
+            catch (Exception ex)
+            {
+                return FailReplacementRecovery("Could not persist upgraded replacement journal before cleanup.", ex);
+            }
+        }
 
         var cleanup = _assetProcessorService.CleanupReplacementBackups(transaction);
 

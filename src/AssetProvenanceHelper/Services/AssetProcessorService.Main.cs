@@ -532,33 +532,38 @@ public sealed partial class AssetProcessorService
 
             RequireMainStagingAuthority(session, tempMainPath, tempIngamePath, tempProvenancePath);
 
-            File.Move(
+            var forwardProvHash = session.MainProvenanceHash ?? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant();
+
+            MoveHashOwnedFileWithoutOverwrite(
                 tempProvenancePath,
                 finalProvenance,
-                overwrite: false);
+                forwardProvHash,
+                "Final provenance",
+                () => ValidateSessionDestructivePathSafety(session));
 
             tempProvenanceCreatedByThisCall = false;
-            provenanceWritten =
-                true;
+            provenanceWritten = true;
 
-            File.Move(
+            MoveHashOwnedFileWithoutOverwrite(
                 tempMainPath,
                 rootMainDestination,
-                overwrite: false);
+                mainHash,
+                "Main root image",
+                () => ValidateSessionDestructivePathSafety(session));
 
-            mainPromoted =
-                true;
+            mainPromoted = true;
 
             OnMainPromotedHook?.Invoke(
                 rootMainDestination);
 
-            File.Move(
+            MoveHashOwnedFileWithoutOverwrite(
                 tempIngamePath,
                 ingameDestination,
-                overwrite: false);
+                mainHash,
+                "Ingame image",
+                () => ValidateSessionDestructivePathSafety(session));
 
-            ingamePromoted =
-                true;
+            ingamePromoted = true;
 
             OnIngamePromotedHook?.Invoke(
                 ingameDestination);
