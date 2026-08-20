@@ -550,7 +550,7 @@ public sealed class SessionService
     {
         OnBeforeCancelFileMoveHook?.Invoke(sourcePath);
 
-        EnsureCancelPathsAreSafe(session);
+        EnsureCancelPathSafety(session);
 
         if (!File.Exists(sourcePath))
         {
@@ -580,7 +580,7 @@ public sealed class SessionService
     {
         OnBeforeCancelRestoreHook?.Invoke(sourcePath, destinationPath);
 
-        EnsureCancelPathsAreSafe(session);
+        EnsureCancelPathSafety(session);
 
         if (!File.Exists(sourcePath))
         {
@@ -589,7 +589,7 @@ public sealed class SessionService
 
         if (File.Exists(destinationPath))
         {
-            throw new IOException($"Cancel destination '{destinationPath}' already exists before restore.");
+            throw new IOException($"Cancel restore {description} already exists at '{destinationPath}'.");
         }
 
         var actualHash = ValidationService.ComputeSha256(sourcePath);
@@ -614,7 +614,7 @@ public sealed class SessionService
 
         OnBeforeCancelFileDeleteHook?.Invoke(path);
 
-        EnsureCancelPathsAreSafe(session);
+        EnsureCancelPathSafety(session);
 
         if (!File.Exists(path))
         {
@@ -630,7 +630,7 @@ public sealed class SessionService
         File.Delete(path);
     }
 
-    private void EnsureCancelPathsAreSafe(
+    private void EnsureCancelPathSafety(
         AssetSession session)
     {
         if (_templateService is null)
@@ -752,7 +752,43 @@ public sealed class SessionService
             {
                 throw new InvalidDataException("CancellationId must be null when CancelPhase is None.");
             }
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(session.CancellationId) ||
+                session.CancellationId.Length != 32 ||
+                session.CancellationId.Any(c => !Uri.IsHexDigit(c)))
+            {
+                throw new InvalidDataException("CancellationId is missing or is not a valid 32-character hexadecimal string.");
+            }
 
+            var tempRef = session.GetCancelTempReferencePath();
+            var tempProv = session.GetCancelTempProvenancePath();
+
+            var normTempRef = ValidationService.NormalizePath(tempRef);
+            var normTempProv = ValidationService.NormalizePath(tempProv);
+
+            if (!ValidationService.PathsEqual(Path.GetDirectoryName(normTempRef) ?? "", referenceFolder) ||
+                !ValidationService.PathsEqual(Path.GetDirectoryName(normTempProv) ?? "", referenceFolder))
+            {
+                throw new InvalidDataException("Derived cancellation temp paths escape the expected reference folder.");
+            }
+        }
+    }
+
+    private void EnsureCancelPathsAreSafe(
+        AssetSession session)
+    {
+        EnsureCancelPathSafety(session);
+
+        var referenceFolder =
+            ValidationService.NormalizePath(
+                Path.Combine(
+                    session.AssetFolder,
+                    AppConstants.ReferenceFolderName));
+
+        if (session.CancelPhase == CancelPhase.None)
+        {
             // BUG-R13-003 & BUG-R14-001: Verify exact ownership before allowing cancellation - FAIL CLOSED
             if (File.Exists(session.ReferenceDestinationPath))
             {
@@ -777,7 +813,7 @@ public sealed class SessionService
             if (File.Exists(session.ReferenceProvenancePath))
             {
                 var validator = _validationService ?? new ValidationService();
-                var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService);
+                var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService!);
                 if (!provValidation.IsValid)
                 {
                     if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
@@ -791,24 +827,8 @@ public sealed class SessionService
         }
         else
         {
-            if (string.IsNullOrWhiteSpace(session.CancellationId) ||
-                session.CancellationId.Length != 32 ||
-                session.CancellationId.Any(c => !Uri.IsHexDigit(c)))
-            {
-                throw new InvalidDataException("CancellationId is missing or is not a valid 32-character hexadecimal string.");
-            }
-
             var tempRef = session.GetCancelTempReferencePath();
             var tempProv = session.GetCancelTempProvenancePath();
-
-            var normTempRef = ValidationService.NormalizePath(tempRef);
-            var normTempProv = ValidationService.NormalizePath(tempProv);
-
-            if (!ValidationService.PathsEqual(Path.GetDirectoryName(normTempRef) ?? "", referenceFolder) ||
-                !ValidationService.PathsEqual(Path.GetDirectoryName(normTempProv) ?? "", referenceFolder))
-            {
-                throw new InvalidDataException("Derived cancellation temp paths escape the expected reference folder.");
-            }
 
             // BUG-R13-003 & BUG-R14-001: Verify exact ownership in recovery phases - FAIL CLOSED
             var origRefExists = File.Exists(session.ReferenceDestinationPath);
@@ -856,7 +876,7 @@ public sealed class SessionService
                 var validator = _validationService ?? new ValidationService();
                 if (origProvExists && !tempProvExists)
                 {
-                    var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService);
+                    var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, session.ReferenceProvenancePath, _templateService!);
                     if (!provValidation.IsValid)
                     {
                         if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
@@ -869,7 +889,7 @@ public sealed class SessionService
                 }
                 else if (!origProvExists && tempProvExists)
                 {
-                    var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProv, _templateService);
+                    var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProv, _templateService!);
                     if (!provValidation.IsValid)
                     {
                         if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))
@@ -904,7 +924,7 @@ public sealed class SessionService
                 if (tempProvExists)
                 {
                     var validator = _validationService ?? new ValidationService();
-                    var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProv, _templateService);
+                    var provValidation = validator.ValidateExactReferenceProvenanceOwnership(session, tempProv, _templateService!);
                     if (!provValidation.IsValid)
                     {
                         if (provValidation.Errors.Any(e => e.StartsWith("Could not read", StringComparison.OrdinalIgnoreCase) || e.StartsWith("Could not compute", StringComparison.OrdinalIgnoreCase)))

@@ -47,8 +47,26 @@ public sealed class Bugs3ParanoidTests
         AssetProcessorService processor,
         SessionService sessionService)
     {
+        var replPhaseSavingHook = SessionService.OnReplacementPhaseSavingHook;
+        var replJournalDeleteHook = SessionService.OnBeforeReplacementJournalDeleteHook;
+        var cancelPhaseSavingHook = SessionService.OnCancelPhaseSavingHook;
+        var cancelFileMoveHook = SessionService.OnBeforeCancelFileMoveHook;
+        var cancelFileDeleteHook = SessionService.OnBeforeCancelFileDeleteHook;
+        var cancelRestoreHook = SessionService.OnBeforeCancelRestoreHook;
+        var folderCleanupHook = SessionService.OnBeforeFolderCleanupHook;
+        var fileAttrsProvider = ValidationService.FileAttributesProvider;
+
         RunOnSta(() =>
         {
+            SessionService.OnReplacementPhaseSavingHook = replPhaseSavingHook;
+            SessionService.OnBeforeReplacementJournalDeleteHook = replJournalDeleteHook;
+            SessionService.OnCancelPhaseSavingHook = cancelPhaseSavingHook;
+            SessionService.OnBeforeCancelFileMoveHook = cancelFileMoveHook;
+            SessionService.OnBeforeCancelFileDeleteHook = cancelFileDeleteHook;
+            SessionService.OnBeforeCancelRestoreHook = cancelRestoreHook;
+            SessionService.OnBeforeFolderCleanupHook = folderCleanupHook;
+            ValidationService.FileAttributesProvider = fileAttrsProvider;
+
             TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
             MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
 
@@ -70,6 +88,14 @@ public sealed class Bugs3ParanoidTests
             {
                 TwoChoiceDialog.CustomChoiceProvider = null;
                 MainForm.MessageBoxProvider = null;
+                SessionService.OnReplacementPhaseSavingHook = null;
+                SessionService.OnBeforeReplacementJournalDeleteHook = null;
+                SessionService.OnCancelPhaseSavingHook = null;
+                SessionService.OnBeforeCancelFileMoveHook = null;
+                SessionService.OnBeforeCancelFileDeleteHook = null;
+                SessionService.OnBeforeCancelRestoreHook = null;
+                SessionService.OnBeforeFolderCleanupHook = null;
+                ValidationService.FileAttributesProvider = null;
             }
         });
     }
@@ -5460,9 +5486,11 @@ public sealed class Bugs3ParanoidTests
                 sessionService.Cancel(session));
 
             Assert.True(hookInvoked, "OnBeforeCancelFileMoveHook must be invoked.");
-            Assert.Contains("Reference provenance on disk does not match", ex.Message);
-            Assert.True(File.Exists(session.ReferenceProvenancePath), "Provenance must remain.");
-            Assert.False(File.Exists(session.GetCancelTempProvenancePath()), "Cancel temp provenance must not exist.");
+            Assert.Contains("reference provenance", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("hash changed before move", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(session.ReferenceProvenancePath), "Modified canonical provenance must remain preserved.");
+            Assert.False(File.Exists(session.GetCancelTempProvenancePath()), "Cancel temp provenance must not be created after the boundary hash check fails.");
+            Assert.True(sessionService.Exists(), "Cancellation journal/session must remain available for recovery.");
         }
         finally
         {
@@ -5495,13 +5523,23 @@ public sealed class Bugs3ParanoidTests
 
         try
         {
-            var ex = Assert.Throws<IOException>(() =>
+            var ex = Assert.Throws<InvalidDataException>(() =>
                 sessionService.Cancel(session));
 
             Assert.True(hookInvoked, "OnBeforeCancelFileMoveHook must be invoked.");
-            Assert.Contains("Cancel failed during reference image rename", ex.Message);
-            Assert.True(File.Exists(session.ReferenceDestinationPath), "Reference image must remain.");
-            Assert.False(File.Exists(session.GetCancelTempReferencePath()), "Cancel temp reference must not exist.");
+            Assert.Contains("reference image", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("hash changed before move", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(session.ReferenceDestinationPath), "Modified Reference image must remain at the canonical path and must not be moved.");
+            Assert.True(File.Exists(session.ReferenceProvenancePath), "Previously moved provenance must be restored after the Reference move fails.");
+            Assert.False(File.Exists(session.GetCancelTempReferencePath()), "Cancel temp Reference must not be created.");
+            Assert.False(File.Exists(session.GetCancelTempProvenancePath()), "Cancel temp provenance must be removed by successful restoration.");
+            Assert.Equal(CancelPhase.None, session.CancelPhase);
+            Assert.Null(session.CancellationId);
+
+            var persisted = sessionService.Load();
+            Assert.NotNull(persisted);
+            Assert.Equal(CancelPhase.None, persisted!.CancelPhase);
+            Assert.Null(persisted.CancellationId);
         }
         finally
         {
@@ -5589,6 +5627,221 @@ public sealed class Bugs3ParanoidTests
             SessionService.OnBeforeCancelFileMoveHook = null;
             SessionService.OnBeforeCancelRestoreHook = null;
         }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void LegacyReplacementJournal_CleanupPending_HydratedHashPersistsBeforeCleanupMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r15_cleanup_retry", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+        processor.PromoteNewReference(tx);
+
+        sessionService.Save(tx.NewSession);
+
+        var journal = tx.ToJournal(ReferenceReplacementPhase.CleanupPending);
+        journal.OldSession.ReferenceProvenanceHash = null;
+        sessionService.SaveReplacementJournal(journal);
+
+        var deleteAttempts = 0;
+        SessionService.OnBeforeReplacementJournalDeleteHook = () =>
+        {
+            deleteAttempts++;
+            if (deleteAttempts == 1)
+            {
+                throw new IOException("Simulated replacement journal delete failure.");
+            }
+        };
+
+        try
+        {
+            RunStartupRecovery(workspace, settings, processor, sessionService);
+
+            Assert.True(sessionService.ReplacementJournalExists(), "Journal must remain after simulated deletion failure.");
+            Assert.False(File.Exists(tx.BackupReferencePath), "OLD image backup should already be cleaned.");
+            Assert.False(File.Exists(tx.BackupProvenancePath), "OLD provenance backup should already be cleaned.");
+
+            var persistedAfterFirstRecovery = sessionService.LoadReplacementJournal();
+            Assert.NotNull(persistedAfterFirstRecovery);
+            Assert.False(string.IsNullOrWhiteSpace(persistedAfterFirstRecovery!.OldSession.ReferenceProvenanceHash),
+                "Hydrated OLD provenance hash MUST be durable before backup cleanup.");
+
+            SessionService.OnBeforeReplacementJournalDeleteHook = null;
+
+            RunStartupRecovery(workspace, settings, processor, sessionService);
+
+            Assert.False(sessionService.ReplacementJournalExists(), "Second startup must finish cleanup using the durable hydrated authority.");
+
+            var finalSession = sessionService.Load();
+            Assert.NotNull(finalSession);
+            Assert.Equal(tx.NewSession.ReferenceHash, finalSession!.ReferenceHash);
+            Assert.Equal(tx.NewSession.ReferenceFilename, finalSession.ReferenceFilename);
+            Assert.True(File.Exists(tx.NewSession.ReferenceDestinationPath));
+            Assert.True(File.Exists(tx.NewSession.ReferenceProvenancePath));
+        }
+        finally
+        {
+            SessionService.OnBeforeReplacementJournalDeleteHook = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void LegacyReplacementJournal_OldBackedUp_HydrationSaveFailure_NoRollbackMutation()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r15_hydration_save_fail", ref1, DateTimeOffset.Now);
+        sessionService.Save(oldSession);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        processor.CreateReplacementTempFiles(tx, settings.AcceptedExtensions);
+        processor.BackupOldReference(tx);
+
+        var journal = tx.ToJournal(ReferenceReplacementPhase.OldBackedUp);
+        journal.OldSession.ReferenceProvenanceHash = null;
+        sessionService.SaveReplacementJournal(journal);
+
+        Assert.False(File.Exists(oldSession.ReferenceDestinationPath));
+        Assert.False(File.Exists(oldSession.ReferenceProvenancePath));
+        Assert.True(File.Exists(tx.BackupReferencePath));
+        Assert.True(File.Exists(tx.BackupProvenancePath));
+
+        SessionService.OnReplacementPhaseSavingHook = (phase, _) =>
+        {
+            if (phase == ReferenceReplacementPhase.OldBackedUp)
+            {
+                throw new IOException("Simulated upgraded-journal save failure.");
+            }
+        };
+
+        try
+        {
+            RunStartupRecovery(workspace, settings, processor, sessionService);
+
+            Assert.True(sessionService.ReplacementJournalExists(), "Journal must remain after hydration save failure.");
+            Assert.True(File.Exists(tx.BackupReferencePath), "Rollback must NOT restore/delete backup image before hydrated authority is durable.");
+            Assert.True(File.Exists(tx.BackupProvenancePath), "Rollback must NOT restore/delete backup provenance before hydrated authority is durable.");
+            Assert.False(File.Exists(oldSession.ReferenceDestinationPath), "Canonical OLD image must remain absent because rollback mutation must not start.");
+            Assert.False(File.Exists(oldSession.ReferenceProvenancePath), "Canonical OLD provenance must remain absent because rollback mutation must not start.");
+
+            var persisted = sessionService.LoadReplacementJournal();
+            Assert.NotNull(persisted);
+            Assert.True(string.IsNullOrWhiteSpace(persisted!.OldSession.ReferenceProvenanceHash), "Failed upgrade save must not be reported as durable.");
+        }
+        finally
+        {
+            SessionService.OnReplacementPhaseSavingHook = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void TransactionFromJournal_UsesIndependentSessionSnapshots()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var ref1 = workspace.CreateImage("ref1.png", new byte[] { 1, 2, 3 });
+        var oldSession = processor.ProcessReference(settings, "asset_r15_no_alias", ref1, DateTimeOffset.Now);
+
+        var ref2 = workspace.CreateImage("ref2.png", new byte[] { 4, 5, 6 });
+        var tx = processor.CreateReferenceReplacementTransaction(oldSession, settings.AcceptedExtensions, ref2, DateTimeOffset.Now);
+        var journal = tx.ToJournal(ReferenceReplacementPhase.Prepared);
+
+        var method = typeof(MainForm).GetMethod("TransactionFromJournal", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var recoveredTx = (ReferenceReplacementTransaction)method!.Invoke(null, new object[] { journal })!;
+
+        Assert.False(ReferenceEquals(journal.OldSession, recoveredTx.OldSession));
+        Assert.False(ReferenceEquals(journal.NewSession, recoveredTx.NewSession));
+
+        var journalOldHash = journal.OldSession.ReferenceProvenanceHash;
+        recoveredTx.OldSession.ReferenceProvenanceHash = new string('a', 64);
+
+        Assert.Equal(journalOldHash, journal.OldSession.ReferenceProvenanceHash);
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void RollbackMain_LegacyNullProvenanceHash_ExactBomProvenance_RollsBack()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+        var sessionService = workspace.CreateSessionService();
+        var templateService = workspace.CreateTemplateService();
+        var validationService = workspace.CreateValidationService();
+
+        var refImage = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r15_legacy_main_bom", refImage, DateTimeOffset.Now);
+
+        var mainImage = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainImage, "legacy BOM prompt", processedAt);
+        session.MainProvenanceHash = null;
+        sessionService.Save(session);
+
+        var finalProvenancePath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
+        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var exactText = templateService.RenderFinal(session.MainFilename!, session.ReferenceFilename, session.ProjectName, generationDate, session.MainPrompt!);
+
+        File.WriteAllText(finalProvenancePath, exactText, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+        var exactBeforeRollback = validationService.ValidateExactFinalProvenanceOwnership(session, finalProvenancePath, templateService);
+        Assert.True(exactBeforeRollback.IsValid, string.Join(Environment.NewLine, exactBeforeRollback.Errors));
+
+        var rollback = processor.RollbackMain(session);
+        Assert.True(rollback.IsValid, string.Join(Environment.NewLine, rollback.Errors));
+        Assert.False(File.Exists(finalProvenancePath), "Exact legacy BOM provenance should be deleted as tool-owned.");
+        Assert.False(session.IsMainCommitting);
+        Assert.Null(session.MainTransactionId);
+        Assert.Null(session.MainFilename);
+        Assert.Null(session.MainHash);
+        Assert.Null(session.MainProvenanceHash);
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void RollbackMain_LegacyNullProvenanceHash_CorruptProvenance_PreservesFile()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refImage = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_r15_legacy_main_corrupt", refImage, DateTimeOffset.Now);
+
+        var mainImage = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        session = processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainImage, "legacy corrupt prompt", DateTimeOffset.Now);
+        session.MainProvenanceHash = null;
+
+        var provenancePath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
+        File.WriteAllText(provenancePath, "FOREIGN PROVENANCE", new UTF8Encoding(false));
+
+        var rollback = processor.RollbackMain(session);
+        Assert.False(rollback.IsValid);
+        Assert.True(File.Exists(provenancePath), "Unknown provenance must be preserved.");
+        Assert.True(session.IsMainCommitting, "Failed rollback must retain active Main transaction metadata.");
     }
 }
 

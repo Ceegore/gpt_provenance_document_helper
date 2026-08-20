@@ -57,9 +57,69 @@ $proc = Start-Process -FilePath $absExePath -WorkingDirectory $workDir -PassThru
 
 # Wait up to 15 seconds for main window to appear
 $timeoutMs = 15000
-$elapsedMs = 0
-$windowTitle = ""
-$hasWindow = $false
+$expectedTitle = "AI Asset Provenance Helper"
+
+$win32Helper = @"
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class SmokeWin32 {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    public static List<string> GetProcessWindows(uint targetPid) {
+        var titles = new List<string>();
+        EnumWindows((hWnd, lParam) => {
+            uint pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == targetPid) {
+                StringBuilder sb = new StringBuilder(256);
+                GetWindowText(hWnd, sb, 256);
+                string t = sb.ToString();
+                if (!string.IsNullOrEmpty(t)) {
+                    titles.Add(t);
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return titles;
+    }
+
+    public static bool CloseWindowByTitle(uint targetPid, string expectedTitle) {
+        bool closed = false;
+        EnumWindows((hWnd, lParam) => {
+            uint pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == targetPid) {
+                StringBuilder sb = new StringBuilder(256);
+                GetWindowText(hWnd, sb, 256);
+                if (sb.ToString() == expectedTitle) {
+                    PostMessage(hWnd, 0x0010 /* WM_CLOSE */, IntPtr.Zero, IntPtr.Zero);
+                    closed = true;
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return closed;
+    }
+}
+"@
+Add-Type -TypeDefinition $win32Helper -ErrorAction SilentlyContinue
 
 while ($elapsedMs -lt $timeoutMs) {
     Start-Sleep -Milliseconds 250
@@ -70,8 +130,15 @@ while ($elapsedMs -lt $timeoutMs) {
         if ($p.HasExited) {
             break
         }
-        if ($p.MainWindowHandle -ne [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($p.MainWindowTitle)) {
+        if (-not [string]::IsNullOrEmpty($p.MainWindowTitle)) {
             $windowTitle = $p.MainWindowTitle
+            $hasWindow = $true
+            $proc = $p
+            break
+        }
+        $titles = [SmokeWin32]::GetProcessWindows([uint32]$proc.Id)
+        if ($titles -contains $expectedTitle) {
+            $windowTitle = $expectedTitle
             $hasWindow = $true
             $proc = $p
             break
@@ -93,7 +160,6 @@ if (-not $hasWindow) {
 }
 
 # Assert: window title must match expected value
-$expectedTitle = "AI Asset Provenance Helper"
 if ($windowTitle -ne $expectedTitle) {
     try { $proc.Kill() } catch { }
     throw "Unexpected main window title: expected '$expectedTitle', got '$windowTitle'"
@@ -121,12 +187,13 @@ if (-not $iconVerified) {
 
 $gracefulShutdown = $false
 # Attempt graceful shutdown
+[SmokeWin32]::CloseWindowByTitle([uint32]$proc.Id, $expectedTitle) | Out-Null
 $proc.CloseMainWindow() | Out-Null
-if ($proc.WaitForExit(3000)) {
+if ($proc.WaitForExit(5000)) {
     $gracefulShutdown = $true
     Write-Host "Process cleanly exited via CloseMainWindow."
 } else {
-    Write-Host "Process did not exit cleanly within 3s, terminating via Kill()..."
+    Write-Host "Process did not exit cleanly within 5s, terminating via Kill()..."
     $proc.Kill()
     $proc.WaitForExit(2000)
 }

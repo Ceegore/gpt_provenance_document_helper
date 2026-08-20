@@ -873,15 +873,18 @@ public sealed partial class AssetProcessorService
                 session.AssetFolder,
                 AppConstants.FinalProvenanceFileName);
 
-        // BUG-R12-001 & BUG-R13-001: Verify exact ownership of final provenance before deleting
+        // BUG-R12-001 & BUG-R13-001 & BUG-R15-003: Verify exact ownership and derive raw hash of final provenance before deleting
+        string? finalProvenanceRawHash = null;
+
         if (File.Exists(provenancePath))
         {
-            var provValidation = _validationService.ValidateExactFinalProvenanceOwnership(
+            var provValidation = _validationService.TryGetExactFinalProvenanceRawHash(
                 session,
                 provenancePath,
-                _templateService);
+                _templateService,
+                out finalProvenanceRawHash);
 
-            if (!provValidation.IsValid)
+            if (!provValidation.IsValid || string.IsNullOrWhiteSpace(finalProvenanceRawHash))
             {
                 return ValidationResult.Failure(
                     $"Final provenance on disk does not match session state ({string.Join("; ", provValidation.Errors)}). Refusing to delete unknown file.");
@@ -928,14 +931,17 @@ public sealed partial class AssetProcessorService
         }
 
         var tempProv = session.GetMainTempProvenancePath();
+        string? tempProvenanceRawHash = null;
+
         if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
         {
-            var tempProvValidation = _validationService.ValidateExactFinalProvenanceOwnership(
+            var tempProvValidation = _validationService.TryGetExactFinalProvenanceRawHash(
                 session,
                 tempProv,
-                _templateService);
+                _templateService,
+                out tempProvenanceRawHash);
 
-            if (!tempProvValidation.IsValid)
+            if (!tempProvValidation.IsValid || string.IsNullOrWhiteSpace(tempProvenanceRawHash))
             {
                 return ValidationResult.Failure(
                     $"Main temp provenance at '{tempProv}' does not match session state ({string.Join("; ", tempProvValidation.Errors)}). Refusing to delete unknown file.");
@@ -965,21 +971,20 @@ public sealed partial class AssetProcessorService
                 "Ingame folder became a reparse point before Main rollback. No files were deleted.");
         }
 
-        var expectedProvHash = session.MainProvenanceHash ?? (session.MainPrompt is not null && session.MainProcessedAt.HasValue
-            ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(
-                session.WorkflowMode == AssetWorkflowMode.NoReference
-                    ? _templateService.RenderFinalNoReference(session.MainFilename!, session.ProjectName, session.MainProcessedAt.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt)
-                    : _templateService.RenderFinal(session.MainFilename!, session.ReferenceFilename, session.ProjectName, session.MainProcessedAt.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), session.MainPrompt)))).ToLowerInvariant()
-            : string.Empty);
-
         var errors =
             new List<string>();
 
         if (File.Exists(provenancePath))
         {
+            if (string.IsNullOrWhiteSpace(finalProvenanceRawHash))
+            {
+                return ValidationResult.Failure(
+                    "Final provenance exists but verified raw hash authority is missing.");
+            }
+
             TryDeleteHashOwnedFileWithError(
                 provenancePath,
-                expectedProvHash,
+                finalProvenanceRawHash,
                 "Final provenance",
                 () => ValidateSessionDestructivePathSafety(session),
                 errors);
@@ -1027,9 +1032,15 @@ public sealed partial class AssetProcessorService
 
         if (!string.IsNullOrWhiteSpace(tempProv) && File.Exists(tempProv))
         {
+            if (string.IsNullOrWhiteSpace(tempProvenanceRawHash))
+            {
+                return ValidationResult.Failure(
+                    "Main temp provenance exists but verified raw hash authority is missing.");
+            }
+
             TryDeleteHashOwnedFileWithError(
                 tempProv,
-                expectedProvHash,
+                tempProvenanceRawHash,
                 "Main temp provenance",
                 () => ValidateSessionDestructivePathSafety(session),
                 errors);

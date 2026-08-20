@@ -673,6 +673,42 @@ partial class MainForm
             && actual.ReferenceProcessedAt.EqualsExact(expected.ReferenceProcessedAt);
     }
 
+    private static AssetSession CloneAssetSessionForRecovery(
+        AssetSession source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        return new AssetSession
+        {
+            WorkflowMode = source.WorkflowMode,
+            ReferenceCommitPhase = source.ReferenceCommitPhase,
+            ReferenceTransactionId = source.ReferenceTransactionId,
+            ProjectName = source.ProjectName,
+            AssetRootFolder = source.AssetRootFolder,
+            AssetFolderName = source.AssetFolderName,
+            AssetFolder = source.AssetFolder,
+            ReferenceSourcePath = source.ReferenceSourcePath,
+            ReferenceDestinationPath = source.ReferenceDestinationPath,
+            ReferenceFilename = source.ReferenceFilename,
+            ReferenceProvenancePath = source.ReferenceProvenancePath,
+            ReferenceHash = source.ReferenceHash,
+            ReferenceProvenanceHash = source.ReferenceProvenanceHash,
+            ReferenceProcessedAt = source.ReferenceProcessedAt,
+            WasAssetFolderCreatedByTool = source.WasAssetFolderCreatedByTool,
+            WasReferenceFolderCreatedByTool = source.WasReferenceFolderCreatedByTool,
+            WasIngameFolderCreatedByTool = source.WasIngameFolderCreatedByTool,
+            IsMainCommitting = source.IsMainCommitting,
+            MainFilename = source.MainFilename,
+            MainProvenanceHash = source.MainProvenanceHash,
+            MainPrompt = source.MainPrompt,
+            MainProcessedAt = source.MainProcessedAt,
+            MainHash = source.MainHash,
+            CancelPhase = source.CancelPhase,
+            CancellationId = source.CancellationId,
+            MainTransactionId = source.MainTransactionId
+        };
+    }
+
     private static ReferenceReplacementTransaction TransactionFromJournal(
         ReferenceReplacementJournal journal)
     {
@@ -681,8 +717,8 @@ partial class MainForm
         return new ReferenceReplacementTransaction
         {
             TransactionId = journal.TransactionId,
-            OldSession = journal.OldSession,
-            NewSession = journal.NewSession,
+            OldSession = CloneAssetSessionForRecovery(journal.OldSession),
+            NewSession = CloneAssetSessionForRecovery(journal.NewSession),
             BackupReferencePath = journal.BackupReferencePath,
             BackupProvenancePath = journal.BackupProvenancePath,
             TempNewReferencePath = journal.TempNewReferencePath,
@@ -690,29 +726,65 @@ partial class MainForm
         };
     }
 
-    private bool RollBackReplacementJournal(
-        ReferenceReplacementJournal journal)
+    private bool EnsureOldProvenanceAuthorityIsDurable(
+        ReferenceReplacementJournal journal,
+        ReferenceReplacementTransaction transaction,
+        string recoveryOperation)
     {
-        var transaction = TransactionFromJournal(journal);
+        ArgumentNullException.ThrowIfNull(journal);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(recoveryOperation);
+
+        var durableHashWasMissing = string.IsNullOrWhiteSpace(journal.OldSession.ReferenceProvenanceHash);
 
         var authorityResult = _assetProcessorService.EnsureOldProvenanceByteAuthority(transaction);
         if (!authorityResult.IsValid)
         {
             return FailReplacementRecovery(
-                $"Could not establish byte authority for replacement rollback:\n{string.Join(Environment.NewLine, authorityResult.Errors)}");
+                $"Could not establish byte authority for {recoveryOperation}:"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, authorityResult.Errors));
         }
 
-        if (journal.OldSession.ReferenceProvenanceHash != transaction.OldSession.ReferenceProvenanceHash)
+        if (!durableHashWasMissing)
         {
-            journal.OldSession.ReferenceProvenanceHash = transaction.OldSession.ReferenceProvenanceHash;
-            try
-            {
-                _sessionService.SaveReplacementJournal(journal);
-            }
-            catch (Exception ex)
-            {
-                return FailReplacementRecovery("Could not persist upgraded replacement journal before rollback.", ex);
-            }
+            return true;
+        }
+
+        var hydratedHash = transaction.OldSession.ReferenceProvenanceHash;
+        if (string.IsNullOrWhiteSpace(hydratedHash))
+        {
+            return FailReplacementRecovery(
+                $"Could not establish durable OLD provenance hash authority for {recoveryOperation}.");
+        }
+
+        journal.OldSession.ReferenceProvenanceHash = hydratedHash;
+
+        try
+        {
+            _sessionService.SaveReplacementJournal(journal);
+        }
+        catch (Exception ex)
+        {
+            return FailReplacementRecovery(
+                $"Could not persist upgraded replacement journal before {recoveryOperation}.",
+                ex);
+        }
+
+        return true;
+    }
+
+    private bool RollBackReplacementJournal(
+        ReferenceReplacementJournal journal)
+    {
+        var transaction = TransactionFromJournal(journal);
+
+        if (!EnsureOldProvenanceAuthorityIsDurable(
+                journal,
+                transaction,
+                "replacement rollback"))
+        {
+            return false;
         }
 
         var rollback = _assetProcessorService.RollbackReferenceReplacement(transaction);
@@ -775,24 +847,12 @@ partial class MainForm
 
         var transaction = TransactionFromJournal(journal);
 
-        var authorityResult = _assetProcessorService.EnsureOldProvenanceByteAuthority(transaction);
-        if (!authorityResult.IsValid)
+        if (!EnsureOldProvenanceAuthorityIsDurable(
+                journal,
+                transaction,
+                "replacement cleanup"))
         {
-            return FailReplacementRecovery(
-                $"Could not establish byte authority for replacement cleanup:\n{string.Join(Environment.NewLine, authorityResult.Errors)}");
-        }
-
-        if (journal.OldSession.ReferenceProvenanceHash != transaction.OldSession.ReferenceProvenanceHash)
-        {
-            journal.OldSession.ReferenceProvenanceHash = transaction.OldSession.ReferenceProvenanceHash;
-            try
-            {
-                _sessionService.SaveReplacementJournal(journal);
-            }
-            catch (Exception ex)
-            {
-                return FailReplacementRecovery("Could not persist upgraded replacement journal before cleanup.", ex);
-            }
+            return false;
         }
 
         var cleanup = _assetProcessorService.CleanupReplacementBackups(transaction);
