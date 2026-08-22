@@ -20,12 +20,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: '8.0.418'
+          dotnet-version: '10.0.301'
 
       - name: Show environment
         run: dotnet --info
@@ -95,7 +95,7 @@ jobs:
 
       - name: Upload test and publish artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ci-artifacts
           path: |
@@ -110,12 +110,12 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: '8.0.418'
+          dotnet-version: '10.0.301'
 
       - name: Restore
         run: dotnet restore AssetProvenanceHelper.sln
@@ -146,12 +146,15 @@ jobs:
           $branchRate = [Math]::Round([double]$covXml.coverage.'branch-rate' * 100, 2)
           Write-Host "Validated coverage artifact for commit $env:GITHUB_SHA : $linesValid lines-valid, $branchesValid branches-valid"
           Write-Host "Line coverage: $lineRate%, Branch coverage: $branchRate%"
-          if ($linesValid -le 0 -or $branchesValid -le 0) {
+          if ($linesValid -le 0 -or $branchesValid -le 0 -or $lineRate -lt 90 -or $branchRate -lt 85) {
             Write-Error "Coverage file is empty or missing valid lines/branches!"
             exit 1
           }
           $requiredEntries = @(
             @{ Name = "AssetProvenanceHelper.MainForm"; File = "MainForm.cs" },
+            @{ Name = "AssetProvenanceHelper.MainForm"; File = "MainForm.MainWorkflow.cs" },
+            @{ Name = "AssetProvenanceHelper.MainForm"; File = "MainForm.ReferenceWorkflow.cs" },
+            @{ Name = "AssetProvenanceHelper.MainForm"; File = "MainForm.Recovery.cs" },
             @{ Name = "AssetProvenanceHelper.AppBootstrap"; File = "Services\AppBootstrap.cs" },
             @{ Name = "AssetProvenanceHelper.Services.AssetProcessorService"; File = "Services\AssetProcessorService.cs" },
             @{ Name = "AssetProvenanceHelper.Services.AssetNaming"; File = "Services\AssetNaming.cs" },
@@ -184,7 +187,7 @@ jobs:
 
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage
           path: artifacts/coverage/**

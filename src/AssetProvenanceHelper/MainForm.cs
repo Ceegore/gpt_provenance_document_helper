@@ -1,5 +1,6 @@
 #nullable enable
 using System.Drawing;
+using System.ComponentModel;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
@@ -29,6 +30,7 @@ public partial class MainForm : Form
     private UiState _state = UiState.Idle;
     private bool _templatesValid;
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal Func<string?>? ClipboardProvider { get; set; }
 
     public MainForm(

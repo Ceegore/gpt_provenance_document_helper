@@ -6,6 +6,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+$elapsedMs = 0
+$windowTitle = ""
+$hasWindow = $false
 
 Write-Host "=== Starting win-x64 Published Deployment Smoke Test ==="
 

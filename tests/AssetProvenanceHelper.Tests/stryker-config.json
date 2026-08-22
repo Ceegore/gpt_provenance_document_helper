@@ -15,6 +15,9 @@
       "**/Services/*.cs",
       "**/Models/*.cs",
       "**/MainForm.cs",
+      "**/MainForm.MainWorkflow.cs",
+      "**/MainForm.ReferenceWorkflow.cs",
+      "**/MainForm.Recovery.cs",
       "!**/MainForm.Designer.cs"
     ]
   }

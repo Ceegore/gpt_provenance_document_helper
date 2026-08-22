@@ -696,10 +696,10 @@ public sealed class WorkflowAndSecurityTests
         Assert.Contains("Asset ID: reference-test.png", rendered);
         Assert.Contains("Asset role: Intermediate reference image", rendered);
         Assert.Contains("Project: SpellQuake", rendered);
-        Assert.Contains("Generation date: 2026-08-17", rendered);
-        Assert.Contains("OpenAI Europe Terms of Use", rendered);
-        Assert.Contains("Version/updated date: 2026-01-16", rendered);
-        Assert.Contains("Status: approved", rendered);
+        Assert.Contains("Helper record date: 2026-08-17", rendered);
+        Assert.Contains("Generation date/time: not recorded", rendered);
+        Assert.Contains("Human review: not recorded", rendered);
+        Assert.Contains("Status: unapproved", rendered);
     }
 
     [Fact]
@@ -730,14 +730,13 @@ public sealed class WorkflowAndSecurityTests
         Assert.Contains("Asset ID: final-test.png", rendered);
         Assert.Contains("Asset role: Final production asset", rendered);
         Assert.Contains("Project: SpellQuake", rendered);
-        Assert.Contains("Generation date: 2026-08-17", rendered);
+        Assert.Contains("Helper record date: 2026-08-17", rendered);
         Assert.Contains("Reference asset:", rendered);
         Assert.Contains("reference-test.png", rendered);
         Assert.Contains("Prompt: \"bitte gib mir 4 varianten davon\"", rendered);
         Assert.Contains("Reference file retained: yes", rendered);
-        Assert.Contains("Commercial video game asset", rendered);
-        Assert.Contains("OpenAI Europe Terms of Use", rendered);
-        Assert.Contains("Version/updated date: 2026-01-16", rendered);
-        Assert.Contains("Status: approved", rendered);
+        Assert.Contains("Generation date/time: not recorded", rendered);
+        Assert.Contains("Human review: not recorded", rendered);
+        Assert.Contains("Status: unapproved", rendered);
     }
 }

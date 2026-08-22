@@ -1650,7 +1650,7 @@ public class ComprehensiveCoverageTests
         Assert.Equal(mutex1, mutex2);
 
         var mutexOther = AppBootstrap.BuildSingleInstanceMutexName(workspace.Downloads);
-        Assert.NotEqual(mutex1, mutexOther);
+        Assert.Equal(mutex1, mutexOther);
 
         Assert.Equal(Path.Combine(baseDir, "settings.json"), AppBootstrap.GetSettingsPath(baseDir));
         Assert.Equal(Path.Combine(baseDir, "session.json"), AppBootstrap.GetSessionPath(baseDir));

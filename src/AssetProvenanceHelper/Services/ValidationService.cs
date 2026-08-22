@@ -460,7 +460,9 @@ public sealed partial class ValidationService
                 filePath,
                 FileMode.Open,
                 FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
+                // Do not permit a destructive-operation authority check to
+                // race a writer, renamer, or deleter through a shared handle.
+                FileShare.Read);
 
         var hash =
             SHA256.HashData(

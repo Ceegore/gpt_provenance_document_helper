@@ -21,6 +21,8 @@ StrykerOutput/
 ## Runtime generated files
 settings.json
 session.json
+reference-replacement.json
+*.canceling
 logs/
 *.log
 *.tmp

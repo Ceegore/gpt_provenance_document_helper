@@ -1,47 +1,23 @@
-# AI ASSET RIGHTS / PROVENANCE RECORD
+# AI ASSET PROVENANCE RECORD
 
 Asset ID: {{REFERENCE_FILENAME}}\
 Asset role: Intermediate reference image\
 Project: {{PROJECT}}
 
-Generator: OpenAI ChatGPT\
-Generation type: text-to-image / iterative AI generation\
-Generation date: {{GENERATION_DATE}}
+Helper record date: {{GENERATION_DATE}}\
+Generation date/time: not recorded
 
-Origin:\
-This image was generated using OpenAI ChatGPT for this project.
+Generation/provider declaration: not recorded. This helper does not infer the provider, service, origin, generation method, or third-party input from the file.
 
-Source material:\
-Text input only for the original generation.\
-No third-party source image was used for the original generation of this reference asset.
+Reference file retained: yes\
+Prompt retained: not recorded\
+Generation conversation retained: not recorded\
+Third-party visual input: not recorded
 
-Generation history:\
-This asset may be the result of one or more iterations of earlier OpenAI ChatGPT outputs created within the same generation workflow.
-
-Rights basis:\
-Under the applicable OpenAI Europe Terms of Use, as between the user and OpenAI and to the extent permitted by applicable law, the user owns the Output and OpenAI assigns to the user its right, title, and interest, if any, in that Output.
-
-This asset is therefore treated internally as a developer-controlled OpenAI-generated project asset and may be used as input/reference material for subsequent generations.
-
-Third-party rights:\
-No third-party reference image or other third-party visual source material is known to have been supplied as Input for the original generation of this asset.
-
-Prompt retained: no\
-Generation conversation retained: no\
-Reference file retained: yes
-
-Intended use:\
-Internal reference/input for further AI-assisted asset generation for the commercial game.
-
-Commercial project use: yes
-
-Human review: yes\
-IP / trademark review: yes\
-Status: approved
-
-Applicable terms record:\
-OpenAI Europe Terms of Use\
-Version/updated date: 2026-01-16
+Human review: not recorded\
+IP / trademark review: not recorded\
+Release approval: draft\
+Status: unapproved
 
 Important:\
-This file is an internal provenance and rights-basis record. It is not a license issued by OpenAI and does not constitute a warranty that the generated material is unique, copyright-protected, or free of all possible third-party rights.
+This record identifies files handled by this helper. It is not a license, provider-issued provenance certificate, approval, or warranty of rights, uniqueness, copyright protection, or third-party clearance.

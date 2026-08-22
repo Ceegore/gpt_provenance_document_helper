@@ -36,6 +36,10 @@ internal static class Program
             return;
         }
 
+        var stateDirectory = AppBootstrap.GetStateDirectory();
+        Directory.CreateDirectory(stateDirectory);
+        AppBootstrap.MigrateLegacyState(baseDirectory, stateDirectory);
+
         var context =
             AppBootstrap.CreateContext(
                 baseDirectory,

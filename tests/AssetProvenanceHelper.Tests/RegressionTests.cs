@@ -3403,7 +3403,7 @@ public sealed class RegressionTests
     }
 
     [Fact]
-    public void REG_136_AppBootstrap_DerivesUniqueMutexAndLoadsSettings()
+    public void REG_136_AppBootstrap_DerivesStablePerUserMutexAndLoadsSettings()
     {
         using var workspace = new TestWorkspace();
         var baseDir = workspace.Root;
@@ -3413,7 +3413,7 @@ public sealed class RegressionTests
         Assert.Equal(mutex1, mutex2);
 
         var mutexOther = AppBootstrap.BuildSingleInstanceMutexName(workspace.Downloads);
-        Assert.NotEqual(mutex1, mutexOther);
+        Assert.Equal(mutex1, mutexOther);
 
         var settingsPath = AppBootstrap.GetSettingsPath(baseDir);
         var settingsService = new SettingsService(settingsPath);
@@ -3422,9 +3422,9 @@ public sealed class RegressionTests
         var loaded = AppBootstrap.LoadSettingsOrDefaults(settingsService);
         Assert.Equal(workspace.Assets, loaded.AssetRootFolder);
 
-        var ctx = AppBootstrap.CreateContext(baseDir);
-        Assert.NotNull(ctx);
-        Assert.Equal(workspace.Assets, ctx.Settings.AssetRootFolder);
+        Assert.Equal(
+            Path.Combine(AppBootstrap.GetStateDirectory(), AppConstants.SettingsFileName),
+            AppBootstrap.GetSettingsPath(AppBootstrap.GetStateDirectory()));
     }
 
     [Fact]

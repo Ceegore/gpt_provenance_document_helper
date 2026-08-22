@@ -23,6 +23,21 @@ public enum CancelPhase
 
 public sealed class AssetSession
 {
+    /// <summary>Schema marker for conservative session migrations.</summary>
+    public int SchemaVersion { get; set; } = 2;
+
+    /// <summary>When this helper recorded the reference, not when it was generated.</summary>
+    public DateTimeOffset? ReferenceRecordedAt { get; set; }
+
+    /// <summary>User-declared generation timestamp; null means not recorded.</summary>
+    public DateTimeOffset? ReferenceGenerationAt { get; set; }
+
+    /// <summary>When this helper recorded the final asset, not when it was generated.</summary>
+    public DateTimeOffset? MainRecordedAt { get; set; }
+
+    /// <summary>User-declared generation timestamp; null means not recorded.</summary>
+    public DateTimeOffset? MainGenerationAt { get; set; }
+
     public AssetWorkflowMode WorkflowMode { get; set; } = AssetWorkflowMode.ReferenceAssisted;
 
     public ReferenceCommitPhase ReferenceCommitPhase { get; set; } = ReferenceCommitPhase.None;
