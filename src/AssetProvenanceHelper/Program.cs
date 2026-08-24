@@ -9,6 +9,23 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        try
+        {
+            RunApplication();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                "Asset Provenance Helper could not start.\n\n"
+                + ex.Message,
+                "Startup error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private static void RunApplication()
+    {
         ApplicationConfiguration.Initialize();
 
         var baseDirectory =

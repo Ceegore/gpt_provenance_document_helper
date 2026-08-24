@@ -18,6 +18,20 @@ if (-not (Test-Path $exePath)) {
     throw "Published executable not found at: $exePath"
 }
 
+$mutableStateFileNames = @(
+    "settings.json",
+    "session.json",
+    "reference-replacement.json"
+)
+$unexpectedMutableStateFiles = @(
+    $mutableStateFileNames |
+        Where-Object { Test-Path -LiteralPath (Join-Path $PublishDir $_) }
+)
+if ($unexpectedMutableStateFiles.Count -gt 0) {
+    throw "Publish directory contains mutable runtime state that must not ship: $($unexpectedMutableStateFiles -join ', ')"
+}
+Write-Host "Publish directory contains no mutable runtime state."
+
 $exeHash = (Get-FileHash $exePath -Algorithm SHA256).Hash
 Write-Host "Executable SHA-256: $exeHash"
 
@@ -210,11 +224,14 @@ if (-not $gracefulShutdown) {
 # 4. Release Archive Creation & Verification
 $archivePath = $null
 $archiveHash = $null
-$productVersion = (Get-Item $exePath).VersionInfo.ProductVersion
-if (-not $productVersion) {
+$productInformationalVersion = (Get-Item $exePath).VersionInfo.ProductVersion
+if (-not $productInformationalVersion) {
     throw "Could not determine product version from executable."
 }
-$productVersion = $productVersion.Split('+')[0]
+if ($CreateArchive -and $productInformationalVersion -match '\+local$') {
+    throw "Release archive is not bound to a source revision. Publish with -p:SourceRevisionId=<commit-sha>."
+}
+$productVersion = $productInformationalVersion.Split('+')[0]
 Write-Host "Executable ProductVersion: $productVersion"
 
 if ($CreateArchive) {
@@ -248,7 +265,8 @@ $smokeResults = [ordered]@{
     ReleaseArchive = if ($archivePath) { (Resolve-Path $archivePath).Path } else { $null }
     ReleaseArchiveSha256 = $archiveHash
     WindowsVersion = [System.Environment]::OSVersion.VersionString
-    DotNetRuntime = "8.0 (net8.0-windows self-contained)"
+    DotNetRuntime = "10.0 (net10.0-windows self-contained)"
+    ProductVersion = $productInformationalVersion
     TemplatesVerified = $true
     CoreAssembliesVerified = $true
     ProcessStartupVerified = $true

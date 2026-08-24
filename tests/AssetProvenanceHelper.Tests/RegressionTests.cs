@@ -5785,6 +5785,55 @@ public sealed class RegressionTests
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
     }
+
+    [Fact]
+    public void REG_202_LegacyStateMigration_RunsOnceAndDoesNotResurrectStaleState()
+    {
+        using var workspace = new TestWorkspace();
+        var legacyDirectory = Path.Combine(workspace.Root, "legacy");
+        var stateDirectory = Path.Combine(workspace.Root, "state");
+        Directory.CreateDirectory(legacyDirectory);
+
+        var legacySettingsPath = Path.Combine(legacyDirectory, AppConstants.SettingsFileName);
+        var legacySessionPath = Path.Combine(legacyDirectory, AppConstants.SessionFileName);
+        var stableSettingsPath = Path.Combine(stateDirectory, AppConstants.SettingsFileName);
+        var stableSessionPath = Path.Combine(stateDirectory, AppConstants.SessionFileName);
+
+        File.WriteAllText(legacySettingsPath, "packaged settings");
+        File.WriteAllText(legacySessionPath, "legacy pending session");
+
+        AppBootstrap.MigrateLegacyState(legacyDirectory, stateDirectory);
+
+        Assert.Equal("packaged settings", File.ReadAllText(stableSettingsPath));
+        Assert.Equal("legacy pending session", File.ReadAllText(stableSessionPath));
+
+        File.WriteAllText(stableSettingsPath, "user-updated settings");
+        File.Delete(stableSessionPath);
+
+        AppBootstrap.MigrateLegacyState(legacyDirectory, stateDirectory);
+
+        Assert.Equal("user-updated settings", File.ReadAllText(stableSettingsPath));
+        Assert.False(File.Exists(stableSessionPath));
+    }
+
+    [Fact]
+    public void REG_203_LegacyStateMigration_ExistingPerUserSettingsRemainAuthoritative()
+    {
+        using var workspace = new TestWorkspace();
+        var legacyDirectory = Path.Combine(workspace.Root, "legacy");
+        var stateDirectory = Path.Combine(workspace.Root, "state");
+        Directory.CreateDirectory(legacyDirectory);
+        Directory.CreateDirectory(stateDirectory);
+
+        var legacySettingsPath = Path.Combine(legacyDirectory, AppConstants.SettingsFileName);
+        var stableSettingsPath = Path.Combine(stateDirectory, AppConstants.SettingsFileName);
+        File.WriteAllText(legacySettingsPath, "packaged settings");
+        File.WriteAllText(stableSettingsPath, "user-updated settings");
+
+        AppBootstrap.MigrateLegacyState(legacyDirectory, stateDirectory);
+
+        Assert.Equal("user-updated settings", File.ReadAllText(stableSettingsPath));
+    }
 }
 
 
