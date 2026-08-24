@@ -38,6 +38,9 @@ public sealed class AppBootstrapContext
 
 public static class AppBootstrap
 {
+    private const string LegacyMigrationMarkerFileName =
+        ".legacy-state-migration-complete";
+
     public static string BuildSingleInstanceMutexName(
         string baseDirectory)
     {
@@ -58,13 +61,25 @@ public static class AppBootstrap
             "AssetProvenanceHelper");
 
     /// <summary>
-    /// Copies (never moves) legacy portable state into stable per-user state on
-    /// first launch. Conflicting state is rejected so recovery never chooses an
-    /// arbitrary journal.
+    /// Copies (never moves) legacy portable state into stable per-user state once.
+    /// Existing per-user state is authoritative. A durable marker prevents stale
+    /// portable journals from being imported again after recovery removes them.
     /// </summary>
     public static void MigrateLegacyState(string legacyDirectory, string stateDirectory)
     {
         if (PathsEqual(legacyDirectory, stateDirectory))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(stateDirectory);
+
+        var migrationMarkerPath =
+            Path.Combine(
+                stateDirectory,
+                LegacyMigrationMarkerFileName);
+
+        if (File.Exists(migrationMarkerPath))
         {
             return;
         }
@@ -86,19 +101,59 @@ public static class AppBootstrap
 
             if (File.Exists(stablePath))
             {
-                var legacyHash = ValidationService.ComputeSha256(legacyPath);
-                var stableHash = ValidationService.ComputeSha256(stablePath);
-                if (!string.Equals(legacyHash, stableHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidDataException(
-                        $"Conflicting legacy and stable state files were found for '{fileName}'. "
-                        + "No state was selected; reconcile the files manually.");
-                }
-
                 continue;
             }
 
             File.Copy(legacyPath, stablePath, overwrite: false);
+        }
+
+        WriteMigrationMarker(migrationMarkerPath);
+    }
+
+    private static void WriteMigrationMarker(string migrationMarkerPath)
+    {
+        var tempPath =
+            migrationMarkerPath
+            + $".{Guid.NewGuid():N}.tmp";
+
+        try
+        {
+            var markerBytes =
+                Encoding.UTF8.GetBytes(
+                    "Legacy state migration completed.\n");
+
+            using (
+                var stream =
+                    new FileStream(
+                        tempPath,
+                        FileMode.CreateNew,
+                        FileAccess.Write,
+                        FileShare.None,
+                        bufferSize: 4096,
+                        FileOptions.WriteThrough))
+            {
+                stream.Write(markerBytes);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(
+                tempPath,
+                migrationMarkerPath,
+                overwrite: false);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Preserve the migration failure, if any.
+            }
         }
     }
 

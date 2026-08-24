@@ -82,7 +82,7 @@ When committing assets, the tool organizes files under your configured **Asset R
 ## Building and Running
 
 ### Prerequisites
-- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (Windows)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (Windows); this repository pins SDK `10.0.301`
 
 ### Build Solution
 ```powershell
@@ -96,7 +96,13 @@ dotnet test AssetProvenanceHelper.sln -c Release
 
 ### Publish Self-Contained Executable
 ```powershell
-dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj -c Release -r win-x64 --self-contained true -o artifacts/publish
+$publishDirectory = Join-Path $PWD "artifacts/publish"
+$sourceRevisionId = (git rev-parse HEAD).Trim()
+if (Test-Path -LiteralPath $publishDirectory) {
+    Remove-Item -LiteralPath $publishDirectory -Recurse -Force
+}
+dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj -c Release -r win-x64 --self-contained true -p:SourceRevisionId=$sourceRevisionId -o artifacts/publish
+pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
 ```
 
 ---
