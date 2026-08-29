@@ -571,14 +571,33 @@ public class MainFormUiTests
             var showError = typeof(MainForm).GetMethod("ShowError", BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string), typeof(Exception) }, null);
             showError?.Invoke(form, new object[] { "Error message", new InvalidOperationException("Test inner") });
 
-            var openFolder = typeof(MainForm).GetMethod("OpenFolder", BindingFlags.NonPublic | BindingFlags.Instance);
-            openFolder?.Invoke(form, new object[] { @"C:\NonExistent_Folder_12345" });
+            // Without this seam, OpenFolder falls through to a real
+            // Process.Start(explorer.exe) against a TestWorkspace temp
+            // folder. Even the "nonexistent path" case can surface as a real
+            // shell error dialog rather than a clean catchable exception; the
+            // Downloads case is worse because the folder DOES exist at the
+            // moment of the call, so Explorer genuinely opens it, then shows
+            // "path not available" once the workspace is disposed out from
+            // under it moments later - a real dialog blocking whatever
+            // machine runs the suite.
+            var openedPaths = new List<string>();
+            MainForm.OpenFolderProvider = path => openedPaths.Add(path);
 
-            var openDownloads = typeof(MainForm).GetMethod("OpenDownloads", BindingFlags.NonPublic | BindingFlags.Instance);
-            openDownloads?.Invoke(form, null);
+            try
+            {
+                var openFolder = typeof(MainForm).GetMethod("OpenFolder", BindingFlags.NonPublic | BindingFlags.Instance);
+                openFolder?.Invoke(form, new object[] { @"C:\NonExistent_Folder_12345" });
 
-            var openAsset = typeof(MainForm).GetMethod("OpenAssetFolder", BindingFlags.NonPublic | BindingFlags.Instance);
-            openAsset?.Invoke(form, null);
+                var openDownloads = typeof(MainForm).GetMethod("OpenDownloads", BindingFlags.NonPublic | BindingFlags.Instance);
+                openDownloads?.Invoke(form, null);
+
+                var openAsset = typeof(MainForm).GetMethod("OpenAssetFolder", BindingFlags.NonPublic | BindingFlags.Instance);
+                openAsset?.Invoke(form, null);
+            }
+            finally
+            {
+                MainForm.OpenFolderProvider = null;
+            }
         });
     }
 

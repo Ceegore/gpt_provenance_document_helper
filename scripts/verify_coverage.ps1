@@ -34,6 +34,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "CoverageRatchet.ps1")
 Push-Location $repoRoot
 
 try {
@@ -236,21 +237,23 @@ try {
     elseif (Test-Path $baselinePath) {
         $baseline = Get-Content $baselinePath -Raw | ConvertFrom-Json
 
-        if ($linesCovered -lt $baseline.lines) {
-            $gateFailures.Add("Covered lines decreased: $($baseline.lines) -> $linesCovered")
-        }
-        if ($branchesCovered -lt $baseline.branches) {
-            $gateFailures.Add("Covered branches decreased: $($baseline.branches) -> $branchesCovered")
-        }
-        if ($methodsCovered -lt $baseline.methods) {
-            $gateFailures.Add("Covered methods decreased: $($baseline.methods) -> $methodsCovered")
+        $ratchetFailures = Test-CoverageRatchet `
+            -CurrentLinesCovered $linesCovered -CurrentLinesTotal $linesTotal `
+            -CurrentBranchesCovered $branchesCovered -CurrentBranchesTotal $branchesTotal `
+            -CurrentMethodsCovered $methodsCovered -CurrentMethodsTotal $methodsTotal `
+            -BaselineLinesCovered $baseline.lines -BaselineLinesTotal $baseline.totalLines `
+            -BaselineBranchesCovered $baseline.branches -BaselineBranchesTotal $baseline.totalBranches `
+            -BaselineMethodsCovered $baseline.methods -BaselineMethodsTotal $baseline.totalMethods
+
+        foreach ($failure in $ratchetFailures) {
+            $gateFailures.Add($failure)
         }
 
         Write-Host ""
-        Write-Host "== Ratchet vs. baseline ($baselinePath) ==" -ForegroundColor Cyan
-        Write-Host ("Lines:    {0} -> {1}" -f $baseline.lines, $linesCovered)
-        Write-Host ("Branches: {0} -> {1}" -f $baseline.branches, $branchesCovered)
-        Write-Host ("Methods:  {0} -> {1}" -f $baseline.methods, $methodsCovered)
+        Write-Host "== Ratchet vs. baseline ($baselinePath) - uncovered counts must not increase ==" -ForegroundColor Cyan
+        Write-Host ("Lines:    {0} -> {1} uncovered" -f ($baseline.totalLines - $baseline.lines), ($linesTotal - $linesCovered))
+        Write-Host ("Branches: {0} -> {1} uncovered" -f ($baseline.totalBranches - $baseline.branches), ($branchesTotal - $branchesCovered))
+        Write-Host ("Methods:  {0} -> {1} uncovered" -f ($baseline.totalMethods - $baseline.methods), ($methodsTotal - $methodsCovered))
     }
     else {
         Write-Host ""

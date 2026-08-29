@@ -611,5 +611,344 @@ public class UpgradeV13ParanoidFileOpsTests
         Assert.Null(exception);
         Assert.True(File.Exists(path));
     }
+
+    // MoveHashOwnedFileWithoutOverwrite is the central forward-move primitive
+    // that virtually all canonical promotion eventually depends on. It
+    // deliberately re-checks source/destination existence and source hash
+    // AFTER OnBeforeHashOwnedMoveHook fires, specifically to catch a race
+    // between its first check and the actual move. These two tests use that
+    // hook to simulate exactly that race on each side.
+
+    [Fact]
+    public void MoveHashOwnedFileWithoutOverwrite_SourceDisappearsAfterInitialCheck_ThrowsAndDoesNotCreateDestination()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var sourcePath = Path.Combine(workspace.Root, "source.bin");
+        var destinationPath = Path.Combine(workspace.Root, "destination.bin");
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        File.WriteAllBytes(sourcePath, bytes);
+        var expectedHash = ValidationService.ComputeSha256(sourcePath);
+
+        AssetProcessorService.OnBeforeHashOwnedMoveHook = (src, dest) =>
+        {
+            // Simulate another actor deleting the source between the
+            // method's first existence check and its final move.
+            File.Delete(src);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<IOException>(() =>
+                processor.MoveHashOwnedFileWithoutOverwrite(
+                    sourcePath,
+                    destinationPath,
+                    expectedHash,
+                    "test file",
+                    ValidationResult.Success));
+
+            Assert.Contains("disappeared before move", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeHashOwnedMoveHook = null;
+        }
+
+        Assert.False(File.Exists(sourcePath));
+        Assert.False(File.Exists(destinationPath));
+    }
+
+    [Fact]
+    public void MoveHashOwnedFileWithoutOverwrite_DestinationAppearsAfterInitialCheck_ThrowsAndPreservesForeignDestination()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var sourcePath = Path.Combine(workspace.Root, "source.bin");
+        var destinationPath = Path.Combine(workspace.Root, "destination.bin");
+        var sourceBytes = new byte[] { 1, 2, 3, 4 };
+        File.WriteAllBytes(sourcePath, sourceBytes);
+        var expectedHash = ValidationService.ComputeSha256(sourcePath);
+
+        var foreignDestinationBytes = new byte[] { 9, 9, 9 };
+
+        AssetProcessorService.OnBeforeHashOwnedMoveHook = (src, dest) =>
+        {
+            // Simulate another actor creating the destination between the
+            // method's first existence check and its final move.
+            File.WriteAllBytes(dest, foreignDestinationBytes);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<IOException>(() =>
+                processor.MoveHashOwnedFileWithoutOverwrite(
+                    sourcePath,
+                    destinationPath,
+                    expectedHash,
+                    "test file",
+                    ValidationResult.Success));
+
+            Assert.Contains("appeared before move", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeHashOwnedMoveHook = null;
+        }
+
+        // The source is untouched (move never happened)...
+        Assert.True(File.Exists(sourcePath));
+        Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+
+        // ...and the racing foreign destination content survives exactly as
+        // it was, rather than being silently overwritten.
+        Assert.True(File.Exists(destinationPath));
+        Assert.Equal(foreignDestinationBytes, File.ReadAllBytes(destinationPath));
+    }
+
+    // EnsureOldProvenanceByteAuthority hydrates a missing raw provenance hash
+    // for legacy (schema 2) sessions from either a backup or canonical
+    // provenance file. The happy repair path is already covered elsewhere;
+    // these four cover the less-covered failure arms: corrupt/unreadable
+    // candidates and the case where neither exists. In every failure case,
+    // OldSession.ReferenceProvenanceHash must remain untouched (null) - no
+    // destructive mutation on a failed hydration.
+
+    private static AssetSession CreateLegacyOldSession(TestWorkspace workspace, string provenancePath) =>
+        new()
+        {
+            SchemaVersion = 2,
+            ProjectName = "TestProject",
+            ReferenceFilename = "reference.png",
+            ReferenceProcessedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            ReferenceProvenancePath = provenancePath,
+            ReferenceProvenanceHash = null,
+            ProviderTemplate = null,
+            AssetFolder = workspace.Root
+        };
+
+    [Fact]
+    public void EnsureOldProvenanceByteAuthority_CorruptBackup_FailsWithoutMutatingSession()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var canonicalPath = Path.Combine(workspace.Root, "reference-provenance.md");
+        var backupPath = Path.Combine(workspace.Root, "reference-provenance.backup.md");
+        File.WriteAllText(backupPath, "this does not match any tool-generated provenance template");
+
+        var oldSession = CreateLegacyOldSession(workspace, canonicalPath);
+
+        var transaction = new ReferenceReplacementTransaction
+        {
+            TransactionId = new string('a', 32),
+            OldSession = oldSession,
+            NewSession = oldSession,
+            BackupReferencePath = Path.Combine(workspace.Root, "reference.backup.png"),
+            BackupProvenancePath = backupPath
+        };
+
+        var result = processor.EnsureOldProvenanceByteAuthority(transaction);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("legacy backup", StringComparison.OrdinalIgnoreCase));
+        Assert.Null(oldSession.ReferenceProvenanceHash);
+    }
+
+    [Fact]
+    public void EnsureOldProvenanceByteAuthority_UnreadableBackup_FailsWithoutMutatingSession()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var canonicalPath = Path.Combine(workspace.Root, "reference-provenance.md");
+        var backupPath = Path.Combine(workspace.Root, "reference-provenance.backup.md");
+        File.WriteAllText(backupPath, "content irrelevant - will be locked");
+
+        var oldSession = CreateLegacyOldSession(workspace, canonicalPath);
+
+        var transaction = new ReferenceReplacementTransaction
+        {
+            TransactionId = new string('a', 32),
+            OldSession = oldSession,
+            NewSession = oldSession,
+            BackupReferencePath = Path.Combine(workspace.Root, "reference.backup.png"),
+            BackupProvenancePath = backupPath
+        };
+
+        using (var lockStream = new FileStream(backupPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var result = processor.EnsureOldProvenanceByteAuthority(transaction);
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Errors, e => e.Contains("legacy backup", StringComparison.OrdinalIgnoreCase));
+        }
+
+        Assert.Null(oldSession.ReferenceProvenanceHash);
+    }
+
+    [Fact]
+    public void EnsureOldProvenanceByteAuthority_NoBackupButCorruptCanonical_FailsWithoutMutatingSession()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var canonicalPath = Path.Combine(workspace.Root, "reference-provenance.md");
+        File.WriteAllText(canonicalPath, "this does not match any tool-generated provenance template");
+
+        var oldSession = CreateLegacyOldSession(workspace, canonicalPath);
+
+        var transaction = new ReferenceReplacementTransaction
+        {
+            TransactionId = new string('a', 32),
+            OldSession = oldSession,
+            NewSession = oldSession,
+            BackupReferencePath = Path.Combine(workspace.Root, "reference.backup.png"),
+            // No backup file exists at this path - candidate 1 is absent.
+            BackupProvenancePath = Path.Combine(workspace.Root, "does-not-exist.backup.md")
+        };
+
+        var result = processor.EnsureOldProvenanceByteAuthority(transaction);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("legacy canonical", StringComparison.OrdinalIgnoreCase));
+        Assert.Null(oldSession.ReferenceProvenanceHash);
+    }
+
+    [Fact]
+    public void EnsureOldProvenanceByteAuthority_NeitherCandidatePresent_FailsWithoutMutatingSession()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+
+        var canonicalPath = Path.Combine(workspace.Root, "reference-provenance.md");
+        var oldSession = CreateLegacyOldSession(workspace, canonicalPath);
+
+        var transaction = new ReferenceReplacementTransaction
+        {
+            TransactionId = new string('a', 32),
+            OldSession = oldSession,
+            NewSession = oldSession,
+            BackupReferencePath = Path.Combine(workspace.Root, "reference.backup.png"),
+            BackupProvenancePath = Path.Combine(workspace.Root, "does-not-exist.backup.md")
+        };
+
+        var result = processor.EnsureOldProvenanceByteAuthority(transaction);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("Could not locate", StringComparison.OrdinalIgnoreCase));
+        Assert.Null(oldSession.ReferenceProvenanceHash);
+    }
+
+    // RequireMainStagingAuthority re-verifies each deterministically-staged
+    // file's hash immediately before canonical Main promotion
+    // (AssetProcessorService.Main.cs ~1086-1156). OnBeforeMainStagingAuthorityGate
+    // fires right after staging completes and right before that re-check, so
+    // it is the seam for proving each staged file's corruption independently
+    // blocks promotion - with zero new canonical output and the transaction
+    // left in a recoverable (IsMainCommitting still true) state.
+
+    [Fact]
+    public void RequireMainStagingAuthority_StagedMainCorrupted_BlocksPromotionAndPreservesRecoverableState()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_stage_main", refSource, DateTimeOffset.Now);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+            File.WriteAllBytes(s.GetMainTempImagePath(), new byte[] { 99, 99, 99 });
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt));
+            Assert.Contains("Main staging image", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)));
+        Assert.False(File.Exists(session.GetIngameImagePath()));
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
+        Assert.True(session.IsMainCommitting);
+    }
+
+    [Fact]
+    public void RequireMainStagingAuthority_StagedIngameCorrupted_BlocksPromotionAndPreservesRecoverableState()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_stage_ingame", refSource, DateTimeOffset.Now);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+            File.WriteAllBytes(s.GetMainTempIngamePath(), new byte[] { 99, 99, 99 });
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt));
+            Assert.Contains("Ingame staging image", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)));
+        Assert.False(File.Exists(session.GetIngameImagePath()));
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
+        Assert.True(session.IsMainCommitting);
+    }
+
+    [Fact]
+    public void RequireMainStagingAuthority_StagedProvenanceCorrupted_BlocksPromotionAndPreservesRecoverableState()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_stage_prov", refSource, DateTimeOffset.Now);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+            File.WriteAllText(s.GetMainTempProvenancePath(), "tampered provenance content");
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt));
+            Assert.Contains("Main staging provenance", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)));
+        Assert.False(File.Exists(session.GetIngameImagePath()));
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
+        Assert.True(session.IsMainCommitting);
+    }
 }
 
