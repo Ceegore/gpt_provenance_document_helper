@@ -1,0 +1,6 @@
+{
+  "justification": "These production files contain no executable sequence points (e.g. a bare enum), so coverlet never emits a <class> entry for them. Listed explicitly so the coverage gate can distinguish 'legitimately has nothing to cover' from 'silently dropped from the report'. The gate also fails if any listed file starts appearing in the report with actual instrumented lines, so this list cannot silently rot as code is added.",
+  "files": [
+    "Models/ImageSlot.cs"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "none - internal manifest, not a Stryker input",
+  "purpose": "Records mutants that survived a Stryker run and were manually reviewed and judged equivalent (no test could ever distinguish them from the original) or otherwise deliberately accepted. A survivor is only acceptable in an audit if its mutant id appears here with a written justification.",
+  "howToUse": [
+    "Run `dotnet stryker` (or the mutation.yml workflow) and open the JSON/HTML report.",
+    "For each surviving mutant, either write a test that kills it, or - only if it is truly behaviorally equivalent - add an entry below with the mutant's file, line, mutator, and why it cannot be killed.",
+    "Do not add an entry just because a mutant is inconvenient to kill; equivalence must be a real semantic argument, not a shortcut."
+  ],
+  "equivalents": []
+}
