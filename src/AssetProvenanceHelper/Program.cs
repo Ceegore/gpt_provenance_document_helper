@@ -50,7 +50,7 @@ internal static class Program
         }
         else
         {
-            ApplicationConfiguration.Initialize();
+            InitializeApplicationConfigurationForReal();
         }
 
         var baseDirectory =
@@ -109,7 +109,7 @@ internal static class Program
         }
         else
         {
-            Application.Run(form);
+            RunApplicationForReal(form);
         }
     }
 
@@ -124,10 +124,34 @@ internal static class Program
             return;
         }
 
+        ShowMessageBoxForReal(message, title, icon);
+    }
+
+    // The three methods below each wrap a single call that either only the
+    // WinForms runtime is allowed to make once per process
+    // (ApplicationConfiguration.Initialize), blocks in a real message loop
+    // (Application.Run), or shows a real modal dialog (MessageBox.Show) - none
+    // of which can run unattended. Tests exercise everything around them
+    // through the *Provider seams above; these three are the real fallback
+    // and are the enumerated, justified exceptions in
+    // code-coverage-exclusions.json.
+
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+    private static void InitializeApplicationConfigurationForReal() =>
+        ApplicationConfiguration.Initialize();
+
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+    private static void RunApplicationForReal(Form form) =>
+        Application.Run(form);
+
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+    private static void ShowMessageBoxForReal(
+        string message,
+        string title,
+        MessageBoxIcon icon) =>
         MessageBox.Show(
             message,
             title,
             MessageBoxButtons.OK,
             icon);
-    }
 }

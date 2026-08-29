@@ -747,6 +747,58 @@ public class UpgradeV13ParanoidBranchTests
             }
         });
     }
+
+    [Fact]
+    public void HelpOverlayControl_OwnKeyDownEscape_HidesAndSuppressesKeyPress()
+    {
+        RunOnSta(() =>
+        {
+            using var overlay = new HelpOverlayControl();
+            var closeRequested = false;
+            overlay.CloseRequested += (_, _) => closeRequested = true;
+
+            overlay.ShowOverlay();
+            Assert.True(overlay.Visible);
+
+            var onKeyDown =
+                typeof(Control).GetMethod(
+                    "OnKeyDown",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+            var escape = new KeyEventArgs(Keys.Escape);
+            onKeyDown!.Invoke(overlay, new object[] { escape });
+
+            Assert.False(overlay.Visible);
+            Assert.True(escape.SuppressKeyPress);
+            Assert.True(closeRequested);
+        });
+    }
+
+    [Fact]
+    public void HelpOverlayControl_OwnKeyDownOtherKey_LeavesOverlayOpen()
+    {
+        RunOnSta(() =>
+        {
+            using var overlay = new HelpOverlayControl();
+            var closeRequested = false;
+            overlay.CloseRequested += (_, _) => closeRequested = true;
+
+            overlay.ShowOverlay();
+            Assert.True(overlay.Visible);
+
+            var onKeyDown =
+                typeof(Control).GetMethod(
+                    "OnKeyDown",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+            var other = new KeyEventArgs(Keys.A);
+            onKeyDown!.Invoke(overlay, new object[] { other });
+
+            Assert.True(overlay.Visible);
+            Assert.False(other.SuppressKeyPress);
+            Assert.False(closeRequested);
+        });
+    }
 }
 // [build marker]
 
