@@ -21,6 +21,12 @@ public sealed class AppBootstrapContext
 
     public required string FinalNoReferenceTemplatePath { get; init; }
 
+    public required string ProviderTemplateDirectory { get; init; }
+
+    public required string RecentDocumentsPath { get; init; }
+
+    public required string RequestProgressPath { get; init; }
+
     public required AppSettings Settings { get; set; }
 
     public required SettingsService SettingsService { get; init; }
@@ -34,6 +40,12 @@ public sealed class AppBootstrapContext
     public required ImageFinderService ImageFinderService { get; init; }
 
     public required AssetProcessorService AssetProcessorService { get; init; }
+
+    public required ProviderTemplateCatalogService ProviderTemplateCatalogService { get; init; }
+
+    public required RecentDocumentHistoryService RecentDocumentHistoryService { get; init; }
+
+    public required RequestProgressService RequestProgressService { get; init; }
 }
 
 public static class AppBootstrap
@@ -41,9 +53,21 @@ public static class AppBootstrap
     private const string LegacyMigrationMarkerFileName =
         ".legacy-state-migration-complete";
 
+    /// <summary>
+    /// Test seam: overrides the derived mutex name so tests never contend for the
+    /// real, systemwide single-instance mutex that a genuinely running instance of
+    /// the app also holds.
+    /// </summary>
+    internal static Func<string>? MutexNameOverride;
+
     public static string BuildSingleInstanceMutexName(
         string baseDirectory)
     {
+        if (MutexNameOverride is not null)
+        {
+            return MutexNameOverride();
+        }
+
         // State and single-instance authority must survive portable upgrades.
         // The parameter remains for source compatibility with earlier callers.
         _ = baseDirectory;
@@ -196,6 +220,24 @@ public static class AppBootstrap
             "templates",
             "final_no_reference.md");
 
+    public static string GetProviderTemplateDirectory(
+        string baseDirectory) =>
+        Path.Combine(
+            baseDirectory,
+            AppConstants.ProviderTemplateFolderName);
+
+    public static string GetRecentDocumentsPath(
+        string stateDirectory) =>
+        Path.Combine(
+            stateDirectory,
+            AppConstants.RecentDocumentsFileName);
+
+    public static string GetRequestProgressPath(
+        string stateDirectory) =>
+        Path.Combine(
+            stateDirectory,
+            AppConstants.RequestProgressFileName);
+
     public static AppSettings LoadSettingsOrDefaults(
         SettingsService settingsService,
         Action<string, string>? showWarning = null)
@@ -279,6 +321,21 @@ public static class AppBootstrap
                 templateService,
                 validationService);
 
+        var providerTemplateCatalogService =
+            new ProviderTemplateCatalogService(
+                GetProviderTemplateDirectory(
+                    baseDirectory));
+
+        var recentDocumentHistoryService =
+            new RecentDocumentHistoryService(
+                GetRecentDocumentsPath(
+                    stateDirectory));
+
+        var requestProgressService =
+            new RequestProgressService(
+                GetRequestProgressPath(
+                    stateDirectory));
+
         return new AppBootstrapContext
         {
             BaseDirectory =
@@ -302,6 +359,18 @@ public static class AppBootstrap
             FinalNoReferenceTemplatePath =
                 finalNoReferenceTemplatePath,
 
+            ProviderTemplateDirectory =
+                GetProviderTemplateDirectory(
+                    baseDirectory),
+
+            RecentDocumentsPath =
+                GetRecentDocumentsPath(
+                    stateDirectory),
+
+            RequestProgressPath =
+                GetRequestProgressPath(
+                    stateDirectory),
+
             Settings =
                 settings,
 
@@ -321,7 +390,16 @@ public static class AppBootstrap
                 imageFinderService,
 
             AssetProcessorService =
-                assetProcessorService
+                assetProcessorService,
+
+            ProviderTemplateCatalogService =
+                providerTemplateCatalogService,
+
+            RecentDocumentHistoryService =
+                recentDocumentHistoryService,
+
+            RequestProgressService =
+                requestProgressService
         };
     }
 }

@@ -40,6 +40,10 @@ public sealed class AssetSession
 
     public AssetWorkflowMode WorkflowMode { get; set; } = AssetWorkflowMode.ReferenceAssisted;
 
+    public ProviderTemplateSnapshot? ProviderTemplate { get; set; }
+
+    public string? SourceRequestKey { get; set; }
+
     public ReferenceCommitPhase ReferenceCommitPhase { get; set; } = ReferenceCommitPhase.None;
 
     public string? ReferenceTransactionId { get; set; }

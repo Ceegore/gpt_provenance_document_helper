@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "assets": [
+    {
+      "filename": "asset_ui_screen_settings.webp",
+      "resolution": "1920x1080",
+      "prompt": "Place the complete exact generation prompt here."
+    },
+    {
+      "filename": "enemy_armored.png",
+      "resolution": "512x512",
+      "prompt": "Place the complete exact generation prompt here."
+    }
+  ]
+}

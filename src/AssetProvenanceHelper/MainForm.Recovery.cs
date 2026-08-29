@@ -142,7 +142,11 @@ partial class MainForm
         var mainFilename = session.MainFilename ?? string.Empty;
         var mainImagePath = Path.Combine(session.AssetFolder, mainFilename);
         var finalProvPath = Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName);
-        var mainDateStr = (session.MainProcessedAt ?? DateTimeOffset.Now)
+        // ValidateSession (run before this method is reached) requires MainProcessedAt to be
+        // present whenever IsMainCommitting is true, which NoReference mode always is — so this
+        // is guaranteed set here. Never fall back to re-reading the ambient clock: a stale or
+        // reconstructed timestamp would silently mismatch the on-disk provenance date.
+        var mainDateStr = session.MainProcessedAt!.Value
             .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
         var completeValidation = _validationService.ValidateCompleteAsset(
@@ -305,6 +309,7 @@ partial class MainForm
                 lblReference.Text = $"Saved reference: {session.ReferenceFilename}";
                 SetSelectedImage(ImageSlot.Reference, null);
                 SetSelectedImage(ImageSlot.Main, null);
+                BindRecoveredSessionProvider();
                 AddStatus($"Interrupted Reference creation for '{session.AssetFolderName}' was completed and recovered.");
                 ApplyState();
                 return;
@@ -499,6 +504,8 @@ partial class MainForm
         SetSelectedImage(ImageSlot.Reference, null);
         SetSelectedImage(ImageSlot.Main, null);
 
+        BindRecoveredSessionProvider();
+
         AddStatus($"Resumed reference session for '{session.AssetFolderName}'.");
         ApplyState();
     }
@@ -680,6 +687,9 @@ partial class MainForm
 
         return new AssetSession
         {
+            SchemaVersion = source.SchemaVersion,
+            ProviderTemplate = source.ProviderTemplate?.Clone(),
+            SourceRequestKey = source.SourceRequestKey,
             WorkflowMode = source.WorkflowMode,
             ReferenceCommitPhase = source.ReferenceCommitPhase,
             ReferenceTransactionId = source.ReferenceTransactionId,

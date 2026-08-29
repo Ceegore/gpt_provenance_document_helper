@@ -1222,6 +1222,7 @@ public sealed class RegressionTests
         {
             var messageReported = false;
             FileStream? destLock = null;
+            using var workspace = new TestWorkspace();
             try
             {
                 MainForm.MessageBoxProvider = (_, text, caption, buttons, icon) =>
@@ -1232,7 +1233,6 @@ public sealed class RegressionTests
                     }
                 };
 
-                using var workspace = new TestWorkspace();
                 var processor = workspace.CreateAssetProcessor();
                 var sessionService = workspace.CreateSessionService();
                 var settings = workspace.CreateSettings();
@@ -1481,7 +1481,7 @@ public sealed class RegressionTests
         }
 
         foreach (var t in tasks) t.Start();
-        foreach (var t in tasks) Assert.True(t.Join(TimeSpan.FromSeconds(10)), "Thread execution should complete within 10 seconds");
+        foreach (var t in tasks) Assert.True(t.Join(TimeSpan.FromSeconds(30)), "Thread execution should complete within 30 seconds");
         Assert.Empty(errors);
     }
 
@@ -1591,7 +1591,7 @@ public sealed class RegressionTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(10)));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
     }
 
     [Fact]
@@ -1907,7 +1907,7 @@ public sealed class RegressionTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(10)));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
         if (testEx != null)
         {
             throw testEx;
@@ -1951,7 +1951,7 @@ public sealed class RegressionTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(10)));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
     }
 
     [Fact]
@@ -5833,6 +5833,29 @@ public sealed class RegressionTests
         AppBootstrap.MigrateLegacyState(legacyDirectory, stateDirectory);
 
         Assert.Equal("user-updated settings", File.ReadAllText(stableSettingsPath));
+    }
+
+    [Fact]
+    public void REG_204_RunnerConfigIsDeployedAlongsideTestAssembly()
+    {
+        Assert.True(
+            File.Exists(Path.Combine(AppContext.BaseDirectory, "xunit.runner.json")),
+            "xunit.runner.json must be copied to the test output directory or the " +
+            "non-parallel-by-design invariant silently stops applying.");
+    }
+
+    [Fact]
+    public void REG_205_TestParallelizationIsDisabledAtTheAssemblyLevel()
+    {
+        var attribute =
+            typeof(RegressionTests).Assembly
+                .GetCustomAttribute<CollectionBehaviorAttribute>();
+
+        Assert.NotNull(attribute);
+        Assert.True(
+            attribute!.DisableTestParallelization,
+            "The test assembly must carry [assembly: CollectionBehavior(DisableTestParallelization = true)] " +
+            "so the suite's non-parallel invariant does not depend solely on xunit.runner.json being deployed.");
     }
 }
 

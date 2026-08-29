@@ -4,7 +4,8 @@
     "solution": "../../AssetProvenanceHelper.sln",
     "reporters": [
       "progress",
-      "html"
+      "html",
+      "json"
     ],
     "thresholds": {
       "high": 90,
@@ -12,12 +13,7 @@
       "break": 80
     },
     "mutate": [
-      "**/Services/*.cs",
-      "**/Models/*.cs",
-      "**/MainForm.cs",
-      "**/MainForm.MainWorkflow.cs",
-      "**/MainForm.ReferenceWorkflow.cs",
-      "**/MainForm.Recovery.cs",
+      "**/*.cs",
       "!**/MainForm.Designer.cs"
     ]
   }

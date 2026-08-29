@@ -1,0 +1,11 @@
+{
+  "justification": "Each excluded method wraps exactly one call that cannot run unattended in an automated test: a blocking modal Win32 dialog (dialog.ShowDialog), the WinForms message loop (Application.Run), the DPI/visual-style initializer that the runtime only permits calling once per process before the first window handle exists (ApplicationConfiguration.Initialize), or a real modal MessageBox. In every case the surrounding logic is exercised by tests through a matching test seam (FolderBrowserDialogProvider, OpenFileDialogProvider, ApplicationRunProvider, ApplicationConfigurationInitializer, MessageProvider), and the excluded method is only the real fallback used when no seam is installed.",
+  "allowed": [
+    "AssetProvenanceHelper.MainForm.BrowseDownloadFolderWithDialog",
+    "AssetProvenanceHelper.MainForm.BrowseAssetRootWithDialog",
+    "AssetProvenanceHelper.MainForm.PickManifestPathWithDialog",
+    "AssetProvenanceHelper.Program.InitializeApplicationConfigurationForReal",
+    "AssetProvenanceHelper.Program.RunApplicationForReal",
+    "AssetProvenanceHelper.Program.ShowMessageBoxForReal"
+  ]
+}

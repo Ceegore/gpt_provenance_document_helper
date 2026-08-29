@@ -94,6 +94,20 @@ dotnet build AssetProvenanceHelper.sln -c Release
 dotnet test AssetProvenanceHelper.sln -c Release
 ```
 
+To reproduce exactly what CI checks (clean build with `-warnaserror`, Debug and
+Release test runs, `RecoveryCritical`) from a clean working tree in one step:
+```powershell
+powershell -File scripts/verify_like_ci.ps1
+```
+A pass from a warm/incremental build or a dirty working tree is not equivalent
+to this and should not be reported as a CI-green result — see `AGENTS.md`.
+
+Coverage is measured with `dotnet test --collect:"XPlat Code Coverage"` and
+checked by `scripts/verify_coverage.ps1` (exact covered/total line, branch,
+and method counts against `code-coverage-baseline.json`, plus an enumerated
+allowlist for the small number of methods that cannot run unattended — see
+`code-coverage-exclusions.json`).
+
 ### Publish Self-Contained Executable
 ```powershell
 $publishDirectory = Join-Path $PWD "artifacts/publish"
@@ -102,8 +116,28 @@ if (Test-Path -LiteralPath $publishDirectory) {
     Remove-Item -LiteralPath $publishDirectory -Recurse -Force
 }
 dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj -c Release -r win-x64 --self-contained true -p:SourceRevisionId=$sourceRevisionId -o artifacts/publish
-pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
+powershell -File scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
 ```
+
+### Local Smoke Test (Smart App Control–safe)
+
+The smoke test above launches the **self-contained, unsigned** `AssetProvenanceHelper.exe`.
+On a machine with **Windows Smart App Control (SAC)** enabled, SAC blocks that unsigned
+native executable, so the launch step fails as an *environment* condition — not a product
+defect. For local startup verification on a SAC-enabled box, use the SAC-safe variant, which
+launches the app through the **signed `dotnet` host** (`dotnet AssetProvenanceHelper.dll`)
+instead of the native apphost:
+
+```powershell
+dotnet build AssetProvenanceHelper.sln -c Release --no-restore -warnaserror
+powershell -File scripts/run_smoke_tests_sac_safe.ps1
+# defaults to src/AssetProvenanceHelper/bin/Release/net10.0-windows
+# (PowerShell 7 also works if installed: pwsh scripts/run_smoke_tests_sac_safe.ps1)
+```
+
+> See `AGENTS.md` for the full rationale: `dotnet build`/`test`/`run` all run through
+> Microsoft-signed hosts, so the unit/UI test suite is unaffected by SAC — only the
+> self-contained published exe trips it.
 
 ---
 

@@ -1,5 +1,4 @@
 #nullable enable
-using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Models;
@@ -56,7 +55,6 @@ partial class MainForm
         return btn;
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildHeader(TableLayoutPanel root)
     {
         pnlHeader = new Panel
@@ -127,7 +125,6 @@ partial class MainForm
         root.Controls.Add(pnlHeader, 0, 0);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildSettingsGroup(TableLayoutPanel root)
     {
         grpSettings = new GroupBox
@@ -145,7 +142,7 @@ partial class MainForm
             Dock = DockStyle.Fill,
             AutoSize = true,
             ColumnCount = 3,
-            RowCount = 2
+            RowCount = 3
         };
 
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
@@ -174,11 +171,34 @@ partial class MainForm
         layout.Controls.Add(pnlAssetRootHost, 1, 1);
         layout.Controls.Add(btnBrowseAssetRoot, 2, 1);
 
+        // AI Generation Provider
+        var lblProvider = new Label { Text = "AI Generation Provider", AutoSize = true, Anchor = AnchorStyles.Left };
+        cmbProvider = new ComboBox
+        {
+            Name = "cmbProvider",
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Dock = DockStyle.Fill
+        };
+        lblProviderWarning = new Label
+        {
+            Name = "lblProviderWarning",
+            Text = string.Empty,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            ForeColor = Color.FromArgb(230, 126, 34),
+            Margin = new Padding(6, 0, 0, 0),
+            Visible = false
+        };
+        var pnlProviderHost = CreateFieldHost(cmbProvider);
+
+        layout.Controls.Add(lblProvider, 0, 2);
+        layout.Controls.Add(pnlProviderHost, 1, 2);
+        layout.Controls.Add(lblProviderWarning, 2, 2);
+
         grpSettings.Controls.Add(layout);
         root.Controls.Add(grpSettings, 0, 1);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildCurrentAssetGroup(TableLayoutPanel root)
     {
         grpCurrentAsset = new GroupBox
@@ -207,6 +227,13 @@ partial class MainForm
         txtAssetFolderName = new TextBox { Name = "txtAssetFolderName" };
         pnlAssetFolderNameHost = CreateFieldHost(txtAssetFolderName);
 
+        var modeFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
         chkNoReference = new CheckBox
         {
             Name = "chkNoReference",
@@ -216,15 +243,26 @@ partial class MainForm
             Margin = new Padding(10, 0, 0, 0)
         };
 
+        chkDirectMode = new CheckBox
+        {
+            Name = "chkDirectMode",
+            Text = "Direct mode",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(14, 0, 0, 0)
+        };
+
+        modeFlow.Controls.Add(chkNoReference);
+        modeFlow.Controls.Add(chkDirectMode);
+
         layout.Controls.Add(lblName, 0, 0);
         layout.Controls.Add(pnlAssetFolderNameHost, 1, 0);
-        layout.Controls.Add(chkNoReference, 2, 0);
+        layout.Controls.Add(modeFlow, 2, 0);
 
         grpCurrentAsset.Controls.Add(layout);
         root.Controls.Add(grpCurrentAsset, 0, 2);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildCardsSection(TableLayoutPanel root)
     {
         pnlCardsContainer = new TableLayoutPanel
@@ -430,8 +468,9 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3
+            RowCount = 4
         };
+        promptContainer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         promptContainer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         promptContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         promptContainer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -442,6 +481,18 @@ partial class MainForm
             AutoSize = true,
             Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold)
         };
+
+        lblPromptPreview = new Label
+        {
+            Name = "lblPromptPreview",
+            Text = "No prompt stored.",
+            AutoSize = false,
+            AutoEllipsis = true,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.Gray,
+            Margin = new Padding(0, 2, 0, 2)
+        };
+        _toolTip.SetToolTip(lblPromptPreview, "Hover for the full Prompt.");
 
         txtPrompt = new TextBox
         {
@@ -468,8 +519,9 @@ partial class MainForm
         promptButtons.Controls.Add(btnClearPrompt);
 
         promptContainer.Controls.Add(lblPromptTitle, 0, 0);
-        promptContainer.Controls.Add(pnlPromptHost, 0, 1);
-        promptContainer.Controls.Add(promptButtons, 0, 2);
+        promptContainer.Controls.Add(lblPromptPreview, 0, 1);
+        promptContainer.Controls.Add(pnlPromptHost, 0, 2);
+        promptContainer.Controls.Add(promptButtons, 0, 3);
 
         btnMainImage = CreateCtaButton("Main Image", UiTheme.MainAccent);
         btnMainImage.Name = "btnMainImage";
@@ -489,7 +541,6 @@ partial class MainForm
         root.Controls.Add(pnlCardsContainer, 0, 3);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildStatusGroup(TableLayoutPanel root)
     {
         grpStatus = new GroupBox
@@ -497,7 +548,9 @@ partial class MainForm
             Name = "grpStatus",
             Text = "Status History & Actions",
             Dock = DockStyle.Fill,
-            AutoSize = true,
+            AutoSize = false,
+            Height = 145,
+            MinimumSize = new Size(0, 135),
             Padding = new Padding(10)
         };
 
@@ -505,11 +558,27 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2
+            RowCount = 3
         };
 
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         statusLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        lvRecentDocuments = new ListView
+        {
+            Name = "lvRecentDocuments",
+            View = View.Details,
+            FullRowSelect = true,
+            MultiSelect = false,
+            HeaderStyle = ColumnHeaderStyle.Nonclickable,
+            Dock = DockStyle.Fill
+        };
+
+        lvRecentDocuments.Columns.Add("Time", 75);
+        lvRecentDocuments.Columns.Add("Type", 80);
+        lvRecentDocuments.Columns.Add("Asset", 220);
+        lvRecentDocuments.Columns.Add("Document", -2);
 
         txtStatusHistory = new TextBox
         {
@@ -518,7 +587,8 @@ partial class MainForm
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
             Dock = DockStyle.Fill,
-            Height = 85
+            Height = 0,
+            Visible = false
         };
 
         var actionButtons = new FlowLayoutPanel
@@ -537,10 +607,80 @@ partial class MainForm
         actionButtons.Controls.Add(btnOpenAssetFolder);
         actionButtons.Controls.Add(btnCancel);
 
-        statusLayout.Controls.Add(txtStatusHistory, 0, 0);
-        statusLayout.Controls.Add(actionButtons, 0, 1);
+        statusLayout.Controls.Add(lvRecentDocuments, 0, 0);
+        statusLayout.Controls.Add(txtStatusHistory, 0, 1);
+        statusLayout.Controls.Add(actionButtons, 0, 2);
 
         grpStatus.Controls.Add(statusLayout);
         root.Controls.Add(grpStatus, 0, 4);
+    }
+
+    private void BuildRequestQueueGroup(TableLayoutPanel workspace)
+    {
+        grpRequestQueue = new GroupBox
+        {
+            Name = "grpRequestQueue",
+            Text = "Request Queue",
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Padding = new Padding(10)
+        };
+
+        var queueLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4
+        };
+
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        btnImportRequest = CreateButton("Import Request...");
+        btnImportRequest.Name = "btnImportRequest";
+        btnImportRequest.Dock = DockStyle.Fill;
+
+        lblRequestSource = new Label
+        {
+            Name = "lblRequestSource",
+            Text = "No Request Manifest imported.",
+            AutoSize = true,
+            AutoEllipsis = true,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.DimGray
+        };
+
+        lvRequestQueue = new ListView
+        {
+            Name = "lvRequestQueue",
+            View = View.Details,
+            FullRowSelect = true,
+            MultiSelect = false,
+            HeaderStyle = ColumnHeaderStyle.Nonclickable,
+            Dock = DockStyle.Fill
+        };
+
+        lvRequestQueue.Columns.Add("Status", 70);
+        lvRequestQueue.Columns.Add("Asset", 180);
+        lvRequestQueue.Columns.Add("Resolution", -2);
+
+        lblRequestProgress = new Label
+        {
+            Name = "lblRequestProgress",
+            Text = string.Empty,
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(0, 6, 0, 0)
+        };
+
+        queueLayout.Controls.Add(btnImportRequest, 0, 0);
+        queueLayout.Controls.Add(lblRequestSource, 0, 1);
+        queueLayout.Controls.Add(lvRequestQueue, 0, 2);
+        queueLayout.Controls.Add(lblRequestProgress, 0, 3);
+
+        grpRequestQueue.Controls.Add(queueLayout);
     }
 }

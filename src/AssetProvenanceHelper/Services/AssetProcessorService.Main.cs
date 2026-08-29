@@ -42,7 +42,9 @@ public sealed partial class AssetProcessorService
         string assetName,
         string sourceImagePath,
         string prompt,
-        DateTimeOffset processedAt)
+        DateTimeOffset processedAt,
+        ProviderTemplateSnapshot? providerTemplate = null,
+        string? sourceRequestKey = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(assetName);
@@ -114,14 +116,23 @@ public sealed partial class AssetProcessorService
         }
 
         var sourceHash = ComputeSha256(sourceImagePath);
-        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var projectLabel = AssetNaming.DeriveProjectLabel(settings.AssetRootFolder);
-        var provenance = _templateService.RenderFinalNoReference(mainFilename, projectLabel, generationDate, prompt);
-        var provHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant();
 
-        return new AssetSession
+        var session = new AssetSession
         {
+            SchemaVersion =
+                providerTemplate is null
+                    ? 2
+                    : 3,
+
             WorkflowMode = AssetWorkflowMode.NoReference,
+
+            ProviderTemplate =
+                providerTemplate?.Clone(),
+
+            SourceRequestKey =
+                sourceRequestKey,
+
             ProjectName = projectLabel,
             AssetRootFolder = settings.AssetRootFolder,
             AssetFolderName = assetName,
@@ -137,12 +148,26 @@ public sealed partial class AssetProcessorService
             WasIngameFolderCreatedByTool = !Directory.Exists(ingameFolder),
             IsMainCommitting = true,
             MainFilename = mainFilename,
-            MainProvenanceHash = provHash,
             MainPrompt = prompt,
             MainProcessedAt = processedAt,
             MainHash = sourceHash,
             MainTransactionId = Guid.NewGuid().ToString("N")
         };
+
+        var provenance =
+            _templateService.RenderFinalForSession(
+                session,
+                mainFilename,
+                prompt,
+                processedAt);
+
+        session.MainProvenanceHash =
+            Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    new UTF8Encoding(false).GetBytes(provenance)))
+                .ToLowerInvariant();
+
+        return session;
     }
 
     /// <summary>
@@ -182,11 +207,12 @@ public sealed partial class AssetProcessorService
         }
 
         var mainFilename = Path.GetFileName(sourceImagePath);
-        var genDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var projLabel = session.ProjectName;
-        var provText = session.WorkflowMode == AssetWorkflowMode.NoReference
-            ? _templateService.RenderFinalNoReference(mainFilename, projLabel, genDate, prompt)
-            : _templateService.RenderFinal(mainFilename, session.ReferenceFilename, projLabel, genDate, prompt);
+        var provText = _templateService.RenderFinalForSession(
+            session,
+            mainFilename,
+            prompt,
+            processedAt);
         var provHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new UTF8Encoding(false).GetBytes(provText))).ToLowerInvariant();
 
         session.IsMainCommitting = true;
@@ -490,27 +516,12 @@ public sealed partial class AssetProcessorService
                         "yyyy-MM-dd",
                         CultureInfo.InvariantCulture);
 
-            provenance = session.WorkflowMode switch
-            {
-                AssetWorkflowMode.ReferenceAssisted =>
-                    _templateService.RenderFinal(
-                        mainFilename,
-                        session.ReferenceFilename,
-                        session.ProjectName,
-                        generationDate,
-                        prompt),
-
-                AssetWorkflowMode.NoReference =>
-                    _templateService.RenderFinalNoReference(
-                        mainFilename,
-                        session.ProjectName,
-                        generationDate,
-                        prompt),
-
-                _ =>
-                    throw new InvalidDataException(
-                        $"Unsupported workflow mode: {session.WorkflowMode}")
-            };
+            provenance =
+                _templateService.RenderFinalForSession(
+                    session,
+                    mainFilename,
+                    prompt,
+                    processedAt);
 
             var renderedProvHash = Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(

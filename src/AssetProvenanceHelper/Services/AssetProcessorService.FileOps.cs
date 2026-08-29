@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using AssetProvenanceHelper.Models;
 
@@ -137,27 +137,8 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    // BUG-R16-001: Verify file hash ownership before allowing deletion
-    private bool TryVerifyFileHashOwnership(
-        string path,
-        string expectedHash)
-    {
-        try
-        {
-            if (!File.Exists(path))
-                return false;
-
-            var currentHash = ComputeSha256(path);
-            return string.Equals(currentHash, expectedHash, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     // BUG-R12-001 & BUG-R13-001: Delete file only after verifying path safety and exact hash ownership immediately before deletion (after hook)
-    private bool TryDeleteHashOwnedFileWithError(
+    internal bool TryDeleteHashOwnedFileWithError(
         string path,
         string expectedHash,
         string description,
@@ -220,27 +201,8 @@ public sealed partial class AssetProcessorService
         }
     }
 
-    private static void TryDeleteFileWithError(
-        string path,
-        ICollection<string> errors)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                OnBeforeDeleteFileHook?.Invoke(path);
-                File.Delete(path);
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add(
-                $"Could not delete file '{path}': {ex.Message}");
-        }
-    }
-
     // BUG-R13-001: Delete empty directory with path safety recheck after hook
-    private static void TryDeleteEmptyDirectoryWithError(
+    internal static void TryDeleteEmptyDirectoryWithError(
         string path,
         Func<ValidationResult> validatePathSafety,
         ICollection<string> errors)
@@ -302,7 +264,7 @@ public sealed partial class AssetProcessorService
     }
 
     // BUG-R12-001 & BUG-R13-001: Restore file only after verifying path safety and exact hash ownership immediately before restore (after hook)
-    private bool TryRestoreHashOwnedFileWithError(
+    internal bool TryRestoreHashOwnedFileWithError(
         string backupPath,
         string destinationPath,
         string expectedHash,
@@ -394,7 +356,7 @@ public sealed partial class AssetProcessorService
     }
 
     // BUG-R13-001: Validate full session path hierarchy and reparse states for destructive operations
-    private ValidationResult ValidateSessionDestructivePathSafety(AssetSession session)
+    internal ValidationResult ValidateSessionDestructivePathSafety(AssetSession session)
     {
         var pathSafety = ValidationService.ValidateSessionPathsForDestructiveOperation(session);
         if (!pathSafety.IsValid)
@@ -490,4 +452,5 @@ public sealed partial class AssetProcessorService
             overwrite: false);
     }
 }
+
 

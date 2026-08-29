@@ -144,6 +144,96 @@ public class HelpOverlayControl : UserControl
             "This tool creates internal provenance documentation. It is not legal advice and does not determine or guarantee copyright ownership, copyrightability, uniqueness, non-infringement, trademark clearance, commercial-use eligibility, or acceptance by a store/platform.\r\n\r\n" +
             "Generation-provider terms and applicable laws can change. Review the terms that applied to the generation workflow and verify the generated provenance record before relying on it.\r\n\r\n" +
             "Use No reference mode only when no reference image was supplied for the final generation.\r\n\r\n" +
+            "AI GENERATION PROVIDERS\r\n" +
+            "AI Generation Provider templates are loaded when this application starts.\r\n\r\n" +
+            "Provider template folder:\r\n\r\n" +
+            "<application folder>\\provider_templates\\\r\n\r\n" +
+            "Each selectable .md file represents one Provider.\r\n\r\n" +
+            "Example:\r\n\r\n" +
+            "ChatGPT.md   -> ChatGPT\r\n" +
+            "Gemini.md    -> Gemini\r\n\r\n" +
+            "Files whose filename begins with \"_\" are helper/template files and are not\r\n" +
+            "shown in the Provider dropdown.\r\n\r\n" +
+            "TO ADD A PROVIDER\r\n\r\n" +
+            "1. Open the provider_templates folder.\r\n" +
+            "2. Copy _TEMPLATE.md.\r\n" +
+            "3. Rename the copy, for example:\r\n" +
+            "   Gemini.md\r\n" +
+            "4. Edit the Markdown file however you want.\r\n" +
+            "5. Keep ALL required fields exactly as written:\r\n" +
+            "   <<<PROVIDER>>>\r\n" +
+            "   <<<DATE>>>\r\n" +
+            "   <<<FILENAME>>>\r\n" +
+            "   <<<ASSET_NAME>>>\r\n" +
+            "   <<<PROJECT>>>\r\n" +
+            "   <<<ROLE>>>\r\n" +
+            "   <<<WORKFLOW>>>\r\n" +
+            "   <<<REFERENCE_FILENAME>>>\r\n" +
+            "   <<<PROMPT>>>\r\n" +
+            "6. Save the file as UTF-8.\r\n" +
+            "7. Restart AI Asset Provenance Helper.\r\n\r\n" +
+            "After restart the new Provider automatically appears in the dropdown if the\r\n" +
+            "template is valid.\r\n\r\n" +
+            "The Markdown text, headings, paragraphs and provider-specific explanatory\r\n" +
+            "content can otherwise be arranged freely.\r\n\r\n" +
+            "The application never asks for Provider-specific runtime fields.\r\n" +
+            "It does not ask for model, seed, API key, account, subscription, generation ID\r\n" +
+            "or any other Provider-specific metadata.\r\n\r\n" +
+            "For Reference provenance, <<<PROMPT>>> becomes \"not recorded\" because this\r\n" +
+            "helper does not collect a separate Reference-generation Prompt.\r\n\r\n" +
+            "An unsupported or malformed <<<...>>> field makes only that Provider template\r\n" +
+            "invalid. It does not prevent the application from starting.\r\n\r\n" +
+            "The original Provider template file is never modified. The helper creates a\r\n" +
+            "rendered copy for each provenance output and replaces the predefined tags in\r\n" +
+            "that copy.\r\n\r\n" +
+            "ASSET REQUEST IMPORT\r\n\r\n" +
+            "A prepared Request Manifest can be imported into the Request Queue on the\r\n" +
+            "right side of the application.\r\n\r\n" +
+            "The exact JSON template is included at:\r\n\r\n" +
+            "<application folder>\\examples\\asset_request_manifest_template.json\r\n\r\n" +
+            "A ready-to-use instruction for converting an existing asset-request document\r\n" +
+            "with another AI is included at:\r\n\r\n" +
+            "<application folder>\\examples\\asset_request_conversion_prompt.txt\r\n\r\n" +
+            "Every requested asset contains exactly:\r\n\r\n" +
+            "filename\r\n" +
+            "resolution\r\n" +
+            "prompt\r\n\r\n" +
+            "When you click a Pending Request:\r\n\r\n" +
+            "- Asset Name is filled automatically.\r\n" +
+            "- Final Prompt is filled automatically.\r\n" +
+            "- The complete Prompt is copied to the clipboard.\r\n\r\n" +
+            "The Request remains Pending until the Main Image has been successfully\r\n" +
+            "committed by this helper.\r\n\r\n" +
+            "A Done Request is shown with the word Done and a green background.\r\n\r\n" +
+            "Request progress is restored when the same semantic Manifest is imported\r\n" +
+            "again.\r\n\r\n" +
+            "DIRECT MODE\r\n\r\n" +
+            "Direct mode removes the manual Refresh click.\r\n\r\n" +
+            "When Direct mode is enabled, the Refresh buttons remain visible but disabled.\r\n\r\n" +
+            "Main Image in Direct mode performs a fresh automatic Download-folder selection\r\n" +
+            "and therefore can replace a manually selected candidate.\r\n\r\n" +
+            "NO-REFERENCE\r\n\r\n" +
+            "1. Prepare/select the asset and Prompt.\r\n" +
+            "2. Generate the image in the browser.\r\n" +
+            "3. Download the image.\r\n" +
+            "4. Return to the helper.\r\n" +
+            "5. Click Main Image.\r\n\r\n" +
+            "The helper automatically selects the newest supported image in the configured\r\n" +
+            "Image Download Folder and then runs the normal Main Image workflow.\r\n\r\n" +
+            "REFERENCE-ASSISTED\r\n\r\n" +
+            "1. Prepare/select the asset and Prompt.\r\n" +
+            "2. Generate/download the Reference image FIRST.\r\n" +
+            "3. Generate/download the final Main image SECOND.\r\n" +
+            "4. Return to the helper.\r\n" +
+            "5. Click Main Image.\r\n\r\n" +
+            "The helper selects:\r\n\r\n" +
+            "second-newest supported image = Reference\r\n" +
+            "newest supported image        = Main\r\n\r\n" +
+            "Both candidates are validated before Reference processing begins.\r\n\r\n" +
+            "The Reference button remains visible but disabled while Direct mode is active.\r\n\r\n" +
+            "If Reference succeeds but Main fails, the Reference remains saved. Generate\r\n" +
+            "and download a new Main image and click Main Image again. On that retry only\r\n" +
+            "Main is refreshed.\r\n\r\n" +
             "Made by CeeGore";
     }
 }
