@@ -533,4 +533,18 @@ public class UpgradeV13ProviderTemplateTests
         Assert.False(catalog.HasUsableTemplates);
         Assert.NotEmpty(catalog.Errors);
     }
+
+    [Fact]
+    public void TemplateDirectory_ReturnsConstructorPath()
+    {
+        var directory =
+            Path.Combine(
+                Path.GetTempPath(),
+                "AssetProvenanceHelperTests",
+                "provider-catalog-" + Guid.NewGuid().ToString("N"));
+
+        var catalog = new ProviderTemplateCatalogService(directory);
+
+        Assert.Equal(directory, catalog.TemplateDirectory);
+    }
 }

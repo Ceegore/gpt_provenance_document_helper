@@ -564,5 +564,52 @@ public class UpgradeV13ParanoidFileOpsTests
             ValidationService.FileAttributesProvider = null;
         }
     }
+
+    private static System.Reflection.MethodInfo TryDeleteFileMethod() =>
+        typeof(AssetProcessorService).GetMethod(
+            "TryDeleteFile",
+            System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Static)!;
+
+    [Fact]
+    public void TryDeleteFile_ExistingUnlockedFile_DeletesIt()
+    {
+        using var workspace = new TestWorkspace();
+        var path = Path.Combine(workspace.Root, "temp.tmp");
+        File.WriteAllText(path, "x");
+
+        TryDeleteFileMethod().Invoke(null, new object[] { path });
+
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void TryDeleteFile_NonExistentFile_NoOp()
+    {
+        using var workspace = new TestWorkspace();
+        var path = Path.Combine(workspace.Root, "does-not-exist.tmp");
+
+        var exception = Record.Exception(
+            () => TryDeleteFileMethod().Invoke(null, new object[] { path }));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void TryDeleteFile_LockedFile_SwallowsExceptionAndLeavesFileInPlace()
+    {
+        using var workspace = new TestWorkspace();
+        var path = Path.Combine(workspace.Root, "locked.tmp");
+        File.WriteAllText(path, "x");
+
+        using var lockStream =
+            new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        var exception = Record.Exception(
+            () => TryDeleteFileMethod().Invoke(null, new object[] { path }));
+
+        Assert.Null(exception);
+        Assert.True(File.Exists(path));
+    }
 }
 

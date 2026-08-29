@@ -363,4 +363,111 @@ public class UpgradeV13RecentDocumentsTests
             () =>
                 service.Load());
     }
+
+    [Fact]
+    public void FilePath_ReturnsConstructorPath()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "recent-documents.json");
+        var service = new RecentDocumentHistoryService(path);
+
+        Assert.Equal(path, service.FilePath);
+    }
+
+    [Fact]
+    public void RefreshRecentDocumentsUi_NoEntriesArgument_LoadsFromHistoryService()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var historyService = workspace.CreateRecentDocumentHistoryService();
+
+            historyService.Record(
+                CreateEntry(
+                    "A.md",
+                    "assetA",
+                    ProvenanceDocumentKind.Final,
+                    DateTimeOffset.Now));
+
+            using var form = new MainForm(
+                workspace.CreateSettings(),
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                workspace.CreateProviderTemplateCatalogService(),
+                historyService,
+                workspace.CreateRequestProgressService());
+
+            var lvRecentDocuments =
+                typeof(MainForm).GetField(
+                    "lvRecentDocuments",
+                    System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance)
+                    !.GetValue(form) as System.Windows.Forms.ListView;
+
+            var refreshMethod =
+                typeof(MainForm).GetMethod(
+                    "RefreshRecentDocumentsUi",
+                    System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance);
+
+            // Calling with no argument (null) forces the method to load via
+            // LoadRecentDocumentsSafe() instead of using a caller-supplied list.
+            refreshMethod!.Invoke(form, new object?[] { null });
+
+            Assert.NotNull(lvRecentDocuments);
+            Assert.Single(lvRecentDocuments!.Items);
+        });
+    }
+
+    [Fact]
+    public void RefreshRecentDocumentsUi_NoEntriesArgument_HistoryLoadThrows_SwallowsAndShowsNothing()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+
+            // A history file that fails to parse makes Load() throw, so
+            // LoadRecentDocumentsSafe() must swallow it and return empty.
+            File.WriteAllText(
+                workspace.RecentDocumentsPath,
+                "{ corrupt !!");
+
+            var historyService = workspace.CreateRecentDocumentHistoryService();
+
+            using var form = new MainForm(
+                workspace.CreateSettings(),
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                workspace.CreateProviderTemplateCatalogService(),
+                historyService,
+                workspace.CreateRequestProgressService());
+
+            var lvRecentDocuments =
+                typeof(MainForm).GetField(
+                    "lvRecentDocuments",
+                    System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance)
+                    !.GetValue(form) as System.Windows.Forms.ListView;
+
+            var refreshMethod =
+                typeof(MainForm).GetMethod(
+                    "RefreshRecentDocumentsUi",
+                    System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance);
+
+            var exception = Record.Exception(
+                () => refreshMethod!.Invoke(form, new object?[] { null }));
+
+            Assert.Null(exception);
+            Assert.NotNull(lvRecentDocuments);
+            Assert.Empty(lvRecentDocuments!.Items);
+        });
+    }
 }
