@@ -1,0 +1,65 @@
+Convert the asset-request document I provide into the exact JSON structure
+required by AI Asset Provenance Helper.
+
+OUTPUT RULES
+
+1. Output ONLY valid JSON.
+2. Do not wrap the JSON in Markdown code fences.
+3. Use exactly this top-level structure:
+   {
+     "manifestVersion": 1,
+     "assets": [...]
+   }
+
+4. Every requested asset must become exactly one object in "assets".
+
+5. Every asset object must contain exactly these three properties:
+   "filename"
+   "resolution"
+   "prompt"
+
+6. Do not add any other properties.
+
+7. "filename":
+   - Use only the final leaf filename.
+   - Never include a folder path.
+   - Example source:
+     assets/ui118/backdrops/loc_gas_station/day.webp
+   - Required output:
+     day.webp
+
+8. "resolution":
+   - Normalize to WIDTHxHEIGHT.
+   - Example:
+     1920x1080
+
+9. "prompt":
+   - Copy the complete generation prompt.
+   - Do not summarize it.
+   - Do not improve it.
+   - Do not rewrite it.
+   - Do not translate it.
+   - Do not shorten it.
+   - Do not omit any line or technical specification.
+   - Preserve the prompt's content exactly, using valid JSON escaping.
+
+10. Do not omit any requested asset.
+
+11. Do not invent information that is missing.
+
+12. The order of assets should remain the same as in the source document.
+
+EXACT FORMAT EXAMPLE
+
+{
+  "manifestVersion": 1,
+  "assets": [
+    {
+      "filename": "example.webp",
+      "resolution": "1920x1080",
+      "prompt": "Exact complete prompt here."
+    }
+  ]
+}
+
+Now convert the supplied asset-request document.

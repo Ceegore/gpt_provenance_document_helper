@@ -10,7 +10,9 @@ public sealed partial class AssetProcessorService
         AppSettings settings,
         string assetFolderName,
         string sourceImagePath,
-        DateTimeOffset processedAt)
+        DateTimeOffset processedAt,
+        ProviderTemplateSnapshot? providerTemplate = null,
+        string? sourceRequestKey = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -79,14 +81,23 @@ public sealed partial class AssetProcessorService
         }
 
         var sourceHash = ComputeSha256(sourceImagePath);
-        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var projectLabel = AssetNaming.DeriveProjectLabel(settings.AssetRootFolder);
-        var provenance = _templateService.RenderReference(referenceFilename, projectLabel, generationDate);
-        var provHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(provenance))).ToLowerInvariant();
 
-        return new AssetSession
+        var session = new AssetSession
         {
+            SchemaVersion =
+                providerTemplate is null
+                    ? 2
+                    : 3,
+
             WorkflowMode = AssetWorkflowMode.ReferenceAssisted,
+
+            ProviderTemplate =
+                providerTemplate?.Clone(),
+
+            SourceRequestKey =
+                sourceRequestKey,
+
             ReferenceCommitPhase = ReferenceCommitPhase.Prepared,
             ReferenceTransactionId = Guid.NewGuid().ToString("N"),
             ProjectName = projectLabel,
@@ -98,11 +109,26 @@ public sealed partial class AssetProcessorService
             ReferenceFilename = referenceFilename,
             ReferenceProvenancePath = referenceProvenance,
             ReferenceHash = sourceHash,
-            ReferenceProvenanceHash = provHash,
             ReferenceProcessedAt = processedAt,
             WasAssetFolderCreatedByTool = !assetFolderExisted,
             WasReferenceFolderCreatedByTool = !referenceFolderExisted
         };
+
+        var provenance =
+            _templateService.RenderReferenceForSession(
+                session,
+                referenceFilename,
+                processedAt);
+
+        session.ReferenceProvenanceHash =
+            Convert
+                .ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        new UTF8Encoding(false)
+                            .GetBytes(provenance)))
+                .ToLowerInvariant();
+
+        return session;
     }
 
     private string RequirePreparedReferenceAuthority(
@@ -141,8 +167,10 @@ public sealed partial class AssetProcessorService
             throw new IOException("Reference source changed after the Prepared session was persisted.");
         }
 
-        var generationDate = session.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var provenance = _templateService.RenderReference(session.ReferenceFilename, session.ProjectName, generationDate);
+        var provenance = _templateService.RenderReferenceForSession(
+            session,
+            session.ReferenceFilename,
+            session.ReferenceProcessedAt);
         var provenanceHash = Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(
                 new System.Text.UTF8Encoding(false).GetBytes(provenance)))
@@ -623,9 +651,6 @@ public sealed partial class AssetProcessorService
         var backupProvenancePath = oldSession.ReferenceProvenancePath + "." + id + ".old";
 
         var sourceHash = ComputeSha256(newSourceImagePath);
-        var generationDate = processedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var newProvenance = _templateService.RenderReference(newFilename, oldSession.ProjectName, generationDate);
-        var newProvHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(new System.Text.UTF8Encoding(false).GetBytes(newProvenance))).ToLowerInvariant();
 
         // BUG-R14-002: Materialize legacy ReferenceProvenanceHash from single snapshot proof on transaction OldSession authority
         var oldProvResult = _validationService.TryGetExactReferenceProvenanceRawHash(
@@ -643,6 +668,9 @@ public sealed partial class AssetProcessorService
 
         var oldSessionAuthority = new AssetSession
         {
+            SchemaVersion = oldSession.SchemaVersion,
+            ProviderTemplate = oldSession.ProviderTemplate?.Clone(),
+            SourceRequestKey = oldSession.SourceRequestKey,
             ProjectName = oldSession.ProjectName,
             AssetRootFolder = oldSession.AssetRootFolder,
             AssetFolderName = oldSession.AssetFolderName,
@@ -667,6 +695,9 @@ public sealed partial class AssetProcessorService
 
         var newSession = new AssetSession
         {
+            SchemaVersion = oldSession.SchemaVersion,
+            ProviderTemplate = oldSession.ProviderTemplate?.Clone(),
+            SourceRequestKey = oldSession.SourceRequestKey,
             ProjectName = oldSession.ProjectName,
             AssetRootFolder = oldSession.AssetRootFolder,
             AssetFolderName = oldSession.AssetFolderName,
@@ -676,11 +707,21 @@ public sealed partial class AssetProcessorService
             ReferenceFilename = newFilename,
             ReferenceProvenancePath = finalProvenancePath,
             ReferenceHash = sourceHash,
-            ReferenceProvenanceHash = newProvHash,
             ReferenceProcessedAt = processedAt,
             WasAssetFolderCreatedByTool = oldSession.WasAssetFolderCreatedByTool,
             WasReferenceFolderCreatedByTool = oldSession.WasReferenceFolderCreatedByTool
         };
+
+        var newProvenance = _templateService.RenderReferenceForSession(
+            newSession,
+            newFilename,
+            processedAt);
+
+        newSession.ReferenceProvenanceHash =
+            Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    new System.Text.UTF8Encoding(false).GetBytes(newProvenance)))
+                .ToLowerInvariant();
 
         return new ReferenceReplacementTransaction
         {
@@ -747,11 +788,10 @@ public sealed partial class AssetProcessorService
             throw new IOException("Replacement temp Reference does not match Prepared ReferenceHash.");
         }
 
-        var generationDate = transaction.NewSession.ReferenceProcessedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var newProvenance = _templateService.RenderReference(
+        var newProvenance = _templateService.RenderReferenceForSession(
+            transaction.NewSession,
             transaction.NewSession.ReferenceFilename,
-            transaction.OldSession.ProjectName,
-            generationDate);
+            transaction.NewSession.ReferenceProcessedAt);
 
         var provenanceHash = Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(

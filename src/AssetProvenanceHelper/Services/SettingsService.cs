@@ -178,6 +178,26 @@ public sealed class SettingsService
             settings.AcceptedExtensions =
                 AppConstants.DefaultImageExtensions.ToList();
         }
+
+        settings.SelectedProviderTemplateFileName ??=
+            AppConstants.DefaultProviderTemplateFileName;
+
+        if (string.IsNullOrWhiteSpace(
+                settings.SelectedProviderTemplateFileName)
+            || !string.Equals(
+                Path.GetFileName(
+                    settings.SelectedProviderTemplateFileName),
+                settings.SelectedProviderTemplateFileName,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                Path.GetExtension(
+                    settings.SelectedProviderTemplateFileName),
+                ".md",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            settings.SelectedProviderTemplateFileName =
+                AppConstants.DefaultProviderTemplateFileName;
+        }
     }
 
     private static string NormalizeExtension(

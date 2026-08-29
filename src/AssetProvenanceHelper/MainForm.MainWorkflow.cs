@@ -25,6 +25,17 @@ partial class MainForm
 
         if (isNoReference && _currentSession is null)
         {
+            if (!CanStartNewAssetWithProvider)
+            {
+                ShowMessageBox(
+                    "No valid AI Generation Provider template is available.\n\n"
+                    + "Add a valid template to the provider_templates folder and restart the application.",
+                    "Provider required",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
             HandleNoReferenceMainImage(settings, sourceImage, prompt, processedAt);
         }
         else if (_currentSession is not null)
@@ -73,7 +84,9 @@ partial class MainForm
                 assetName,
                 sourceImage,
                 prompt,
-                processedAt);
+                processedAt,
+                GetProviderSnapshotForNewAsset(),
+                _activeRequest?.RequestKey);
 
             _sessionService.Save(session);
         }
@@ -281,13 +294,17 @@ partial class MainForm
         }
 
         // DURABLE COMMIT POINT: Complete outputs exist and active session.json is deleted.
-        CompleteMainUiAfterDurableCommit(session, committedFilename);
+        CompleteMainUiAfterDurableCommit(session, committedFilename, processedAt);
     }
 
     private void CompleteMainUiAfterDurableCommit(
         AssetSession session,
-        string committedFilename)
+        string committedFilename,
+        DateTimeOffset processedAt)
     {
+        // Capture Request completion before UI fields are cleared.
+        CompleteActiveRequestAfterMainCommit(session);
+
         _lastCompletedAssetFolderPath = session.AssetFolder;
         _currentSession = null;
         _state = UiState.Idle;
@@ -301,6 +318,20 @@ partial class MainForm
             SetSelectedImage(ImageSlot.Reference, null);
             SetSelectedImage(ImageSlot.Main, null);
             ClearValidationVisuals();
+
+            RecordRecentDocument(
+                ProvenanceDocumentKind.Final,
+                Path.Combine(
+                    session.AssetFolder,
+                    AppConstants.FinalProvenanceFileName),
+                session.AssetFolderName,
+                processedAt);
+
+            if (_currentSession is null
+                && _state == UiState.Idle)
+            {
+                ReloadProviderCatalog();
+            }
 
             AddStatus($"Main image copied: {committedFilename}");
             AddStatus("Ingame copy created.");

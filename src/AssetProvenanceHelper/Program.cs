@@ -75,6 +75,9 @@ internal static class Program
                 context.TemplateService,
                 context.ValidationService,
                 context.AssetProcessorService,
-                context.SessionService));
+                context.SessionService,
+                context.ProviderTemplateCatalogService,
+                context.RecentDocumentHistoryService,
+                context.RequestProgressService));
     }
 }

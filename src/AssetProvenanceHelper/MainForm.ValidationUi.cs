@@ -268,5 +268,7 @@ partial class MainForm
             _ctaPulseTimer.Dispose();
             _ctaPulseTimer = null;
         }
+
+        _pulsingButton = null;
     }
 }

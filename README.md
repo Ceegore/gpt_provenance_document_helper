@@ -102,8 +102,28 @@ if (Test-Path -LiteralPath $publishDirectory) {
     Remove-Item -LiteralPath $publishDirectory -Recurse -Force
 }
 dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj -c Release -r win-x64 --self-contained true -p:SourceRevisionId=$sourceRevisionId -o artifacts/publish
-pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
+powershell -File scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
 ```
+
+### Local Smoke Test (Smart App Control–safe)
+
+The smoke test above launches the **self-contained, unsigned** `AssetProvenanceHelper.exe`.
+On a machine with **Windows Smart App Control (SAC)** enabled, SAC blocks that unsigned
+native executable, so the launch step fails as an *environment* condition — not a product
+defect. For local startup verification on a SAC-enabled box, use the SAC-safe variant, which
+launches the app through the **signed `dotnet` host** (`dotnet AssetProvenanceHelper.dll`)
+instead of the native apphost:
+
+```powershell
+dotnet build AssetProvenanceHelper.sln -c Release --no-restore -warnaserror
+powershell -File scripts/run_smoke_tests_sac_safe.ps1
+# defaults to src/AssetProvenanceHelper/bin/Release/net10.0-windows
+# (PowerShell 7 also works if installed: pwsh scripts/run_smoke_tests_sac_safe.ps1)
+```
+
+> See `AGENTS.md` for the full rationale: `dotnet build`/`test`/`run` all run through
+> Microsoft-signed hosts, so the unit/UI test suite is unaffected by SAC — only the
+> self-contained published exe trips it.
 
 ---
 

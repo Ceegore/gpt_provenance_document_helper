@@ -4,22 +4,24 @@ namespace AssetProvenanceHelper.Services;
 
 public sealed class ImageFinderService
 {
-    public string? FindLatestImage(
-        AppSettings settings)
+    public IReadOnlyList<string> FindLatestImages(
+        AppSettings settings,
+        int count)
     {
-        ArgumentNullException.ThrowIfNull(
-            settings);
+        ArgumentNullException.ThrowIfNull(settings);
 
-        if (string.IsNullOrWhiteSpace(
-                settings.DownloadFolder))
+        if (count <= 0)
         {
-            return null;
+            throw new ArgumentOutOfRangeException(
+                nameof(count));
         }
 
-        if (!Directory.Exists(
+        if (string.IsNullOrWhiteSpace(
+                settings.DownloadFolder)
+            || !Directory.Exists(
                 settings.DownloadFolder))
         {
-            return null;
+            return Array.Empty<string>();
         }
 
         var allowed =
@@ -27,33 +29,40 @@ public sealed class ImageFinderService
                 settings.AcceptedExtensions,
                 StringComparer.OrdinalIgnoreCase);
 
-        var allCandidates =
-            Directory
-                .EnumerateFiles(
-                    settings.DownloadFolder,
-                    "*",
-                    SearchOption.TopDirectoryOnly)
-                .Select(path =>
-                    new FileInfo(path))
-                .Where(file =>
+        return Directory
+            .EnumerateFiles(
+                settings.DownloadFolder,
+                "*",
+                SearchOption.TopDirectoryOnly)
+            .Select(
+                path => new FileInfo(path))
+            .Where(
+                file =>
                     allowed.Contains(
                         file.Extension))
-                .ToList();
-
-        if (allCandidates.Count == 0)
-        {
-            return null;
-        }
-
-        return allCandidates
             .OrderByDescending(
-                file => file.LastWriteTimeUtc)
+                file =>
+                    file.LastWriteTimeUtc)
             .ThenByDescending(
-                file => file.CreationTimeUtc)
+                file =>
+                    file.CreationTimeUtc)
             .ThenBy(
-                file => file.Name,
+                file =>
+                    file.Name,
                 StringComparer.OrdinalIgnoreCase)
-            .First()
-            .FullName;
+            .Take(count)
+            .Select(
+                file =>
+                    file.FullName)
+            .ToArray();
+    }
+
+    public string? FindLatestImage(
+        AppSettings settings)
+    {
+        return FindLatestImages(
+                settings,
+                1)
+            .FirstOrDefault();
     }
 }

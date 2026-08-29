@@ -21,7 +21,9 @@ if (-not (Test-Path $exePath)) {
 $mutableStateFileNames = @(
     "settings.json",
     "session.json",
-    "reference-replacement.json"
+    "reference-replacement.json",
+    "recent-documents.json",
+    "request-progress.json"
 )
 $unexpectedMutableStateFiles = @(
     $mutableStateFileNames |
@@ -51,6 +53,36 @@ if (-not (Test-Path $finalNoRefTemplate)) {
     throw "Final no-reference template missing at: $finalNoRefTemplate"
 }
 Write-Host "Templates verified: reference.md, final.md, final_no_reference.md present."
+
+# Verify v1.3 provider templates
+$providerTemplateDir = Join-Path $PublishDir "provider_templates"
+$chatGptTemplate = Join-Path $providerTemplateDir "ChatGPT.md"
+$providerTemplateExample = Join-Path $providerTemplateDir "_TEMPLATE.md"
+
+if (-not (Test-Path $chatGptTemplate)) {
+    throw "ChatGPT provider template missing at: $chatGptTemplate"
+}
+
+if (-not (Test-Path $providerTemplateExample)) {
+    throw "Provider template example missing at: $providerTemplateExample"
+}
+
+# Verify v1.3 request examples
+$examplesDir = Join-Path $PublishDir "examples"
+$requestManifestTemplate =
+    Join-Path $examplesDir "asset_request_manifest_template.json"
+$requestConversionPrompt =
+    Join-Path $examplesDir "asset_request_conversion_prompt.txt"
+
+if (-not (Test-Path $requestManifestTemplate)) {
+    throw "Request Manifest template missing at: $requestManifestTemplate"
+}
+
+if (-not (Test-Path $requestConversionPrompt)) {
+    throw "Request conversion prompt missing at: $requestConversionPrompt"
+}
+
+Write-Host "v1.3 provider/request support files verified."
 
 # 2. Verify core runtime dependencies
 $coreAssemblies = @(

@@ -144,6 +144,47 @@ public sealed partial class ValidationService
                     $"Session asset path is invalid: {ex.Message}");
             }
         }
+
+        ValidateUpgradeV13Metadata(
+            session,
+            errors);
+    }
+
+    private static void ValidateUpgradeV13Metadata(
+        AssetSession session,
+        ICollection<string> errors)
+    {
+        if (session.SchemaVersion >= 3
+            && session.ProviderTemplate is null)
+        {
+            errors.Add(
+                "SchemaVersion 3+ session is missing ProviderTemplate.");
+        }
+
+        if (session.ProviderTemplate is not null)
+        {
+            var providerValidation =
+                ProviderTemplateRules.ValidateSnapshot(
+                    session.ProviderTemplate);
+
+            if (!providerValidation.IsValid)
+            {
+                foreach (var error in providerValidation.Errors)
+                {
+                    errors.Add(
+                        "ProviderTemplate: " + error);
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(
+                session.SourceRequestKey)
+            && !IsSha256Hex(
+                session.SourceRequestKey))
+        {
+            errors.Add(
+                "SourceRequestKey must be a 64-character SHA-256 hexadecimal value.");
+        }
     }
 
     private void ValidateNoReferenceSessionState(
@@ -511,6 +552,36 @@ public sealed partial class ValidationService
                 $"Provenance file does not exist: {provenancePath}");
         }
 
+        if (session.ProviderTemplate is not null)
+        {
+            if (!IsSha256Hex(
+                    session.ReferenceProvenanceHash))
+            {
+                return ValidationResult.Failure(
+                    "Provider Reference provenance hash authority is missing.");
+            }
+
+            try
+            {
+                var actualHash =
+                    ComputeSha256(
+                        provenancePath);
+
+                return string.Equals(
+                        actualHash,
+                        session.ReferenceProvenanceHash,
+                        StringComparison.OrdinalIgnoreCase)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Failure(
+                        "Provider Reference provenance hash does not match session authority.");
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not hash Provider Reference provenance: {ex.Message}");
+            }
+        }
+
         var errors =
             new List<string>();
 
@@ -601,6 +672,36 @@ public sealed partial class ValidationService
         {
             return ValidationResult.Failure(
                 $"Final provenance does not exist: {finalProvenancePath}");
+        }
+
+        if (session.ProviderTemplate is not null)
+        {
+            if (!IsSha256Hex(
+                    session.MainProvenanceHash))
+            {
+                return ValidationResult.Failure(
+                    "Provider Final provenance hash authority is missing.");
+            }
+
+            try
+            {
+                var actualHash =
+                    ComputeSha256(
+                        finalProvenancePath);
+
+                return string.Equals(
+                        actualHash,
+                        session.MainProvenanceHash,
+                        StringComparison.OrdinalIgnoreCase)
+                    ? ValidationResult.Success()
+                    : ValidationResult.Failure(
+                        "Provider Final provenance hash does not match session authority.");
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not hash Provider Final provenance: {ex.Message}");
+            }
         }
 
         var errors =
@@ -781,6 +882,32 @@ public sealed partial class ValidationService
                 $"Reference provenance file does not exist: {provenancePath}");
         }
 
+        if (session.ProviderTemplate is not null)
+        {
+            string expectedProviderText;
+
+            try
+            {
+                expectedProviderText =
+                    templateService.RenderReferenceForSession(
+                        session,
+                        session.ReferenceFilename,
+                        session.ReferenceProcessedAt);
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not render expected Provider Reference provenance: {ex.Message}");
+            }
+
+            return TryGetExactProviderProvenanceRawHash(
+                provenancePath,
+                expectedProviderText,
+                session.ReferenceProvenanceHash,
+                "Reference provenance",
+                out verifiedRawHash);
+        }
+
         if (!string.IsNullOrWhiteSpace(session.ReferenceProvenanceHash))
         {
             try
@@ -871,6 +998,41 @@ public sealed partial class ValidationService
         {
             return ValidationResult.Failure(
                 $"Final provenance file does not exist: {finalProvenancePath}");
+        }
+
+        if (session.ProviderTemplate is not null)
+        {
+            if (string.IsNullOrWhiteSpace(
+                    session.MainFilename)
+                || !session.MainProcessedAt.HasValue)
+            {
+                return ValidationResult.Failure(
+                    "Provider Main provenance authority is incomplete.");
+            }
+
+            string expectedProviderText;
+
+            try
+            {
+                expectedProviderText =
+                    templateService.RenderFinalForSession(
+                        session,
+                        session.MainFilename,
+                        session.MainPrompt ?? string.Empty,
+                        session.MainProcessedAt.Value);
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Failure(
+                    $"Could not render expected Provider Final provenance: {ex.Message}");
+            }
+
+            return TryGetExactProviderProvenanceRawHash(
+                finalProvenancePath,
+                expectedProviderText,
+                session.MainProvenanceHash,
+                "Final provenance",
+                out verifiedRawHash);
         }
 
         if (!string.IsNullOrWhiteSpace(session.MainProvenanceHash))
@@ -1060,6 +1222,31 @@ public sealed partial class ValidationService
         if (!newValidation.IsValid)
         {
             errors.AddRange(newValidation.Errors);
+        }
+
+        ValidateUpgradeV13Metadata(
+            transaction.OldSession,
+            errors);
+
+        ValidateUpgradeV13Metadata(
+            transaction.NewSession,
+            errors);
+
+        if (!ProviderSnapshotsEquivalent(
+                transaction.OldSession.ProviderTemplate,
+                transaction.NewSession.ProviderTemplate))
+        {
+            errors.Add(
+                "Old/New ProviderTemplate snapshots do not match.");
+        }
+
+        if (!string.Equals(
+                transaction.OldSession.SourceRequestKey,
+                transaction.NewSession.SourceRequestKey,
+                StringComparison.Ordinal))
+        {
+            errors.Add(
+                "Old/New SourceRequestKey values do not match.");
         }
 
         if (errors.Count == 0)
@@ -1286,6 +1473,91 @@ public sealed partial class ValidationService
             : ValidationResult.Failure(errors);
     }
 
+    private ValidationResult TryGetExactProviderProvenanceRawHash(
+        string provenancePath,
+        string expectedText,
+        string? expectedStoredHash,
+        string description,
+        out string? verifiedRawHash)
+    {
+        verifiedRawHash = null;
+
+        if (!File.Exists(provenancePath))
+        {
+            return ValidationResult.Failure(
+                $"{description} file does not exist: {provenancePath}");
+        }
+
+        if (!IsSha256Hex(expectedStoredHash))
+        {
+            return ValidationResult.Failure(
+                $"{description} stored SHA-256 authority is missing or invalid.");
+        }
+
+        byte[] rawBytes;
+
+        try
+        {
+            rawBytes =
+                File.ReadAllBytes(
+                    provenancePath);
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not read {description}: {ex.Message}");
+        }
+
+        string actualText;
+
+        try
+        {
+            using var reader =
+                new StreamReader(
+                    new MemoryStream(rawBytes),
+                    Encoding.UTF8,
+                    detectEncodingFromByteOrderMarks: true);
+
+            actualText =
+                reader.ReadToEnd();
+        }
+        catch (Exception ex)
+        {
+            return ValidationResult.Failure(
+                $"Could not decode {description}: {ex.Message}");
+        }
+
+        if (!string.Equals(
+                actualText,
+                expectedText,
+                StringComparison.Ordinal))
+        {
+            return ValidationResult.Failure(
+                $"{description} content does not exactly match the Provider template snapshot and session values.");
+        }
+
+        var actualRawHash =
+            Convert
+                .ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        rawBytes))
+                .ToLowerInvariant();
+
+        if (!string.Equals(
+                actualRawHash,
+                expectedStoredHash,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return ValidationResult.Failure(
+                $"{description} SHA-256 hash does not match stored session authority.");
+        }
+
+        verifiedRawHash =
+            actualRawHash;
+
+        return ValidationResult.Success();
+    }
+
     private static bool IsSha256Hex(string? value)
     {
         return !string.IsNullOrWhiteSpace(value)
@@ -1359,6 +1631,31 @@ public sealed partial class ValidationService
             errors.AddRange(
                 newPathValidation.Errors.Select(
                     e => "NewSession: " + e));
+        }
+
+        ValidateUpgradeV13Metadata(
+            oldSession,
+            errors);
+
+        ValidateUpgradeV13Metadata(
+            newSession,
+            errors);
+
+        if (!ProviderSnapshotsEquivalent(
+                oldSession.ProviderTemplate,
+                newSession.ProviderTemplate))
+        {
+            errors.Add(
+                "Old/New ProviderTemplate snapshots do not match.");
+        }
+
+        if (!string.Equals(
+                oldSession.SourceRequestKey,
+                newSession.SourceRequestKey,
+                StringComparison.Ordinal))
+        {
+            errors.Add(
+                "Old/New SourceRequestKey values do not match.");
         }
 
         if (oldSession.WorkflowMode != AssetWorkflowMode.ReferenceAssisted
@@ -1576,8 +1873,44 @@ public sealed partial class ValidationService
             errors.Add("Prepared reference temp provenance path is invalid or escapes reference folder.");
         }
 
+        ValidateUpgradeV13Metadata(
+            session,
+            errors);
+
         return errors.Count == 0
             ? ValidationResult.Success()
             : ValidationResult.Failure(errors);
+    }
+
+    private static bool ProviderSnapshotsEquivalent(
+        ProviderTemplateSnapshot? left,
+        ProviderTemplateSnapshot? right)
+    {
+        if (left is null && right is null)
+        {
+            return true;
+        }
+
+        if (left is null || right is null)
+        {
+            return false;
+        }
+
+        return string.Equals(
+                   left.FileName,
+                   right.FileName,
+                   StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                   left.DisplayName,
+                   right.DisplayName,
+                   StringComparison.Ordinal)
+            && string.Equals(
+                   left.ContentSha256,
+                   right.ContentSha256,
+                   StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                   left.Content,
+                   right.Content,
+                   StringComparison.Ordinal);
     }
 }

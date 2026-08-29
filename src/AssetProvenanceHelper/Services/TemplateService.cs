@@ -187,6 +187,150 @@ public sealed class TemplateService
             values);
     }
 
+    public string RenderReferenceForSession(
+        AssetSession session,
+        string referenceFilename,
+        DateTimeOffset processedAt)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var generationDate =
+            processedAt.ToString(
+                "yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture);
+
+        if (session.ProviderTemplate is null)
+        {
+            return RenderReference(
+                referenceFilename,
+                session.ProjectName,
+                generationDate);
+        }
+
+        return ProviderTemplateRenderer.Render(
+            session.ProviderTemplate,
+            new ProviderRenderContext
+            {
+                Provider =
+                    session.ProviderTemplate.DisplayName,
+
+                Date =
+                    generationDate,
+
+                Filename =
+                    referenceFilename,
+
+                AssetName =
+                    session.AssetFolderName,
+
+                Project =
+                    session.ProjectName,
+
+                Role =
+                    AppConstants.ReferenceRoleLabel,
+
+                Workflow =
+                    AppConstants.ReferenceAssistedWorkflowLabel,
+
+                ReferenceFilename =
+                    referenceFilename,
+
+                Prompt =
+                    AppConstants.NotRecordedValue
+            });
+    }
+
+    public string RenderFinalForSession(
+        AssetSession session,
+        string mainFilename,
+        string prompt,
+        DateTimeOffset processedAt)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var generationDate =
+            processedAt.ToString(
+                "yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture);
+
+        if (session.ProviderTemplate is null)
+        {
+            return session.WorkflowMode switch
+            {
+                AssetWorkflowMode.ReferenceAssisted =>
+                    RenderFinal(
+                        mainFilename,
+                        session.ReferenceFilename,
+                        session.ProjectName,
+                        generationDate,
+                        prompt),
+
+                AssetWorkflowMode.NoReference =>
+                    RenderFinalNoReference(
+                        mainFilename,
+                        session.ProjectName,
+                        generationDate,
+                        prompt),
+
+                _ =>
+                    throw new InvalidDataException(
+                        $"Unsupported workflow mode: {session.WorkflowMode}")
+            };
+        }
+
+        var workflow =
+            session.WorkflowMode switch
+            {
+                AssetWorkflowMode.ReferenceAssisted =>
+                    AppConstants.ReferenceAssistedWorkflowLabel,
+
+                AssetWorkflowMode.NoReference =>
+                    AppConstants.NoReferenceWorkflowLabel,
+
+                _ =>
+                    throw new InvalidDataException(
+                        $"Unsupported workflow mode: {session.WorkflowMode}")
+            };
+
+        var referenceFilename =
+            session.WorkflowMode
+            == AssetWorkflowMode.ReferenceAssisted
+                ? session.ReferenceFilename
+                : AppConstants.NotRecordedValue;
+
+        return ProviderTemplateRenderer.Render(
+            session.ProviderTemplate,
+            new ProviderRenderContext
+            {
+                Provider =
+                    session.ProviderTemplate.DisplayName,
+
+                Date =
+                    generationDate,
+
+                Filename =
+                    mainFilename,
+
+                AssetName =
+                    session.AssetFolderName,
+
+                Project =
+                    session.ProjectName,
+
+                Role =
+                    AppConstants.FinalRoleLabel,
+
+                Workflow =
+                    workflow,
+
+                ReferenceFilename =
+                    referenceFilename,
+
+                Prompt =
+                    prompt
+            });
+    }
+
     private static string RenderSinglePass(
         string template,
         IReadOnlyDictionary<string, string> values)

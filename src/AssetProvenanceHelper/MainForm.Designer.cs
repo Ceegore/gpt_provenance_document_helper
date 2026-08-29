@@ -11,6 +11,7 @@ partial class MainForm
 {
     private IContainer? components = null;
 
+    private TableLayoutPanel pnlWorkspace = null!;
     private TableLayoutPanel pnlMainContent = null!;
     private Panel pnlHeader = null!;
     private PictureBox picLogo = null!;
@@ -25,11 +26,14 @@ partial class MainForm
     private TextBox txtAssetRoot = null!;
     private Panel pnlAssetRootHost = null!;
     private Button btnBrowseAssetRoot = null!;
+    private ComboBox cmbProvider = null!;
+    private Label lblProviderWarning = null!;
 
     private GroupBox grpCurrentAsset = null!;
     private TextBox txtAssetFolderName = null!;
     private Panel pnlAssetFolderNameHost = null!;
     private CheckBox chkNoReference = null!;
+    private CheckBox chkDirectMode = null!;
 
     private TableLayoutPanel pnlCardsContainer = null!;
     private GroupBox grpReference = null!;
@@ -53,6 +57,7 @@ partial class MainForm
     private Button btnChooseMain = null!;
     private Button btnDropMain = null!;
     private Button btnOpenDownloadsMain = null!;
+    private Label lblPromptPreview = null!;
     private TextBox txtPrompt = null!;
     private Panel pnlPromptHost = null!;
     private Button btnPasteClipboard = null!;
@@ -60,9 +65,16 @@ partial class MainForm
     private Button btnMainImage = null!;
 
     private GroupBox grpStatus = null!;
+    private ListView lvRecentDocuments = null!;
     private TextBox txtStatusHistory = null!;
     private Button btnOpenAssetFolder = null!;
     private Button btnCancel = null!;
+
+    private GroupBox grpRequestQueue = null!;
+    private Button btnImportRequest = null!;
+    private Label lblRequestSource = null!;
+    private ListView lvRequestQueue = null!;
+    private Label lblRequestProgress = null!;
 
     private HelpOverlayControl helpOverlay = null!;
     private ToolTip _toolTip = null!;
@@ -87,16 +99,30 @@ partial class MainForm
 
         Text = AppInfo.ProductName;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(960, 680);
-        Size = new Size(1100, 740);
+        MinimumSize = new Size(1240, 700);
+        Size = new Size(1500, 800);
         KeyPreview = true;
         AutoScroll = false;
 
-        pnlMainContent = new TableLayoutPanel
+        pnlWorkspace = new TableLayoutPanel
         {
+            Name = "pnlWorkspace",
             Dock = DockStyle.Fill,
             AutoScroll = false,
             Padding = new Padding(12),
+            ColumnCount = 2,
+            RowCount = 1
+        };
+
+        pnlWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        pnlWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 380));
+
+        pnlMainContent = new TableLayoutPanel
+        {
+            Name = "pnlMainContent",
+            Dock = DockStyle.Fill,
+            AutoScroll = false,
+            Margin = new Padding(0, 0, 12, 0),
             ColumnCount = 1,
             RowCount = 5
         };
@@ -113,12 +139,18 @@ partial class MainForm
         BuildCurrentAssetGroup(pnlMainContent);
         BuildCardsSection(pnlMainContent);
         BuildStatusGroup(pnlMainContent);
+        BuildRequestQueueGroup(pnlWorkspace);
 
-        Controls.Add(pnlMainContent);
+        pnlWorkspace.Controls.Add(pnlMainContent, 0, 0);
+        pnlWorkspace.Controls.Add(grpRequestQueue, 1, 0);
+
+        Controls.Add(pnlWorkspace);
 
         helpOverlay = new HelpOverlayControl();
         helpOverlay.Name = "helpOverlay";
         Controls.Add(helpOverlay);
         helpOverlay.BringToFront();
+
+        BuildPromptOverlay();
     }
 }

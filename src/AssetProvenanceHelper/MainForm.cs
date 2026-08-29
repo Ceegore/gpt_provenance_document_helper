@@ -16,12 +16,15 @@ public partial class MainForm : Form
         ReferenceReady
     }
 
-    private readonly SettingsService _settingsService;
+private readonly SettingsService _settingsService;
     private readonly ImageFinderService _imageFinderService;
     private readonly TemplateService _templateService;
     private readonly ValidationService _validationService;
     private readonly AssetProcessorService _assetProcessorService;
     private readonly SessionService _sessionService;
+    private readonly ProviderTemplateCatalogService? _providerTemplateCatalogService;
+    private readonly RecentDocumentHistoryService? _recentDocumentHistoryService;
+    private readonly RequestProgressService? _requestProgressService;
 
     private AppSettings _settings;
     private AssetSession? _currentSession;
@@ -30,8 +33,22 @@ public partial class MainForm : Form
     private UiState _state = UiState.Idle;
     private bool _templatesValid;
 
+    private ProviderCatalogResult? _providerCatalog;
+    private ProviderTemplateDefinition? _selectedProvider;
+    private readonly List<ProviderTemplateDefinition> _sessionSnapshotProviders =
+        new();
+
+    private AssetRequestManifest? _currentManifest;
+    private AssetRequestItem? _activeRequest;
+    private readonly HashSet<string> _completedRequestKeys =
+        new(StringComparer.Ordinal);
+    private bool _settingRequestBoundFields;
+
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal Func<string?>? ClipboardProvider { get; set; }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal Action<string>? ClipboardWriter { get; set; }
 
     public MainForm(
         AppSettings settings,
@@ -40,7 +57,10 @@ public partial class MainForm : Form
         TemplateService templateService,
         ValidationService validationService,
         AssetProcessorService assetProcessorService,
-        SessionService sessionService)
+        SessionService sessionService,
+        ProviderTemplateCatalogService? providerTemplateCatalogService = null,
+        RecentDocumentHistoryService? recentDocumentHistoryService = null,
+        RequestProgressService? requestProgressService = null)
     {
         _settings = settings;
         _settingsService = settingsService;
@@ -49,12 +69,17 @@ public partial class MainForm : Form
         _validationService = validationService;
         _assetProcessorService = assetProcessorService;
         _sessionService = sessionService;
+        _providerTemplateCatalogService = providerTemplateCatalogService;
+        _recentDocumentHistoryService = recentDocumentHistoryService;
+        _requestProgressService = requestProgressService;
 
         InitializeComponent();
 
         LoadSettingsIntoUi();
         WireEvents();
         ValidateTemplatesAtStartup();
+        LoadProviderCatalogAtStartup();
+        LoadRecentDocumentsIntoUi();
         ApplyState();
 
         Shown += (_, _) => RecoverSessionOnStartup();
@@ -80,6 +105,7 @@ public partial class MainForm : Form
         lblMainDrop.DragDrop += (_, e) => ImageDrop_DragDrop(ImageSlot.Main, e);
 
         chkNoReference.CheckedChanged += (_, _) => OnNoReferenceChanged();
+        chkDirectMode.CheckedChanged += (_, _) => OnDirectModeChanged();
 
         btnReference.Click += (_, _) =>
         {
@@ -99,7 +125,7 @@ public partial class MainForm : Form
             txtPrompt.Clear();
         };
 
-        btnMainImage.Click += (_, _) => HandleMainImage();
+        btnMainImage.Click += (_, _) => HandleMainImageEntryPoint();
         btnCancel.Click += (_, _) => HandleCancel();
         btnOpenAssetFolder.Click += (_, _) => OpenAssetFolder();
 
@@ -107,10 +133,24 @@ public partial class MainForm : Form
         txtAssetRoot.Leave += (_, _) => SaveSettingsSafe();
         FormClosing += (_, _) => SaveSettingsSafe();
 
-        txtPrompt.TextChanged += (_, _) => ClearPromptValidation();
-        txtAssetFolderName.TextChanged += (_, _) => HighlightField(pnlAssetFolderNameHost, false);
+        txtPrompt.TextChanged += (_, _) =>
+        {
+            ClearPromptValidation();
+            UpdatePromptPreview();
+            CheckActiveRequestBinding();
+        };
+        txtAssetFolderName.TextChanged += (_, _) =>
+        {
+            HighlightField(pnlAssetFolderNameHost, false);
+            CheckActiveRequestBinding();
+        };
         txtAssetRoot.TextChanged += (_, _) => HighlightField(pnlAssetRootHost, false);
         txtDownloadFolder.TextChanged += (_, _) => HighlightField(pnlDownloadFolderHost, false);
+
+        cmbProvider.SelectedIndexChanged += (_, _) => OnProviderSelectionChanged();
+        btnImportRequest.Click += (_, _) => HandleImportRequest();
+        lvRequestQueue.MouseUp += (_, e) => HandleRequestQueueMouseUp(e);
+        lvRecentDocuments.MouseMove += (_, e) => UpdateRecentDocumentTooltip(e);
 
         helpOverlay.CloseRequested += (_, _) => pnlMainContent.Enabled = true;
 
@@ -133,10 +173,21 @@ public partial class MainForm : Form
         ApplyState();
     }
 
+    private void OnDirectModeChanged()
+    {
+        _settings.DirectModeEnabled = chkDirectMode.Checked;
+
+        if (_state == UiState.Idle)
+        {
+            ApplyState();
+        }
+    }
+
     private void LoadSettingsIntoUi()
     {
         txtDownloadFolder.Text = _settings.DownloadFolder;
         txtAssetRoot.Text = _settings.AssetRootFolder;
+        chkDirectMode.Checked = _settings.DirectModeEnabled;
     }
 
     private void ValidateTemplatesAtStartup()
@@ -175,6 +226,12 @@ public partial class MainForm : Form
             return;
         }
 
+        BrowseDownloadFolderWithDialog();
+    }
+
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+    private void BrowseDownloadFolderWithDialog()
+    {
         using var dialog = new FolderBrowserDialog
         {
             Description = "Select image download folder",
@@ -201,6 +258,12 @@ public partial class MainForm : Form
             return;
         }
 
+        BrowseAssetRootWithDialog();
+    }
+
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+    private void BrowseAssetRootWithDialog()
+    {
         using var dialog = new FolderBrowserDialog
         {
             Description = "Select asset root folder",
@@ -229,6 +292,15 @@ public partial class MainForm : Form
 
     private void MainForm_KeyDown(object? sender, KeyEventArgs e)
     {
+        if (_promptOverlay is not null
+            && _promptOverlay.Visible
+            && e.KeyCode == Keys.Escape)
+        {
+            e.SuppressKeyPress = true;
+            HidePromptOverlay();
+            return;
+        }
+
         if (helpOverlay != null && helpOverlay.Visible)
         {
             if (e.KeyCode == Keys.Escape)
@@ -264,13 +336,13 @@ public partial class MainForm : Form
 
         if (e.KeyCode == Keys.R)
         {
-            if (_state == UiState.Idle && !chkNoReference.Checked)
+            if (_state == UiState.Idle && !chkNoReference.Checked && !chkDirectMode.Checked)
             {
                 e.SuppressKeyPress = true;
                 HandleReference();
                 return;
             }
-            else if (_state == UiState.ReferenceReady)
+            else if (_state == UiState.ReferenceReady && !chkDirectMode.Checked)
             {
                 e.SuppressKeyPress = true;
                 HandleReplaceReference();
@@ -280,10 +352,16 @@ public partial class MainForm : Form
 
         if (e.KeyCode == Keys.M)
         {
-            if (_state == UiState.ReferenceReady || chkNoReference.Checked)
+            var canMain =
+                _state == UiState.ReferenceReady
+                || chkNoReference.Checked
+                || (chkDirectMode.Checked
+                    && _state == UiState.Idle);
+
+            if (canMain)
             {
                 e.SuppressKeyPress = true;
-                HandleMainImage();
+                HandleMainImageEntryPoint();
             }
         }
     }
@@ -292,6 +370,7 @@ public partial class MainForm : Form
     {
         var referenceReady = _state == UiState.ReferenceReady;
         var noReference = chkNoReference.Checked && !referenceReady;
+        var direct = chkDirectMode.Checked;
 
         txtAssetRoot.Enabled = !referenceReady;
         btnBrowseAssetRoot.Enabled = !referenceReady;
@@ -304,6 +383,7 @@ public partial class MainForm : Form
         {
             chkNoReference.Enabled = false;
             chkNoReference.Checked = false;
+            chkDirectMode.Enabled = false;
             grpReference.Visible = true;
 
             pnlCardsContainer.ColumnStyles[0].SizeType = SizeType.Percent;
@@ -320,6 +400,7 @@ public partial class MainForm : Form
         else if (noReference)
         {
             chkNoReference.Enabled = true;
+            chkDirectMode.Enabled = true;
             grpReference.Visible = false;
 
             pnlCardsContainer.ColumnStyles[0].SizeType = SizeType.Percent;
@@ -330,12 +411,13 @@ public partial class MainForm : Form
             btnReference.Enabled = false;
             btnReference.Text = "Reference";
 
-            btnMainImage.Enabled = _templatesValid;
+            btnMainImage.Enabled = _templatesValid && CanStartNewAssetWithProvider;
             btnCancel.Enabled = false;
         }
         else
         {
             chkNoReference.Enabled = true;
+            chkDirectMode.Enabled = true;
             grpReference.Visible = true;
 
             pnlCardsContainer.ColumnStyles[0].SizeType = SizeType.Percent;
@@ -343,15 +425,32 @@ public partial class MainForm : Form
             pnlCardsContainer.ColumnStyles[1].SizeType = SizeType.Percent;
             pnlCardsContainer.ColumnStyles[1].Width = 50;
 
-            btnReference.Enabled = _templatesValid;
-            btnReference.Text = "Reference";
+            if (!noReference && !referenceReady && direct)
+            {
+                btnReference.Enabled = false;
+                btnMainImage.Enabled = _templatesValid && CanStartNewAssetWithProvider;
+            }
+            else
+            {
+                btnReference.Enabled = _templatesValid && CanStartNewAssetWithProvider;
+                btnMainImage.Enabled = false;
+            }
 
-            btnMainImage.Enabled = false;
+            btnReference.Text = "Reference";
             btnCancel.Enabled = false;
         }
 
+        btnRefreshReference.Enabled = !direct && (referenceReady || !noReference);
+        btnRefreshMain.Enabled = !direct;
+
+        cmbProvider.Enabled =
+            !referenceReady
+            && _providerCatalog?.HasUsableTemplates == true;
+
         var assetFolder = _currentSession?.AssetFolder ?? _lastCompletedAssetFolderPath;
         btnOpenAssetFolder.Enabled = !string.IsNullOrWhiteSpace(assetFolder) && Directory.Exists(assetFolder);
+
+        ApplyRequestQueueState();
     }
 
     private void ShowHelpOverlay()

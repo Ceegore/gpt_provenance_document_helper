@@ -1,3 +1,4 @@
+using System.Text;
 using AssetProvenanceHelper;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
@@ -13,6 +14,25 @@ public sealed class TestWorkspace : IDisposable
     public string Assets { get; }
 
     public string Templates { get; }
+
+    public string ProviderTemplates { get; }
+
+    public string Examples { get; }
+
+    public string RecentDocumentsPath =>
+        Path.Combine(
+            Root,
+            AppConstants.RecentDocumentsFileName);
+
+    public string RequestProgressPath =>
+        Path.Combine(
+            Root,
+            AppConstants.RequestProgressFileName);
+
+    public string ChatGptProviderTemplatePath =>
+        Path.Combine(
+            ProviderTemplates,
+            "ChatGPT.md");
 
     public string ReferenceTemplatePath =>
         Path.Combine(
@@ -71,7 +91,24 @@ public sealed class TestWorkspace : IDisposable
         Directory.CreateDirectory(
             Templates);
 
+        ProviderTemplates =
+            Path.Combine(
+                Root,
+                "provider_templates");
+
+        Examples =
+            Path.Combine(
+                Root,
+                "examples");
+
+        Directory.CreateDirectory(
+            ProviderTemplates);
+
+        Directory.CreateDirectory(
+            Examples);
+
         WriteValidTemplates();
+        WriteValidProviderTemplate();
     }
 
     public AppSettings CreateSettings()
@@ -243,20 +280,74 @@ public sealed class TestWorkspace : IDisposable
             """);
     }
 
+    public void WriteValidProviderTemplate(
+        string fileName = "ChatGPT.md")
+    {
+        var content =
+            """
+            Provider: <<<PROVIDER>>>
+            Date: <<<DATE>>>
+            File: <<<FILENAME>>>
+            Asset: <<<ASSET_NAME>>>
+            Project: <<<PROJECT>>>
+            Role: <<<ROLE>>>
+            Workflow: <<<WORKFLOW>>>
+            Reference: <<<REFERENCE_FILENAME>>>
+            Prompt:
+            <<<PROMPT>>>
+            """;
+
+        File.WriteAllText(
+            Path.Combine(
+                ProviderTemplates,
+                fileName),
+            content,
+            new UTF8Encoding(false));
+    }
+
+    public ProviderTemplateCatalogService
+        CreateProviderTemplateCatalogService() =>
+        new(
+            ProviderTemplates);
+
+    public RecentDocumentHistoryService
+        CreateRecentDocumentHistoryService() =>
+        new(
+            RecentDocumentsPath);
+
+    public RequestProgressService
+        CreateRequestProgressService() =>
+        new(
+            RequestProgressPath);
+
     public void Dispose()
     {
-        try
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            if (Directory.Exists(Root))
+            try
             {
-                Directory.Delete(
-                    Root,
-                    recursive: true);
+                if (Directory.Exists(Root))
+                {
+                    Directory.Delete(
+                        Root,
+                        recursive: true);
+                }
+
+                return;
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                Thread.Sleep(50);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 2)
+            {
+                Thread.Sleep(50);
             }
         }
-        catch
+
+        if (Directory.Exists(Root))
         {
-            // Test cleanup only.
+            throw new IOException($"TestWorkspace leaked: {Root}");
         }
     }
 }

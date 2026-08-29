@@ -10,6 +10,18 @@ partial class MainForm
 {
     private void HandleReference()
     {
+        if (_state == UiState.Idle
+            && !CanStartNewAssetWithProvider)
+        {
+            ShowMessageBox(
+                "No valid AI Generation Provider template is available.\n\n"
+                + "Add a valid template to the provider_templates folder and restart the application.",
+                "Provider required",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         if (!ValidateReferenceActionUi())
         {
             return;
@@ -46,7 +58,9 @@ partial class MainForm
                 settings,
                 folderName,
                 sourceImage,
-                now);
+                now,
+                GetProviderSnapshotForNewAsset(),
+                _activeRequest?.RequestKey);
 
             _sessionService.Save(preparedSession);
 
@@ -136,6 +150,15 @@ partial class MainForm
 
             lblReference.Text = $"Saved reference: {completedSession.ReferenceFilename}";
             SetSelectedImage(ImageSlot.Reference, null);
+
+            RecordRecentDocument(
+                ProvenanceDocumentKind.Reference,
+                completedSession.ReferenceProvenancePath,
+                completedSession.AssetFolderName,
+                completedSession.ReferenceProcessedAt);
+
+            BindRecoveredSessionRequest();
+            BindRecoveredSessionProvider();
 
             AddStatus($"Reference copied: {completedSession.ReferenceFilename}");
             AddStatus("Reference provenance created.");
@@ -427,8 +450,34 @@ partial class MainForm
             lblReference.Text = $"Saved reference: {_currentSession.ReferenceFilename}";
             SetSelectedImage(ImageSlot.Reference, null);
             SetSelectedImage(ImageSlot.Main, null);
-            txtPrompt.Clear();
+
+            if (_activeRequest is null)
+            {
+                txtPrompt.Clear();
+            }
+            else
+            {
+                _settingRequestBoundFields = true;
+
+                try
+                {
+                    txtPrompt.Text =
+                        _activeRequest.Prompt;
+                }
+                finally
+                {
+                    _settingRequestBoundFields = false;
+                }
+            }
+
+            UpdatePromptPreview();
             ClearValidationVisuals();
+
+            RecordRecentDocument(
+                ProvenanceDocumentKind.Reference,
+                _currentSession.ReferenceProvenancePath,
+                _currentSession.AssetFolderName,
+                _currentSession.ReferenceProcessedAt);
 
             AddStatus($"Reference replaced: {_currentSession.ReferenceFilename}");
             AddStatus("Reference provenance updated.");
@@ -583,10 +632,11 @@ partial class MainForm
         _currentSession = null;
         _state = UiState.Idle;
 
-        CompleteCancelUiAfterDurableCommit();
+        CompleteCancelUiAfterDurableCommit(cancelledSession);
     }
 
-    private void CompleteCancelUiAfterDurableCommit()
+    private void CompleteCancelUiAfterDurableCommit(
+        AssetSession cancelledSession)
     {
         try
         {
@@ -601,6 +651,11 @@ partial class MainForm
             SetSelectedImage(ImageSlot.Reference, null);
             SetSelectedImage(ImageSlot.Main, null);
             ClearValidationVisuals();
+
+            // Only after durable cancellation succeeds:
+            RemoveRecentDocumentsForCancelledSession(cancelledSession);
+            HandleRequestCancellation();
+            ReloadProviderCatalog();
 
             ApplyState();
         }

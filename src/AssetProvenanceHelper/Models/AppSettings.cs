@@ -10,4 +10,10 @@ public sealed class AppSettings
 
     public List<string> AcceptedExtensions { get; set; } =
         AppConstants.DefaultImageExtensions.ToList();
+
+    public string SelectedProviderTemplateFileName { get; set; }
+        = AppConstants.DefaultProviderTemplateFileName;
+
+    public bool DirectModeEnabled { get; set; }
+        = false;
 }
