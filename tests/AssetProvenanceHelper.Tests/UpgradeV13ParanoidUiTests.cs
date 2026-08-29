@@ -1041,6 +1041,14 @@ var sessionField =
 
             MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
 
+            // This test is about mouse-hit-testing on the queue list, not
+            // clipboard behavior, but activating a real row (below) falls
+            // through to HandleRequestQueueItemActivate -> TryCopyPromptToClipboard,
+            // which writes the real Windows clipboard unless this instance
+            // seam is installed - clobbering whatever the developer running
+            // the suite had copied.
+            form.ClipboardWriter = _ => { };
+
             try
             {
                 var import =
@@ -1213,6 +1221,12 @@ var activeRequest =
                     progress: brokenProgress);
 
             MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+            // This test is about a broken progress-persistence path not
+            // breaking completion, not clipboard behavior, but activation
+            // (below) always tries to copy the prompt to the clipboard -
+            // seam it so the real OS clipboard is never touched.
+            form.ClipboardWriter = _ => { };
 
             try
             {
@@ -1416,7 +1430,15 @@ var activeRequest =
         });
     }
 
-    [Fact]
+    [Fact(Skip =
+        "Deliberately exercises the real Windows clipboard fallback " +
+        "(no ClipboardWriter installed) to prove TryCopyPromptToClipboard's " +
+        "no-seam path reaches the actual OS API. That is exactly why it " +
+        "cannot run as part of the ordinary suite: it clobbers whatever the " +
+        "developer/CI runner had on the clipboard, and its finally-block " +
+        "Clipboard.Clear() does not restore the original content. Run it " +
+        "manually (remove Skip) when specifically verifying this fallback; " +
+        "do not re-enable it for Debug/Release/20x/RecoveryCritical runs.")]
     public void Queue_RealClipboardWriteWhenNoWriterHook()
     {
         RunOnSta(() =>

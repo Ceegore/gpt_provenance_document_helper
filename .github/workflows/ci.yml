@@ -130,6 +130,10 @@ jobs:
         with:
           dotnet-version: '10.0.301'
 
+      - name: Coverage ratchet unit scenarios
+        shell: pwsh
+        run: pwsh scripts/verify_coverage.ratchet.tests.ps1
+
       - name: Restore
         run: dotnet restore AssetProvenanceHelper.sln
 

@@ -98,6 +98,13 @@ jobs:
           -c Release --no-build --filter "Category=RecoveryCritical"
           --logger "trx;LogFileName=recovery-critical.trx"
 
+      - name: Coverage ratchet unit scenarios
+        id: coverage_ratchet_unit_tests
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: pwsh scripts/verify_coverage.ratchet.tests.ps1
+
       - name: Coverage collection
         id: coverage
         if: always()
@@ -199,6 +206,7 @@ jobs:
             ReleaseBuild      = '${{ steps.release_build.outcome }}'
             ReleaseTests      = '${{ steps.release_tests.outcome }}'
             RecoveryCritical  = '${{ steps.recovery_critical.outcome }}'
+            CoverageRatchetUnitTests = '${{ steps.coverage_ratchet_unit_tests.outcome }}'
             Coverage          = '${{ steps.coverage.outcome }}'
             CoverageGate      = '${{ steps.coverage_gate.outcome }}'
             Flakiness20x      = '${{ steps.flakiness.outcome }}'

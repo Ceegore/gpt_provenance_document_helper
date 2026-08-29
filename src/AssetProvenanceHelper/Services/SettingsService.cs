@@ -21,6 +21,16 @@ public sealed class SettingsService
         _settingsPath = settingsPath;
     }
 
+    /// <summary>
+    /// Test seam: fires after the new content has been fully written and
+    /// durably flushed to the temp file, but before that temp file is
+    /// promoted onto the real settings path. Lets a test prove a failure was
+    /// injected at the exact promotion boundary - distinguishing this
+    /// implementation from a naive direct write, which would never reach
+    /// this point at all.
+    /// </summary>
+    internal static Action<string>? OnAfterTempFlushedBeforePromoteHook;
+
     public AppSettings CreateDefaults()
     {
         var userProfile =
@@ -131,6 +141,8 @@ public sealed class SettingsService
                 writer.Flush();
                 stream.Flush(true);
             }
+
+            OnAfterTempFlushedBeforePromoteHook?.Invoke(tempPath);
 
             File.Move(
                 tempPath,
