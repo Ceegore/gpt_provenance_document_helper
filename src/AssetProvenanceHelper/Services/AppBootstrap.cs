@@ -78,11 +78,22 @@ public static class AppBootstrap
                         Environment.UserName.ToUpperInvariant())));
     }
 
+    /// <summary>
+    /// Test seam: overrides the resolved state directory so tests never create,
+    /// migrate into, or write a migration marker under the real per-user
+    /// %LOCALAPPDATA%\Ceegore\AssetProvenanceHelper - doing so from a test could
+    /// silently mark a real pending legacy migration as complete without ever
+    /// having imported it.
+    /// </summary>
+    internal static Func<string>? StateDirectoryOverride;
+
     public static string GetStateDirectory() =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Ceegore",
-            "AssetProvenanceHelper");
+        StateDirectoryOverride is not null
+            ? StateDirectoryOverride()
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Ceegore",
+                "AssetProvenanceHelper");
 
     /// <summary>
     /// Copies (never moves) legacy portable state into stable per-user state once.

@@ -23,6 +23,15 @@ internal static class Program
     /// <summary>Test seam: replaces MessageBox.Show for startup notices.</summary>
     internal static Action<string, string, MessageBoxIcon>? MessageProvider;
 
+    /// <summary>
+    /// Test seam: replaces AppContext.BaseDirectory as the legacy-migration
+    /// source directory, so a test can prove real legacy files at a controlled
+    /// path get migrated into a controlled state directory (see
+    /// AppBootstrap.StateDirectoryOverride) without touching the test host's
+    /// own build output directory.
+    /// </summary>
+    internal static Func<string>? BaseDirectoryOverride;
+
     [STAThread]
     private static void Main() => Run();
 
@@ -54,7 +63,8 @@ internal static class Program
         }
 
         var baseDirectory =
-            AppContext.BaseDirectory;
+            BaseDirectoryOverride?.Invoke()
+            ?? AppContext.BaseDirectory;
 
         var mutexName =
             AppBootstrap.BuildSingleInstanceMutexName(
