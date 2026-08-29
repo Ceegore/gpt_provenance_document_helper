@@ -20,13 +20,29 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Checkout/Setup/Restore are ordinary prerequisite steps for every job
+      # on this runner, but this workflow's entire stated purpose is showing
+      # every independently runnable phase's result in one place - a Restore
+      # failure should not silently skip everything after it and be
+      # indistinguishable from those phases never having been attempted.
+      # continue-on-error + explicit ids let each one report its own outcome
+      # in the aggregator below, same as every phase step further down.
+      - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+      - name: Setup .NET
+        id: setup_dotnet
+        continue-on-error: true
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '10.0.301'
 
       - name: Record target SHA and tree status
+        id: record_environment
+        if: always()
+        continue-on-error: true
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/audit | Out-Null
@@ -44,30 +60,38 @@ jobs:
           Write-Host "Clean tree: $($status.Length -eq 0)"
 
       - name: Restore
+        id: restore
+        if: always()
+        continue-on-error: true
         run: dotnet restore AssetProvenanceHelper.sln
 
       - name: Debug build (-warnaserror)
         id: debug_build
+        if: always()
         continue-on-error: true
         run: dotnet build AssetProvenanceHelper.sln -c Debug --no-restore --no-incremental -warnaserror
 
       - name: Debug tests
         id: debug_tests
+        if: always()
         continue-on-error: true
         run: dotnet test AssetProvenanceHelper.sln -c Debug --no-build --logger "trx;LogFileName=debug.trx"
 
       - name: Release build (-warnaserror)
         id: release_build
+        if: always()
         continue-on-error: true
         run: dotnet build AssetProvenanceHelper.sln -c Release --no-restore --no-incremental -warnaserror
 
       - name: Release tests
         id: release_tests
+        if: always()
         continue-on-error: true
         run: dotnet test AssetProvenanceHelper.sln -c Release --no-build --logger "trx;LogFileName=release.trx"
 
       - name: RecoveryCritical tests
         id: recovery_critical
+        if: always()
         continue-on-error: true
         run: >
           dotnet test tests/AssetProvenanceHelper.Tests/AssetProvenanceHelper.Tests.csproj
@@ -76,6 +100,7 @@ jobs:
 
       - name: Coverage collection
         id: coverage
+        if: always()
         continue-on-error: true
         run: >
           dotnet test tests/AssetProvenanceHelper.Tests/AssetProvenanceHelper.Tests.csproj
@@ -84,12 +109,14 @@ jobs:
 
       - name: Coverage gate
         id: coverage_gate
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: pwsh scripts/verify_coverage.ps1
 
       - name: Flakiness 20x loop
         id: flakiness
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: |
@@ -103,6 +130,7 @@ jobs:
 
       - name: Historically-flaky test x100
         id: flake_repeat
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: |
@@ -119,6 +147,7 @@ jobs:
 
       - name: Leaked temp workspace check
         id: leak_check
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: |
@@ -133,6 +162,7 @@ jobs:
 
       - name: Publish win-x64
         id: publish
+        if: always()
         continue-on-error: true
         run: >
           dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
@@ -141,12 +171,14 @@ jobs:
 
       - name: Package structural verification (SAC-safe)
         id: smoke_structural
+        if: always()
         continue-on-error: true
         shell: pwsh
         run: pwsh scripts/run_smoke_tests_sac_safe.ps1
 
       - name: Mutation testing
         id: mutation
+        if: always()
         continue-on-error: true
         working-directory: tests/AssetProvenanceHelper.Tests
         run: |
@@ -158,6 +190,10 @@ jobs:
         shell: pwsh
         run: |
           $steps = @{
+            Checkout          = '${{ steps.checkout.outcome }}'
+            SetupDotnet       = '${{ steps.setup_dotnet.outcome }}'
+            RecordEnvironment = '${{ steps.record_environment.outcome }}'
+            Restore           = '${{ steps.restore.outcome }}'
             DebugBuild        = '${{ steps.debug_build.outcome }}'
             DebugTests        = '${{ steps.debug_tests.outcome }}'
             ReleaseBuild      = '${{ steps.release_build.outcome }}'

@@ -309,6 +309,15 @@ public class ComprehensiveCoverageTests
     [Fact]
     public void SessionService_Cancel_SaveThrowsAfterProvenanceRestore_ThrowsAggregateException()
     {
+        // Exercises the exact recovery branch in SessionService.Cancel (Phase 2):
+        // the reference provenance move succeeds, the reference IMAGE move then
+        // fails, the code restores the already-moved provenance back to its
+        // canonical path, and THEN the session save that would commit
+        // CancelPhase=None/CancellationId=null also fails. That specific
+        // double-failure is what should produce the wrapped IOException whose
+        // InnerException is an AggregateException(moveEx, saveEx) - not merely
+        // "some IOException occurred", which the original version of this test
+        // only proved.
         using var workspace = new TestWorkspace();
         var processor = workspace.CreateAssetProcessor();
         var sessionService = workspace.CreateSessionService();
@@ -318,17 +327,76 @@ public class ComprehensiveCoverageTests
         var session = processor.ProcessReference(settings, "asset_cov_cancel_agg", refSource, DateTimeOffset.Now);
         sessionService.Save(session);
 
-        // Lock reference destination so move to temp fails
-        using (var refLock = new FileStream(session.ReferenceDestinationPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        var saveAttempts = 0;
+
+        SessionService.OnBeforeCancelFileMoveHook = path =>
+        {
+            if (string.Equals(path, session.ReferenceDestinationPath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("Simulated failure moving reference image during cancel.");
+            }
+        };
+
+        SessionService.OnBeforeSaveSessionHook = _ =>
+        {
+            saveAttempts++;
+            // Attempt 1 is Cancel's own Phase-1 "Prepared" save, which must
+            // succeed so the test reaches Phase 2 at all. Attempt 2 is the
+            // restore-then-reset save this test targets.
+            if (saveAttempts == 2)
+            {
+                throw new IOException("Simulated failure saving session after provenance restore.");
+            }
+        };
+
+        try
         {
             var ex = Assert.Throws<IOException>(() => sessionService.Cancel(session));
-            Assert.NotNull(ex);
+            Assert.Contains("provenance was restored", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("resetting session failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+            var aggregate = Assert.IsType<AggregateException>(ex.InnerException);
+            Assert.Equal(2, aggregate.InnerExceptions.Count);
+
+            // Provenance was restored to its canonical location and the temp
+            // copy is gone.
+            Assert.True(File.Exists(session.ReferenceProvenancePath));
+            Assert.False(File.Exists(session.GetCancelTempProvenancePath()));
+
+            // The reference IMAGE move fails immediately (the injected hook
+            // throws before any file operation), so it was never moved at all
+            // and remains at its canonical location.
+            Assert.True(File.Exists(session.ReferenceDestinationPath));
+            Assert.False(File.Exists(session.GetCancelTempReferencePath()));
+
+            // The durable session.json must still reflect the state from
+            // before this failed save (Prepared / CancellationId set) - the
+            // in-memory session object was mutated to CancelPhase=None before
+            // the save was attempted, but since that save failed, nothing was
+            // ever written, so a fresh load must show the pre-failure state.
+            var reloaded = sessionService.Load();
+            Assert.NotNull(reloaded);
+            Assert.Equal(CancelPhase.Prepared, reloaded!.CancelPhase);
+            Assert.False(string.IsNullOrWhiteSpace(reloaded.CancellationId));
+        }
+        finally
+        {
+            SessionService.OnBeforeCancelFileMoveHook = null;
+            SessionService.OnBeforeSaveSessionHook = null;
         }
     }
 
     [Fact]
-    public void SessionService_Cancel_Phase3DeletingTempProvenanceFails_ThrowsIOException()
+    public void SessionService_Cancel_Phase3DeletingTempProvenanceFails_LeavesExactSurvivorStateAndCompletesOnRetry()
     {
+        // SessionService.Cancel's Phase 3 records a deletion error for each
+        // deterministic temp file independently rather than aborting on the
+        // first failure (SessionService.cs ~467-499): a locked temp
+        // provenance file must not prevent the unlocked temp reference image
+        // from also being deleted in the same call, and the durable phase
+        // must stay FilesRenamed (not silently advance/roll back) so a later
+        // retry can finish cleanly. The original version of this test only
+        // asserted "some IOException occurred".
         using var workspace = new TestWorkspace();
         var processor = workspace.CreateAssetProcessor();
         var sessionService = workspace.CreateSessionService();
@@ -343,12 +411,56 @@ public class ComprehensiveCoverageTests
         File.Move(session.ReferenceProvenancePath, session.GetCancelTempProvenancePath());
         sessionService.Save(session);
 
-        // Lock temp provenance file during Phase 3 deletion
-        using (var provLock = new FileStream(session.GetCancelTempProvenancePath(), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        var tempProvenancePath = session.GetCancelTempProvenancePath();
+        var tempReferencePath = session.GetCancelTempReferencePath();
+
+        // Fail only the provenance delete itself. A real exclusive file lock
+        // would also block the hash-verification READ that happens earlier
+        // in Phase 3 (SessionService.cs ~441-463), throwing there instead and
+        // never reaching either deletion attempt at all - this hook targets
+        // exactly the delete step, after verification has already succeeded.
+        SessionService.OnBeforeCancelFileDeleteHook = path =>
+        {
+            if (string.Equals(path, tempProvenancePath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("Simulated failure deleting temp provenance during cancel Phase 3.");
+            }
+        };
+
+        try
         {
             var ex = Assert.Throws<IOException>(() => sessionService.Cancel(session));
-            Assert.Contains("temporary canceling", ex.Message);
+            Assert.Contains("temporary canceling", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
+        finally
+        {
+            SessionService.OnBeforeCancelFileDeleteHook = null;
+        }
+
+        // Exact survivor state: the provenance delete failed and survives;
+        // the reference image delete succeeded independently in the same
+        // call, proving the two deletions are attempted separately rather
+        // than one aborting the other.
+        Assert.True(
+            File.Exists(tempProvenancePath),
+            "Locked temp provenance should survive the failed deletion attempt.");
+        Assert.False(
+            File.Exists(tempReferencePath),
+            "The unlocked temp reference image should have been deleted independently, in the same call.");
+
+        // Durable phase remains FilesRenamed - the partial failure does not
+        // silently advance or roll back cancellation state.
+        var reloadedAfterFailure = sessionService.Load();
+        Assert.NotNull(reloadedAfterFailure);
+        Assert.Equal(CancelPhase.FilesRenamed, reloadedAfterFailure!.CancelPhase);
+
+        // A later retry (e.g. on next startup recovery), with the lock
+        // released, must complete cleanup fully.
+        sessionService.Cancel(reloadedAfterFailure!);
+
+        Assert.False(File.Exists(tempProvenancePath));
+        Assert.False(File.Exists(tempReferencePath));
+        Assert.False(sessionService.Exists());
     }
 
     [Fact]

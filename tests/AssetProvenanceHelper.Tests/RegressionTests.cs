@@ -153,6 +153,49 @@ public sealed class RegressionTests
         Assert.NotNull(loaded);
         Assert.True(loaded!.IsMainCommitting);
         Assert.True(File.Exists(Path.Combine(loaded.AssetFolder, AppConstants.FinalProvenanceFileName)));
+
+        // The above only proves the persisted state is set up correctly; it
+        // never actually runs recovery, so it would still pass even if a
+        // regression in RecoverSessionOnStartup subsequently deleted the
+        // completed asset. Run the real recovery entry point and assert on
+        // its actual effect: the completed asset is retained, and the
+        // leftover session record is retired.
+        RunStaWithTimeout(() =>
+        {
+            AssetProvenanceHelper.Dialogs.TwoChoiceDialog.CustomChoiceProvider =
+                (_, _, _, _, _) => true; // user chooses "Delete Session Record"
+
+            try
+            {
+                using var form = new MainForm(
+                    settings,
+                    workspace.CreateSettingsService(),
+                    workspace.CreateImageFinder(),
+                    workspace.CreateTemplateService(),
+                    workspace.CreateValidationService(),
+                    processor,
+                    workspace.CreateSessionService());
+
+                var recoverMethod =
+                    typeof(MainForm).GetMethod(
+                        "RecoverSessionOnStartup",
+                        System.Reflection.BindingFlags.NonPublic
+                            | System.Reflection.BindingFlags.Instance);
+
+                recoverMethod!.Invoke(form, null);
+            }
+            finally
+            {
+                AssetProvenanceHelper.Dialogs.TwoChoiceDialog.CustomChoiceProvider = null;
+            }
+        });
+
+        // The completed asset's own files must survive recovery...
+        Assert.True(File.Exists(finalProvPath));
+        Assert.True(File.Exists(mainPath));
+
+        // ...while the now-superfluous session record is retired.
+        Assert.False(sessionService.Exists());
     }
 
     // ──────────────────────────────────────────────────────
@@ -307,6 +350,72 @@ public sealed class RegressionTests
         var loaded = service.Load();
         Assert.Equal(workspace.Assets, loaded.AssetRootFolder);
         Assert.Equal(2, loaded.AcceptedExtensions.Count);
+    }
+
+    [Fact]
+    public void REG_020_SettingsService_FailedPromotionLeavesPreviousSettingsByteForByteIntact()
+    {
+        // The previous test only proves Save-then-Load round-trips; a naive
+        // File.WriteAllText(settingsPath, ...) implementation would pass it
+        // just as easily. Prove the actual atomicity contract instead: the
+        // new content is fully, durably written to a temp file BEFORE the
+        // existing settings.json is ever touched (Services/SettingsService.cs
+        // Save()), so if promotion (the final File.Move onto settingsPath)
+        // fails, the previous file must be completely unaffected - not
+        // truncated, not partially overwritten, not deleted.
+        using var workspace = new TestWorkspace();
+        var service = new SettingsService(workspace.SettingsPath);
+
+        var original = new AppSettings
+        {
+            DownloadFolder = workspace.Downloads,
+            AssetRootFolder = workspace.Assets,
+            AcceptedExtensions = new List<string> { ".png" }
+        };
+        service.Save(original);
+
+        var originalBytes = File.ReadAllBytes(workspace.SettingsPath);
+        Assert.NotEmpty(originalBytes);
+
+        var replacement = new AppSettings
+        {
+            DownloadFolder = workspace.Downloads,
+            AssetRootFolder = Path.Combine(workspace.Assets, "different-root"),
+            AcceptedExtensions = new List<string> { ".webp", ".jpg" }
+        };
+
+        // Lock the destination exclusively so the final File.Move(temp,
+        // settingsPath, overwrite: true) cannot replace it, forcing the
+        // failure to occur at promotion - after the new content has already
+        // been fully written and flushed to the temp file, not before.
+        using (var destinationLock =
+            new FileStream(
+                workspace.SettingsPath,
+                FileMode.Open,
+                FileAccess.ReadWrite,
+                FileShare.None))
+        {
+            // On Windows, moving onto a file locked with FileShare.None can
+            // surface as either IOException or UnauthorizedAccessException
+            // depending on exactly how the OS denies the replace; either way
+            // Save() must not have silently succeeded.
+            Assert.ThrowsAny<Exception>(() => service.Save(replacement));
+        }
+
+        var afterFailureBytes = File.ReadAllBytes(workspace.SettingsPath);
+        Assert.Equal(originalBytes, afterFailureBytes);
+
+        var reloaded = service.Load();
+        Assert.Equal(workspace.Assets, reloaded.AssetRootFolder);
+        Assert.Single(reloaded.AcceptedExtensions);
+        Assert.Equal(".png", reloaded.AcceptedExtensions[0]);
+
+        // The temp file created for the new content must not survive either.
+        var leftoverTempFiles =
+            Directory.GetFiles(
+                workspace.Root,
+                Path.GetFileName(workspace.SettingsPath) + ".*.tmp");
+        Assert.Empty(leftoverTempFiles);
     }
 
     // ──────────────────────────────────────────────────────
