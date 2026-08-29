@@ -16,7 +16,11 @@ jobs:
   build-test:
     name: Windows Build & Test
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The 20x flakiness loop re-runs the full (now genuinely serial, per B-03)
+    # suite 20 times; this job took 25m20s on run 33230139355 with 1008 tests,
+    # leaving only ~5 min of headroom against the previous 30-minute limit.
+    # 45 minutes gives real margin for continued test-suite growth.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
