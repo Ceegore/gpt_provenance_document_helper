@@ -94,6 +94,20 @@ dotnet build AssetProvenanceHelper.sln -c Release
 dotnet test AssetProvenanceHelper.sln -c Release
 ```
 
+To reproduce exactly what CI checks (clean build with `-warnaserror`, Debug and
+Release test runs, `RecoveryCritical`) from a clean working tree in one step:
+```powershell
+powershell -File scripts/verify_like_ci.ps1
+```
+A pass from a warm/incremental build or a dirty working tree is not equivalent
+to this and should not be reported as a CI-green result — see `AGENTS.md`.
+
+Coverage is measured with `dotnet test --collect:"XPlat Code Coverage"` and
+checked by `scripts/verify_coverage.ps1` (exact covered/total line, branch,
+and method counts against `code-coverage-baseline.json`, plus an enumerated
+allowlist for the small number of methods that cannot run unattended — see
+`code-coverage-exclusions.json`).
+
 ### Publish Self-Contained Executable
 ```powershell
 $publishDirectory = Join-Path $PWD "artifacts/publish"

@@ -6,8 +6,23 @@ Read this **before** running anything.
 ## What this is
 
 A .NET 10 **WinForms** Windows desktop app (`src/AssetProvenanceHelper`) with a large
-xUnit suite (`tests/AssetProvenanceHelper.Tests`, ~900+ facts/theories). The app is a
+xUnit suite (`tests/AssetProvenanceHelper.Tests`, ~1000+ facts/theories). The app is a
 hobby project and is **unsigned** — that fact drives the most important rule below.
+
+## Repo layout for docs and coverage tooling
+
+- `docs/audits/` — every bug-bash / QA audit report (`bugs1.md`–`bugs15.md`,
+  `_bugRun1.md`, `gaa1.md`, `vv1.md`), oldest first by number/date. Read the
+  most recent ones before starting new work; they carry context (known
+  environment constraints, prior false starts) that isn't repeated elsewhere.
+- `docs/plans/` — remediation/upgrade plans written in response to an audit
+  (`_upgrade1.md`, `_changePlan2.md`, `_fixPlan_gaa1.md`).
+- `code-coverage-exclusions.json` / `code-coverage-no-executable-code.json` /
+  `code-coverage-baseline.json` — inputs to `scripts/verify_coverage.ps1`,
+  the coverage gate. See that script's header comment for what each file
+  does; do not rename them back to a `coverage*.json` prefix — that pattern
+  is in `.gitignore` for CI-generated coverage artifacts and will silently
+  make git ignore them.
 
 ## Canonical commands
 
