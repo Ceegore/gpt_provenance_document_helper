@@ -20,9 +20,33 @@ dotnet build  AssetProvenanceHelper.sln -c Release --no-restore -warnaserror
 dotnet test   AssetProvenanceHelper.sln -c Release --no-build
 ```
 
-The suite runs **non-parallel by design** (`xunit.runner.json`) — do not add parallelism.
+The suite runs **non-parallel by design** (`[assembly: CollectionBehavior(DisableTestParallelization = true)]`
+plus `xunit.runner.json`, both verified by regression tests) — do not add parallelism.
 Tests reach `internal` members via `InternalsVisibleTo` and run **fully in-process**;
 they never spawn the app executable.
+
+### ⚠️ A green local run does not count unless it came from a clean tree
+
+Two real bugs have reached CI while every *local* run looked green:
+
+1. An incremental/warm build reported `0 errors` on a nullable-reference bug that
+   only a `--no-incremental` build surfaced (the local build was stale).
+2. A working tree with LF-normalized files passed locally while CI's checkout
+   (CRLF) failed two tests whose C# raw string literals embed the source file's
+   actual line endings.
+
+**Both failures were invisible locally because the local tree did not match a
+fresh checkout.** Before trusting or reporting a "tests pass" result, run:
+
+```powershell
+powershell -File scripts/verify_like_ci.ps1
+```
+
+This refuses to run on a dirty tree, always builds `--no-incremental`, and runs
+the same Debug/Release/RecoveryCritical matrix CI runs. A pass from anything
+else (a warm build, an uncommitted working tree, `dotnet build` without
+`--no-incremental`) is not equivalent to a CI-green result and should not be
+reported as one.
 
 ## ⚠️ Windows Smart App Control (SAC) — the rule that governs how we test
 
