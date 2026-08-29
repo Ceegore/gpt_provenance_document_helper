@@ -3456,6 +3456,310 @@ public sealed class RegressionTests
         Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
     }
 
+    // REG_132/REG_133 above exercise the LIVE HandleReplaceReference commit
+    // path, which never calls MainForm.Recovery.cs's FinishReplacementCommit
+    // (grep confirms that method has exactly two callers, both inside
+    // MainForm.Recovery.cs itself, reached only via startup recovery of a
+    // journal already in SessionSwitched/CleanupPending phase). The three
+    // tests below reuse REG_132/133's proven setups to reach a real,
+    // durably-persisted CleanupPending journal, then simulate an app
+    // restart - a fresh MainForm running RecoverSessionOnStartup - to
+    // exercise FinishReplacementCommit's own three error arms directly,
+    // per the independent audit's specific ask.
+
+    [Fact]
+    public void REG_206_FinishReplacementCommit_NewExactValidationFailure_PreservesJournalOnRecovery()
+    {
+        var thread = new Thread(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var processor = workspace.CreateAssetProcessor();
+            var sessionService = workspace.CreateSessionService();
+            var validationService = workspace.CreateValidationService();
+
+            var ref1 = workspace.CreateImage("ref1.png", new byte[] { 10, 20, 30 });
+            var session = processor.ProcessReference(settings, "asset_r135", ref1, DateTimeOffset.Now);
+            sessionService.Save(session);
+
+            var ref2 = workspace.CreateImage("ref2.png", new byte[] { 40, 50, 60 });
+
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+            using (var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                validationService,
+                processor,
+                sessionService))
+            {
+                var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+                var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+                sessionField?.SetValue(form, session);
+                stateField?.SetValue(form, 1); // UiState.ReferenceReady
+
+                form.SetSelectedImage(ImageSlot.Reference, ref2);
+
+                // Reaching CleanupPending here is only step 1 (identical
+                // mechanism to REG_132); the point of this test is step 2 below.
+                MainForm.OnBeforeReferenceReplacementCommit = tx =>
+                    File.Delete(tx.NewSession.ReferenceProvenancePath);
+
+                var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
+                handleReplaceMethod!.Invoke(form, null);
+
+                MainForm.OnBeforeReferenceReplacementCommit = null;
+            }
+
+            Assert.True(sessionService.ReplacementJournalExists());
+            var journalBefore = sessionService.LoadReplacementJournal();
+            Assert.NotNull(journalBefore);
+            Assert.Equal(ReferenceReplacementPhase.CleanupPending, journalBefore!.Phase);
+            // The NEW provenance file the live commit deleted is still
+            // missing, so a fresh recovery attempt will hit exactNew
+            // validation failure inside FinishReplacementCommit itself.
+            Assert.False(File.Exists(journalBefore.NewSession.ReferenceProvenancePath));
+
+            var recoveryMessages = new List<string>();
+            MainForm.MessageBoxProvider = (_, msg, _, _, _) => recoveryMessages.Add(msg);
+
+            try
+            {
+                using var recoveredForm = new MainForm(
+                    settings,
+                    workspace.CreateSettingsService(),
+                    workspace.CreateImageFinder(),
+                    workspace.CreateTemplateService(),
+                    workspace.CreateValidationService(),
+                    processor,
+                    workspace.CreateSessionService());
+
+                var recoverMethod = typeof(MainForm).GetMethod("RecoverSessionOnStartup", BindingFlags.NonPublic | BindingFlags.Instance);
+                recoverMethod!.Invoke(recoveredForm, null);
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+            }
+
+            // FailReplacementRecovery's message and "journal preserved" contract.
+            Assert.Contains(recoveryMessages, m => m.Contains("Failed to recover interrupted reference replacement", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(recoveryMessages, m => m.Contains("journal was preserved", StringComparison.OrdinalIgnoreCase));
+            Assert.True(sessionService.ReplacementJournalExists());
+
+            var journalAfter = sessionService.LoadReplacementJournal();
+            Assert.NotNull(journalAfter);
+            Assert.Equal(ReferenceReplacementPhase.CleanupPending, journalAfter!.Phase);
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
+    }
+
+    [Fact]
+    public void REG_207_FinishReplacementCommit_BackupDeletionFailure_PreservesJournalOnRecovery()
+    {
+        var thread = new Thread(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var processor = workspace.CreateAssetProcessor();
+            var sessionService = workspace.CreateSessionService();
+            var validationService = workspace.CreateValidationService();
+
+            var ref1 = workspace.CreateImage("ref1.png", new byte[] { 10, 20, 30 });
+            var session = processor.ProcessReference(settings, "asset_r136", ref1, DateTimeOffset.Now);
+            sessionService.Save(session);
+
+            var ref2 = workspace.CreateImage("ref2.png", new byte[] { 40, 50, 60 });
+
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+            string? backupReferencePath = null;
+
+            using (var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                validationService,
+                processor,
+                sessionService))
+            {
+                var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+                var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+                sessionField?.SetValue(form, session);
+                stateField?.SetValue(form, 1); // UiState.ReferenceReady
+
+                form.SetSelectedImage(ImageSlot.Reference, ref2);
+
+                // Step 1: reach CleanupPending exactly like REG_133 (lock the
+                // backup reference so cleanup fails once, during the LIVE
+                // commit), but capture the path and release the lock before
+                // this scope ends so recovery can attempt cleanup again.
+                FileStream? lockStream = null;
+                MainForm.OnBeforeReferenceReplacementCommit = tx =>
+                {
+                    backupReferencePath = tx.BackupReferencePath;
+                    lockStream = new FileStream(tx.BackupReferencePath, FileMode.Open, FileAccess.Read, FileShare.None);
+                };
+
+                try
+                {
+                    var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
+                    handleReplaceMethod!.Invoke(form, null);
+                }
+                finally
+                {
+                    lockStream?.Dispose();
+                    MainForm.OnBeforeReferenceReplacementCommit = null;
+                }
+            }
+
+            Assert.True(sessionService.ReplacementJournalExists());
+            Assert.Equal(ReferenceReplacementPhase.CleanupPending, sessionService.LoadReplacementJournal()!.Phase);
+            Assert.NotNull(backupReferencePath);
+            Assert.True(File.Exists(backupReferencePath));
+
+            // Step 2: fail the SAME backup delete again, but this time via a
+            // fresh MainForm's recovery path, so FinishReplacementCommit's
+            // own cleanup-failure branch (not the live commit's) is what runs.
+            var recoveryMessages = new List<string>();
+            MainForm.MessageBoxProvider = (_, msg, _, _, _) => recoveryMessages.Add(msg);
+
+            using (var recoveryLock = new FileStream(backupReferencePath!, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                try
+                {
+                    using var recoveredForm = new MainForm(
+                        settings,
+                        workspace.CreateSettingsService(),
+                        workspace.CreateImageFinder(),
+                        workspace.CreateTemplateService(),
+                        workspace.CreateValidationService(),
+                        processor,
+                        workspace.CreateSessionService());
+
+                    var recoverMethod = typeof(MainForm).GetMethod("RecoverSessionOnStartup", BindingFlags.NonPublic | BindingFlags.Instance);
+                    recoverMethod!.Invoke(recoveredForm, null);
+                }
+                finally
+                {
+                    MainForm.MessageBoxProvider = null;
+                    TwoChoiceDialog.CustomChoiceProvider = null;
+                }
+            }
+
+            Assert.Contains(recoveryMessages, m => m.Contains("Failed to recover interrupted reference replacement", StringComparison.OrdinalIgnoreCase));
+            Assert.True(sessionService.ReplacementJournalExists());
+            Assert.Equal(ReferenceReplacementPhase.CleanupPending, sessionService.LoadReplacementJournal()!.Phase);
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
+    }
+
+    [Fact]
+    public void REG_208_FinishReplacementCommit_JournalDeletionFailure_ShowsErrorAndPreservesJournal()
+    {
+        var thread = new Thread(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var processor = workspace.CreateAssetProcessor();
+            var sessionService = workspace.CreateSessionService();
+            var validationService = workspace.CreateValidationService();
+
+            var ref1 = workspace.CreateImage("ref1.png", new byte[] { 10, 20, 30 });
+            var session = processor.ProcessReference(settings, "asset_r137", ref1, DateTimeOffset.Now);
+            sessionService.Save(session);
+
+            var ref2 = workspace.CreateImage("ref2.png", new byte[] { 40, 50, 60 });
+
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+            using (var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                validationService,
+                processor,
+                sessionService))
+            {
+                var sessionField = typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+                var stateField = typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+                sessionField?.SetValue(form, session);
+                stateField?.SetValue(form, 1); // UiState.ReferenceReady
+
+                form.SetSelectedImage(ImageSlot.Reference, ref2);
+
+                FileStream? lockStream = null;
+                MainForm.OnBeforeReferenceReplacementCommit = tx =>
+                {
+                    lockStream = new FileStream(tx.BackupReferencePath, FileMode.Open, FileAccess.Read, FileShare.None);
+                };
+
+                try
+                {
+                    var handleReplaceMethod = typeof(MainForm).GetMethod("HandleReplaceReference", BindingFlags.NonPublic | BindingFlags.Instance);
+                    handleReplaceMethod!.Invoke(form, null);
+                }
+                finally
+                {
+                    lockStream?.Dispose();
+                    MainForm.OnBeforeReferenceReplacementCommit = null;
+                }
+            }
+
+            Assert.True(sessionService.ReplacementJournalExists());
+            Assert.Equal(ReferenceReplacementPhase.CleanupPending, sessionService.LoadReplacementJournal()!.Phase);
+
+            // This time cleanup will succeed on recovery (the backup lock was
+            // released above); fail only the final journal delete itself.
+            var recoveryMessages = new List<string>();
+            MainForm.MessageBoxProvider = (_, msg, _, _, _) => recoveryMessages.Add(msg);
+            SessionService.OnBeforeReplacementJournalDeleteHook =
+                () => throw new IOException("Simulated failure deleting replacement journal.");
+
+            try
+            {
+                using var recoveredForm = new MainForm(
+                    settings,
+                    workspace.CreateSettingsService(),
+                    workspace.CreateImageFinder(),
+                    workspace.CreateTemplateService(),
+                    workspace.CreateValidationService(),
+                    processor,
+                    workspace.CreateSessionService());
+
+                var recoverMethod = typeof(MainForm).GetMethod("RecoverSessionOnStartup", BindingFlags.NonPublic | BindingFlags.Instance);
+                recoverMethod!.Invoke(recoveredForm, null);
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                SessionService.OnBeforeReplacementJournalDeleteHook = null;
+            }
+
+            Assert.Contains(recoveryMessages, m => m.Contains("journal could not be deleted", StringComparison.OrdinalIgnoreCase));
+            Assert.True(sessionService.ReplacementJournalExists());
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
+    }
+
     [Fact]
     public void REG_134_ResetMainCommitMetadata_ClearsAllCommitStateConsistently()
     {
