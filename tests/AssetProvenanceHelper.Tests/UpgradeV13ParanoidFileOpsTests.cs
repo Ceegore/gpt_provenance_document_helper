@@ -840,5 +840,115 @@ public class UpgradeV13ParanoidFileOpsTests
         Assert.Contains(result.Errors, e => e.Contains("Could not locate", StringComparison.OrdinalIgnoreCase));
         Assert.Null(oldSession.ReferenceProvenanceHash);
     }
+
+    // RequireMainStagingAuthority re-verifies each deterministically-staged
+    // file's hash immediately before canonical Main promotion
+    // (AssetProcessorService.Main.cs ~1086-1156). OnBeforeMainStagingAuthorityGate
+    // fires right after staging completes and right before that re-check, so
+    // it is the seam for proving each staged file's corruption independently
+    // blocks promotion - with zero new canonical output and the transaction
+    // left in a recoverable (IsMainCommitting still true) state.
+
+    [Fact]
+    public void RequireMainStagingAuthority_StagedMainCorrupted_BlocksPromotionAndPreservesRecoverableState()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_stage_main", refSource, DateTimeOffset.Now);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+            File.WriteAllBytes(s.GetMainTempImagePath(), new byte[] { 99, 99, 99 });
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt));
+            Assert.Contains("Main staging image", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)));
+        Assert.False(File.Exists(session.GetIngameImagePath()));
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
+        Assert.True(session.IsMainCommitting);
+    }
+
+    [Fact]
+    public void RequireMainStagingAuthority_StagedIngameCorrupted_BlocksPromotionAndPreservesRecoverableState()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_stage_ingame", refSource, DateTimeOffset.Now);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+            File.WriteAllBytes(s.GetMainTempIngamePath(), new byte[] { 99, 99, 99 });
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt));
+            Assert.Contains("Ingame staging image", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)));
+        Assert.False(File.Exists(session.GetIngameImagePath()));
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
+        Assert.True(session.IsMainCommitting);
+    }
+
+    [Fact]
+    public void RequireMainStagingAuthority_StagedProvenanceCorrupted_BlocksPromotionAndPreservesRecoverableState()
+    {
+        using var workspace = new TestWorkspace();
+        var processor = workspace.CreateAssetProcessor();
+        var settings = workspace.CreateSettings();
+
+        var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+        var session = processor.ProcessReference(settings, "asset_stage_prov", refSource, DateTimeOffset.Now);
+
+        var mainSource = workspace.CreateImage("main.png", new byte[] { 4, 5, 6 });
+        var processedAt = DateTimeOffset.Now;
+        processor.PrepareMainCommit(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt);
+
+        AssetProcessorService.OnBeforeMainStagingAuthorityGate = s =>
+            File.WriteAllText(s.GetMainTempProvenancePath(), "tampered provenance content");
+
+        try
+        {
+            var ex = Assert.ThrowsAny<Exception>(() =>
+                processor.ProcessMainImage(session, settings.AcceptedExtensions, mainSource, "prompt", processedAt));
+            Assert.Contains("Main staging provenance", ex.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            AssetProcessorService.OnBeforeMainStagingAuthorityGate = null;
+        }
+
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, session.MainFilename!)));
+        Assert.False(File.Exists(session.GetIngameImagePath()));
+        Assert.False(File.Exists(Path.Combine(session.AssetFolder, AppConstants.FinalProvenanceFileName)));
+        Assert.True(session.IsMainCommitting);
+    }
 }
 
