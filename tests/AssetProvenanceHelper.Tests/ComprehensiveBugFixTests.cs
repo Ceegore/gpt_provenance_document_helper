@@ -75,6 +75,104 @@ public sealed class ComprehensiveBugFixTests
     }
 
     [Fact]
+    public void BUG_002_MainForm_TryReconcileFailedMainCommit_ForeignFileNoArtifacts_SilentlyResetsAndPreservesForeignFile()
+    {
+        // BUG_002 above proves AssetProcessorService itself refuses to overwrite
+        // a foreign file. This proves the separate UI-level reconciliation
+        // decision in MainForm.MainWorkflow.cs's TryReconcileFailedMainCommit
+        // (~lines 393-409): when RollbackMain reports failure specifically
+        // because a foreign root-Main file exists and nothing else from the
+        // aborted transaction was ever created, the UI must recognize that as
+        // safe-to-reset rather than raising the "CRITICAL: rollback failed"
+        // error - and must do so without ever touching the foreign file.
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var processor = workspace.CreateAssetProcessor();
+            var settings = workspace.CreateSettings();
+
+            var refSource = workspace.CreateImage("ref.png", new byte[] { 1, 2, 3 });
+            var session = processor.ProcessReference(settings, "asset_bug002_ui", refSource, DateTimeOffset.Now);
+
+            // Simulate an aborted Main commit whose only trace is Main-commit
+            // metadata: no final provenance, no ingame copy, no temp files -
+            // matching "noArtifactsCreated" - plus a foreign file already
+            // sitting at the root Main destination with different bytes than
+            // session.MainHash, which is exactly what RollbackMain refuses to
+            // delete.
+            session.IsMainCommitting = true;
+            session.MainFilename = "main.png";
+            session.MainHash = new string('0', 64); // guaranteed not to match the foreign bytes below
+            session.MainPrompt = "prompt";
+            session.MainProcessedAt = DateTimeOffset.Now;
+            session.MainTransactionId = new string('a', 32);
+
+            var foreignDest = Path.Combine(session.AssetFolder, session.MainFilename);
+            var foreignBytes = new byte[] { 9, 8, 7, 6 };
+            File.WriteAllBytes(foreignDest, foreignBytes);
+
+            var sessionService = workspace.CreateSessionService();
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                processor,
+                sessionService);
+
+            var reconcileMethod =
+                typeof(MainForm).GetMethod(
+                    "TryReconcileFailedMainCommit",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+            var messagesShown = 0;
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => messagesShown++;
+
+            bool result;
+            try
+            {
+                result =
+                    (bool)reconcileMethod!.Invoke(
+                        form,
+                        new object[] { session, false })!;
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+            }
+
+            // No CRITICAL error dialog - this must be a silent, successful reset.
+            Assert.True(result);
+            Assert.Equal(0, messagesShown);
+
+            // The foreign file was never touched.
+            Assert.True(File.Exists(foreignDest));
+            Assert.Equal(foreignBytes, File.ReadAllBytes(foreignDest));
+
+            // Main-commit metadata was reset on the in-memory session...
+            Assert.False(session.IsMainCommitting);
+            Assert.Null(session.MainFilename);
+            Assert.Null(session.MainHash);
+
+            // ...and durably persisted as a Reference-ready session, with the
+            // form's own UI state following it.
+            var reloaded = sessionService.Load();
+            Assert.NotNull(reloaded);
+            Assert.False(reloaded!.IsMainCommitting);
+
+            var currentSessionField =
+                typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance);
+            var stateField =
+                typeof(MainForm).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            Assert.Same(session, currentSessionField!.GetValue(form));
+            Assert.Equal("ReferenceReady", stateField!.GetValue(form)!.ToString());
+        });
+    }
+
+    [Fact]
     public void BUG_004_IngameFilename_IsDerivedDeterministically()
     {
         var session = new AssetSession
