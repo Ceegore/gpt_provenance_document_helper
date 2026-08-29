@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Forms;
 using AssetProvenanceHelper;
 using AssetProvenanceHelper.Dialogs;
@@ -355,14 +356,18 @@ public sealed class RegressionTests
     [Fact]
     public void REG_020_SettingsService_FailedPromotionLeavesPreviousSettingsByteForByteIntact()
     {
-        // The previous test only proves Save-then-Load round-trips; a naive
-        // File.WriteAllText(settingsPath, ...) implementation would pass it
-        // just as easily. Prove the actual atomicity contract instead: the
-        // new content is fully, durably written to a temp file BEFORE the
-        // existing settings.json is ever touched (Services/SettingsService.cs
-        // Save()), so if promotion (the final File.Move onto settingsPath)
-        // fails, the previous file must be completely unaffected - not
-        // truncated, not partially overwritten, not deleted.
+        // An earlier version of this test locked the destination file with
+        // FileShare.None to force a promotion failure. That was not actually
+        // specific to the atomic-temp-file contract: a naive
+        // File.WriteAllText(settingsPath, ...) implementation would ALSO
+        // fail to open the locked destination and leave the old bytes
+        // untouched, satisfying every assertion the old test made. Use
+        // SettingsService.OnAfterTempFlushedBeforePromoteHook instead, which
+        // only fires once the new content has genuinely been written and
+        // durably flushed to a real temp file - a naive direct-write
+        // implementation could never reach it - so this test proves the
+        // implementation actually took the temp-then-promote path, not just
+        // that failures leave old data alone.
         using var workspace = new TestWorkspace();
         var service = new SettingsService(workspace.SettingsPath);
 
@@ -384,24 +389,43 @@ public sealed class RegressionTests
             AcceptedExtensions = new List<string> { ".webp", ".jpg" }
         };
 
-        // Lock the destination exclusively so the final File.Move(temp,
-        // settingsPath, overwrite: true) cannot replace it, forcing the
-        // failure to occur at promotion - after the new content has already
-        // been fully written and flushed to the temp file, not before.
-        using (var destinationLock =
-            new FileStream(
-                workspace.SettingsPath,
-                FileMode.Open,
-                FileAccess.ReadWrite,
-                FileShare.None))
+        var hookReached = false;
+        string? observedTempPath = null;
+        byte[]? observedTempBytes = null;
+
+        SettingsService.OnAfterTempFlushedBeforePromoteHook = tempPath =>
         {
-            // On Windows, moving onto a file locked with FileShare.None can
-            // surface as either IOException or UnauthorizedAccessException
-            // depending on exactly how the OS denies the replace; either way
-            // Save() must not have silently succeeded.
-            Assert.ThrowsAny<Exception>(() => service.Save(replacement));
+            hookReached = true;
+            observedTempPath = tempPath;
+            // Read while still inside the hook, before Save() attempts
+            // promotion or any cleanup, so this snapshot is unambiguous.
+            observedTempBytes = File.ReadAllBytes(tempPath);
+            throw new IOException("Simulated failure at the promotion boundary.");
+        };
+
+        try
+        {
+            Assert.Throws<IOException>(() => service.Save(replacement));
+        }
+        finally
+        {
+            SettingsService.OnAfterTempFlushedBeforePromoteHook = null;
         }
 
+        // The boundary was genuinely reached, with a real temp file...
+        Assert.True(hookReached, "OnAfterTempFlushedBeforePromoteHook must fire before promotion.");
+        Assert.NotNull(observedTempPath);
+        Assert.NotNull(observedTempBytes);
+        Assert.NotEmpty(observedTempBytes!);
+
+        // ...containing the fully-written NEW content, not the old one.
+        var tempSettings = JsonSerializer.Deserialize<AppSettings>(
+            Encoding.UTF8.GetString(observedTempBytes!));
+        Assert.NotNull(tempSettings);
+        Assert.Equal(Path.Combine(workspace.Assets, "different-root"), tempSettings!.AssetRootFolder);
+        Assert.Equal(2, tempSettings.AcceptedExtensions.Count);
+
+        // Promotion never happened: the previous file is untouched...
         var afterFailureBytes = File.ReadAllBytes(workspace.SettingsPath);
         Assert.Equal(originalBytes, afterFailureBytes);
 
@@ -410,7 +434,9 @@ public sealed class RegressionTests
         Assert.Single(reloaded.AcceptedExtensions);
         Assert.Equal(".png", reloaded.AcceptedExtensions[0]);
 
-        // The temp file created for the new content must not survive either.
+        // ...and the temp file is cleaned up rather than left behind.
+        Assert.False(File.Exists(observedTempPath));
+
         var leftoverTempFiles =
             Directory.GetFiles(
                 workspace.Root,
