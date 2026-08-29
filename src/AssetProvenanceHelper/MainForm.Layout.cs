@@ -1,5 +1,4 @@
 #nullable enable
-using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Models;
@@ -56,7 +55,6 @@ partial class MainForm
         return btn;
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildHeader(TableLayoutPanel root)
     {
         pnlHeader = new Panel
@@ -127,7 +125,6 @@ partial class MainForm
         root.Controls.Add(pnlHeader, 0, 0);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildSettingsGroup(TableLayoutPanel root)
     {
         grpSettings = new GroupBox
@@ -202,7 +199,6 @@ partial class MainForm
         root.Controls.Add(grpSettings, 0, 1);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildCurrentAssetGroup(TableLayoutPanel root)
     {
         grpCurrentAsset = new GroupBox
@@ -267,7 +263,6 @@ partial class MainForm
         root.Controls.Add(grpCurrentAsset, 0, 2);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildCardsSection(TableLayoutPanel root)
     {
         pnlCardsContainer = new TableLayoutPanel
@@ -546,7 +541,6 @@ partial class MainForm
         root.Controls.Add(pnlCardsContainer, 0, 3);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildStatusGroup(TableLayoutPanel root)
     {
         grpStatus = new GroupBox
@@ -621,7 +615,6 @@ partial class MainForm
         root.Controls.Add(grpStatus, 0, 4);
     }
 
-    [ExcludeFromCodeCoverage]
     private void BuildRequestQueueGroup(TableLayoutPanel workspace)
     {
         grpRequestQueue = new GroupBox

@@ -53,9 +53,21 @@ public static class AppBootstrap
     private const string LegacyMigrationMarkerFileName =
         ".legacy-state-migration-complete";
 
+    /// <summary>
+    /// Test seam: overrides the derived mutex name so tests never contend for the
+    /// real, systemwide single-instance mutex that a genuinely running instance of
+    /// the app also holds.
+    /// </summary>
+    internal static Func<string>? MutexNameOverride;
+
     public static string BuildSingleInstanceMutexName(
         string baseDirectory)
     {
+        if (MutexNameOverride is not null)
+        {
+            return MutexNameOverride();
+        }
+
         // State and single-instance authority must survive portable upgrades.
         // The parameter remains for source compatibility with earlier callers.
         _ = baseDirectory;

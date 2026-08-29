@@ -1,0 +1,8 @@
+{
+  "justification": "Blocking modal Win32 dialogs cannot be driven unattended in an automated test run. Each excluded method contains only the real-dialog call (dialog.ShowDialog(this)) and nothing else; the surrounding logic is exercised by tests through the corresponding *DialogProvider seam (FolderBrowserDialogProvider, OpenFileDialogProvider), which the real method falls back to when no test seam is installed.",
+  "allowed": [
+    "AssetProvenanceHelper.MainForm.BrowseDownloadFolderWithDialog",
+    "AssetProvenanceHelper.MainForm.BrowseAssetRootWithDialog",
+    "AssetProvenanceHelper.MainForm.PickManifestPathWithDialog"
+  ]
+}

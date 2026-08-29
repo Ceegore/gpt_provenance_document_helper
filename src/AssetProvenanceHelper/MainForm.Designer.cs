@@ -1,6 +1,5 @@
 #nullable enable
 using System.ComponentModel;
-using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Ui;
@@ -79,7 +78,6 @@ partial class MainForm
     private HelpOverlayControl helpOverlay = null!;
     private ToolTip _toolTip = null!;
 
-    [ExcludeFromCodeCoverage]
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -91,7 +89,6 @@ partial class MainForm
         base.Dispose(disposing);
     }
 
-    [ExcludeFromCodeCoverage]
     private void InitializeComponent()
     {
         components = new Container();

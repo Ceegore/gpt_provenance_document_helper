@@ -3,11 +3,30 @@ using System.Windows.Forms;
 
 namespace AssetProvenanceHelper;
 
-[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 internal static class Program
 {
+    /// <summary>
+    /// Test seam: replaces the WinForms DPI/visual-style initializer, which the
+    /// runtime only permits calling once before the first window handle is
+    /// created in a process. The real test host has already created windows by
+    /// the time a test drives RunApplication(), so tests must no-op this.
+    /// </summary>
+    internal static Action? ApplicationConfigurationInitializer;
+
+    /// <summary>
+    /// Test seam: replaces the blocking <see cref="Application.Run(Form)"/> call
+    /// so a test can observe the constructed <see cref="MainForm"/> without
+    /// entering the real WinForms message loop.
+    /// </summary>
+    internal static Action<Form>? ApplicationRunProvider;
+
+    /// <summary>Test seam: replaces MessageBox.Show for startup notices.</summary>
+    internal static Action<string, string, MessageBoxIcon>? MessageProvider;
+
     [STAThread]
-    private static void Main()
+    private static void Main() => Run();
+
+    internal static void Run()
     {
         try
         {
@@ -15,18 +34,24 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            ShowMessage(
                 "Asset Provenance Helper could not start.\n\n"
                 + ex.Message,
                 "Startup error",
-                MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
     }
 
-    private static void RunApplication()
+    internal static void RunApplication()
     {
-        ApplicationConfiguration.Initialize();
+        if (ApplicationConfigurationInitializer is not null)
+        {
+            ApplicationConfigurationInitializer();
+        }
+        else
+        {
+            ApplicationConfiguration.Initialize();
+        }
 
         var baseDirectory =
             AppContext.BaseDirectory;
@@ -43,11 +68,10 @@ internal static class Program
 
         if (!acquiredMutex)
         {
-            MessageBox.Show(
+            ShowMessage(
                 "Asset Provenance Helper is already running.\n\n"
                 + "Only one instance may run at a time to protect the shared session record.",
                 "Already Running",
-                MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
 
             return;
@@ -61,13 +85,12 @@ internal static class Program
             AppBootstrap.CreateContext(
                 baseDirectory,
                 (msg, title) =>
-                    MessageBox.Show(
+                    ShowMessage(
                         msg,
                         title,
-                        MessageBoxButtons.OK,
                         MessageBoxIcon.Warning));
 
-        Application.Run(
+        var form =
             new MainForm(
                 context.Settings,
                 context.SettingsService,
@@ -78,6 +101,33 @@ internal static class Program
                 context.SessionService,
                 context.ProviderTemplateCatalogService,
                 context.RecentDocumentHistoryService,
-                context.RequestProgressService));
+                context.RequestProgressService);
+
+        if (ApplicationRunProvider is not null)
+        {
+            ApplicationRunProvider(form);
+        }
+        else
+        {
+            Application.Run(form);
+        }
+    }
+
+    private static void ShowMessage(
+        string message,
+        string title,
+        MessageBoxIcon icon)
+    {
+        if (MessageProvider is not null)
+        {
+            MessageProvider(message, title, icon);
+            return;
+        }
+
+        MessageBox.Show(
+            message,
+            title,
+            MessageBoxButtons.OK,
+            icon);
     }
 }
