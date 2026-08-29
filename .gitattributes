@@ -1,0 +1,20 @@
+* text=auto
+
+# Source and templates: deterministic LF in the repo and working tree, so raw
+# string literals and file-read template content mean the same thing on every
+# machine regardless of local autocrlf settings.
+*.cs      text eol=lf
+*.csproj  text eol=lf
+*.sln     text eol=crlf
+*.md      text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.ps1     text eol=crlf
+*.txt     text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.webp binary

@@ -6,6 +6,18 @@ namespace AssetProvenanceHelper.Tests;
 
 public class UpgradeV13ProviderSessionTests
 {
+    /// <summary>
+    /// Raw string literals embed whatever line endings are present in the source
+    /// file on disk, which depends on the checkout's line-ending normalization
+    /// (autocrlf, .gitattributes). Semantic assertions about template mapping
+    /// should not depend on that, so normalize before checking multi-line
+    /// substrings. Line-ending preservation itself is a separate, explicit
+    /// contract tested in Render_PreservesLfTemplateLineEndings and
+    /// Render_PreservesCrLfTemplateLineEndings below.
+    /// </summary>
+    private static string Normalize(string value) =>
+        value.Replace("\r\n", "\n");
+
     private static ProviderTemplateSnapshot CreateSnapshot()
     {
         var content =
@@ -54,15 +66,17 @@ public class UpgradeV13ProviderSessionTests
                     Prompt = AppConstants.NotRecordedValue
                 });
 
-        Assert.Contains("Provider: ChatGPT", result);
-        Assert.Contains("Date: 2026-08-26", result);
-        Assert.Contains("File: reference-image.png", result);
-        Assert.Contains("Asset: asset_ui_screen_settings", result);
-        Assert.Contains("Project: Roswell", result);
-        Assert.Contains($"Role: {AppConstants.ReferenceRoleLabel}", result);
-        Assert.Contains($"Workflow: {AppConstants.ReferenceAssistedWorkflowLabel}", result);
-        Assert.Contains("Reference: reference-image.png", result);
-        Assert.Contains($"Prompt:\n{AppConstants.NotRecordedValue}", result);
+        var normalized = Normalize(result);
+
+        Assert.Contains("Provider: ChatGPT", normalized);
+        Assert.Contains("Date: 2026-08-26", normalized);
+        Assert.Contains("File: reference-image.png", normalized);
+        Assert.Contains("Asset: asset_ui_screen_settings", normalized);
+        Assert.Contains("Project: Roswell", normalized);
+        Assert.Contains($"Role: {AppConstants.ReferenceRoleLabel}", normalized);
+        Assert.Contains($"Workflow: {AppConstants.ReferenceAssistedWorkflowLabel}", normalized);
+        Assert.Contains("Reference: reference-image.png", normalized);
+        Assert.Contains($"Prompt:\n{AppConstants.NotRecordedValue}", normalized);
     }
 
     [Fact]
@@ -86,10 +100,81 @@ public class UpgradeV13ProviderSessionTests
                     Prompt = "exact prompt"
                 });
 
-        Assert.Contains("File: main.png", result);
-        Assert.Contains("Reference: reference-image.png", result);
-        Assert.Contains("Prompt:\nexact prompt", result);
-        Assert.Contains($"Role: {AppConstants.FinalRoleLabel}", result);
+        var normalized = Normalize(result);
+
+        Assert.Contains("File: main.png", normalized);
+        Assert.Contains("Reference: reference-image.png", normalized);
+        Assert.Contains("Prompt:\nexact prompt", normalized);
+        Assert.Contains($"Role: {AppConstants.FinalRoleLabel}", normalized);
+    }
+
+    /// <summary>
+    /// Builds a minimal-but-valid template containing all 9 required tags, joined
+    /// with an explicitly chosen line ending (never a raw string literal, whose
+    /// embedded newlines depend on the source file's own checkout encoding).
+    /// </summary>
+    private static ProviderTemplateSnapshot CreateSnapshotWithLineEnding(
+        string newLine)
+    {
+        var content = string.Join(
+            newLine,
+            "Provider: <<<PROVIDER>>>",
+            "Date: <<<DATE>>>",
+            "File: <<<FILENAME>>>",
+            "Asset: <<<ASSET_NAME>>>",
+            "Project: <<<PROJECT>>>",
+            "Role: <<<ROLE>>>",
+            "Workflow: <<<WORKFLOW>>>",
+            "Reference: <<<REFERENCE_FILENAME>>>",
+            "Prompt:",
+            "<<<PROMPT>>>");
+
+        return new ProviderTemplateSnapshot
+        {
+            FileName = "Test.md",
+            DisplayName = "Test",
+            Content = content,
+            ContentSha256 = ProviderTemplateRules.ComputeContentSha256(content)
+        };
+    }
+
+    private static ProviderRenderContext CreateContext(string prompt) =>
+        new()
+        {
+            Provider = "ChatGPT",
+            Date = "2026-08-26",
+            Filename = "main.png",
+            AssetName = "asset1",
+            Project = "project1",
+            Role = AppConstants.FinalRoleLabel,
+            Workflow = AppConstants.NoReferenceWorkflowLabel,
+            ReferenceFilename = AppConstants.NotRecordedValue,
+            Prompt = prompt
+        };
+
+    [Fact]
+    public void Render_PreservesLfTemplateLineEndings()
+    {
+        var snapshot = CreateSnapshotWithLineEnding("\n");
+
+        var result = ProviderTemplateRenderer.Render(
+            snapshot,
+            CreateContext("value"));
+
+        Assert.Contains("Prompt:\nvalue", result);
+        Assert.DoesNotContain("\r\n", result);
+    }
+
+    [Fact]
+    public void Render_PreservesCrLfTemplateLineEndings()
+    {
+        var snapshot = CreateSnapshotWithLineEnding("\r\n");
+
+        var result = ProviderTemplateRenderer.Render(
+            snapshot,
+            CreateContext("value"));
+
+        Assert.Contains("Prompt:\r\nvalue", result);
     }
 
     [Fact]
