@@ -35,14 +35,12 @@ partial class MainForm
 
         if (compact)
         {
+            // Both TextBox.PreferredHeight and Control.PreferredSize.Height are
+            // always positive for a constructed control, so no fallback is needed
+            // (an unreachable guard here only adds uncovered lines).
             var innerHeight = innerControl is TextBox singleLine
                 ? singleLine.PreferredHeight
                 : innerControl.PreferredSize.Height;
-
-            if (innerHeight <= 0)
-            {
-                innerHeight = 23;
-            }
 
             // Anchor rather than Dock: a docked host fills the whole cell and its
             // border colour becomes a grey block whenever a taller control (the
