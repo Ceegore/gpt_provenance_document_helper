@@ -52,6 +52,9 @@ partial class MainForm
             host.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             host.Height = innerHeight + host.Padding.Vertical;
             host.Margin = new Padding(0, 3, 0, 3);
+            // Anchored width follows the cell, which a narrow window can drive to
+            // zero. Keep the field usable rather than letting it vanish.
+            host.MinimumSize = new Size(160, host.Height);
         }
 
         return host;
@@ -650,12 +653,9 @@ partial class MainForm
             Text = "Status History & Actions",
             Dock = DockStyle.Fill,
             AutoSize = false,
-            // Kept deliberately tight: this is a history pane, and every pixel here
-            // comes straight out of the Reference/Main cards, which are the actual
-            // workspace and were being pushed off screen at the default window size.
-            Height = 130,
-            MinimumSize = new Size(0, 122),
-            Padding = new Padding(8)
+            Height = 145,
+            MinimumSize = new Size(0, 135),
+            Padding = new Padding(10)
         };
 
         var statusLayout = new TableLayoutPanel
