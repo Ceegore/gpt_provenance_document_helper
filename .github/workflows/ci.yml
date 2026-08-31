@@ -106,6 +106,9 @@ jobs:
         shell: pwsh
         run: pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
 
+      # NOTE: these are short-lived *Actions* artifacts for debugging only. They are
+      # NOT release assets and end users cannot see them. Downloadable release
+      # packages are attached by .github/workflows/release.yml, which runs on v* tags.
       - name: Upload test and publish artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,0 +1,230 @@
+name: Release
+
+# Attaches downloadable packages to the GitHub Release for a version tag.
+#
+# WHY THIS EXISTS
+# ---------------
+# ci.yml builds artifacts/AssetProvenanceHelper-v*-win-x64.zip and uploads it with
+# actions/upload-artifact - but that only produces a short-lived *Actions* artifact,
+# which is not a release asset and is invisible to end users. As a result v1.3.0,
+# v1.3.1 and v1.3.2 all shipped with zero downloads. This workflow closes that gap
+# so it cannot regress again.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach assets to (e.g. v1.4.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # required to create releases and upload assets
+
+jobs:
+  release-assets:
+    name: Build & attach release assets
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Resolve tag
+        id: resolve
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag }}'
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = '${{ github.ref_name }}' }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+') {
+            throw "Unexpected tag format '$tag' (expected vMAJOR.MINOR.PATCH)."
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Releasing tag: $tag"
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.301'
+
+      # A tag whose name disagrees with <Version> would produce a zip named after
+      # one version containing another. Fail loudly instead of shipping that.
+      - name: Verify tag matches project version
+        id: ver
+        shell: pwsh
+        run: |
+          [xml]$proj = Get-Content src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
+          $version = @($proj.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          if (-not $version) { throw 'Could not read <Version> from AssetProvenanceHelper.csproj.' }
+          $expected = "v$version"
+          $tag = '${{ steps.resolve.outputs.tag }}'
+          if ($tag -ne $expected) {
+            throw "Tag '$tag' does not match csproj <Version> '$version' (expected '$expected'). Refusing to publish mismatched assets."
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Tag and project version agree: $version"
+
+      - name: Restore
+        run: dotnet restore AssetProvenanceHelper.sln
+
+      - name: Release build - warnings are errors
+        run: >
+          dotnet build AssetProvenanceHelper.sln
+          -c Release
+          --no-restore
+          -warnaserror
+
+      # The full matrix (Debug, flakiness loop, coverage) already ran on main before
+      # the tag was cut; re-running the Release suite here guards against tagging a
+      # commit that was never green.
+      - name: Release tests
+        run: >
+          dotnet test AssetProvenanceHelper.sln
+          -c Release
+          --no-build
+          --logger "trx;LogFileName=release.trx"
+
+      - name: Prepare clean publish directories
+        shell: pwsh
+        run: |
+          foreach ($d in 'artifacts/publish', 'artifacts/publish-fd') {
+            $p = Join-Path $PWD $d
+            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+          }
+
+      # Primary artifact: self-contained, so end users need no .NET installation.
+      - name: Publish win-x64 (self-contained)
+        run: >
+          dotnet publish
+          src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:SourceRevisionId=${{ github.sha }}
+          -o artifacts/publish
+
+      # Verifies package integrity and startup, and creates
+      # artifacts/AssetProvenanceHelper-v<version>-win-x64.zip (-CreateArchive
+      # defaults to true). Safe here: GitHub runners do not enforce Smart App
+      # Control, so launching the unsigned apphost is fine. Do NOT run this on a
+      # SAC-enabled dev box - see AGENTS.md.
+      - name: Verify package integrity, startup smoke, and create archive
+        shell: pwsh
+        run: pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
+
+      # Fallback artifact: the self-contained exe is unsigned, so a user whose own
+      # machine enforces Smart App Control cannot launch it at all. This variant
+      # runs through the signed dotnet host instead.
+      - name: Publish framework-dependent (SAC-safe fallback)
+        run: >
+          dotnet publish
+          src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
+          -c Release
+          --no-self-contained
+          -p:SourceRevisionId=${{ github.sha }}
+          -o artifacts/publish-fd
+
+      - name: Package framework-dependent archive
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $zip = "artifacts/AssetProvenanceHelper-v$version-framework-dependent.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path 'artifacts/publish-fd/*' -DestinationPath $zip -CompressionLevel Optimal -Force
+          Write-Host "Created $zip"
+
+      - name: Verify archives and write checksums
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $expected = @(
+            "artifacts/AssetProvenanceHelper-v$version-win-x64.zip",
+            "artifacts/AssetProvenanceHelper-v$version-framework-dependent.zip"
+          )
+
+          foreach ($f in $expected) {
+            if (-not (Test-Path $f)) { throw "Expected release archive missing: $f" }
+            $size = (Get-Item $f).Length
+            if ($size -lt 100KB) { throw "Archive '$f' is implausibly small ($size bytes)." }
+          }
+
+          $lines = foreach ($f in $expected) {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash
+            $name = Split-Path $f -Leaf
+            Write-Host ("{0}  {1:N0} bytes  {2}" -f $name, (Get-Item $f).Length, $h)
+            "$h  $name"
+          }
+          $lines | Out-File -FilePath 'artifacts/SHA256SUMS.txt' -Encoding ascii
+          Get-Content artifacts/SHA256SUMS.txt
+
+      # Never overwrite hand-written release notes: only create the release when it
+      # does not already exist.
+      - name: Create release if missing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.resolve.outputs.tag }}'
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $notes = "docs/release-notes-$tag.md"
+            if (Test-Path $notes) {
+              Write-Host "Creating release $tag from $notes"
+              gh release create $tag --repo $env:GITHUB_REPOSITORY --title $tag --notes-file $notes
+            }
+            else {
+              Write-Host "Creating release $tag with auto-generated notes"
+              gh release create $tag --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes
+            }
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create release $tag." }
+          }
+          else {
+            Write-Host "Release $tag already exists - keeping its existing notes."
+          }
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.resolve.outputs.tag }}'
+          $version = '${{ steps.ver.outputs.version }}'
+          gh release upload $tag `
+            "artifacts/AssetProvenanceHelper-v$version-win-x64.zip" `
+            "artifacts/AssetProvenanceHelper-v$version-framework-dependent.zip" `
+            "artifacts/SHA256SUMS.txt" `
+            --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload release assets for $tag." }
+
+      # Prove the assets are actually attached, rather than trusting the upload.
+      - name: Verify assets are attached
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.resolve.outputs.tag }}'
+          $version = '${{ steps.ver.outputs.version }}'
+          $names = gh release view $tag --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
+          Write-Host "Attached assets:`n$names"
+          foreach ($required in @(
+              "AssetProvenanceHelper-v$version-win-x64.zip",
+              "AssetProvenanceHelper-v$version-framework-dependent.zip")) {
+            if ($names -notcontains $required) { throw "Release $tag is missing required asset '$required'." }
+          }
+          Write-Host "All required release assets are attached."
+
+      - name: Upload build artifacts for diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-artifacts
+          path: |
+            **/*.trx
+            artifacts/SHA256SUMS.txt
+            artifacts/smoke-test-log.json

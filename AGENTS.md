@@ -63,6 +63,40 @@ else (a warm build, an uncommitted working tree, `dotnet build` without
 `--no-incremental`) is not equivalent to a CI-green result and should not be
 reported as one.
 
+## Releasing
+
+Releases are cut from a **version tag**, and the downloadable packages are attached
+**automatically** by `.github/workflows/release.yml`.
+
+```powershell
+# 1. Bump <Version> in src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
+# 2. Write docs/release-notes-v<version>.md   (used as the release body if the
+#    release does not exist yet; an existing release's notes are never overwritten)
+# 3. Merge to main, then tag the merged commit:
+git tag -a v1.4.0 -m "v1.4.0 - <summary>"
+git push origin v1.4.0
+```
+
+The tag push builds and attaches:
+
+| Asset | Purpose |
+|---|---|
+| `AssetProvenanceHelper-v<ver>-win-x64.zip` | Self-contained; end users need no .NET install |
+| `AssetProvenanceHelper-v<ver>-framework-dependent.zip` | Fallback for users whose machine enforces SAC; runs via `dotnet AssetProvenanceHelper.dll` |
+| `SHA256SUMS.txt` | Checksums for both archives |
+
+The workflow **refuses to publish** if the tag does not match the csproj `<Version>`
+(so `v1.5.0` on a `1.4.0` build fails instead of shipping a mislabelled zip), and it
+verifies the assets are actually attached afterwards rather than trusting the upload.
+
+`workflow_dispatch` accepts a tag input, so a release can be re-packaged or backfilled
+without moving the tag.
+
+> **History:** v1.3.0, v1.3.1 and v1.3.2 shipped with **no downloads at all**. `ci.yml`
+> builds the zip but only uploads it via `actions/upload-artifact`, which is a
+> short-lived Actions artifact, not a release asset. Do not "simplify" release.yml away
+> by pointing at those CI artifacts — end users cannot download them.
+
 ## ⚠️ Windows Smart App Control (SAC) — the rule that governs how we test
 
 Dev machines here run with **SAC on**, and the app is unsigned.
