@@ -33,6 +33,9 @@ partial class MainForm
     private Panel pnlAssetFolderNameHost = null!;
     private CheckBox chkNoReference = null!;
     private CheckBox chkDirectMode = null!;
+    private CheckBox chkKeepSettings = null!;
+    private ComboBox cmbVariants = null!;
+    private Label lblVariants = null!;
 
     private TableLayoutPanel pnlCardsContainer = null!;
     private GroupBox grpReference = null!;

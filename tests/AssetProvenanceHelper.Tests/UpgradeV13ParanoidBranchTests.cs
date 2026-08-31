@@ -314,7 +314,7 @@ public class UpgradeV13ParanoidBranchTests
                     "ValidateMainActionUi",
                     BindingFlags.NonPublic | BindingFlags.Instance);
 
-            var ok = (bool)(validate!.Invoke(form, null) ?? false);
+            var ok = (bool)(validate!.Invoke(form, new object[] { true }) ?? false);
 
             Assert.False(ok);
 
@@ -731,7 +731,8 @@ public class UpgradeV13ParanoidBranchTests
                         session,
                         mainSource,
                         "prompt",
-                        DateTimeOffset.Now
+                        DateTimeOffset.Now,
+                        false
                     });
 
                 // NoReference delete failure -> rollback and delete retry.

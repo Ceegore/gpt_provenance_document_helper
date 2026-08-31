@@ -332,7 +332,7 @@ public class ChangeV11MainFormTests
             txtPrompt.Text = ""; // Empty prompt
 
             var validateMethod = typeof(MainForm).GetMethod("ValidateMainActionUi", BindingFlags.NonPublic | BindingFlags.Instance);
-            var isValid = (bool)(validateMethod?.Invoke(form, null) ?? false);
+            var isValid = (bool)(validateMethod?.Invoke(form, new object[] { true }) ?? false);
 
             Assert.False(isValid);
 
@@ -407,7 +407,7 @@ public class ChangeV11MainFormTests
 
             // No main image selected
             var validateMethod = typeof(MainForm).GetMethod("ValidateMainActionUi", BindingFlags.NonPublic | BindingFlags.Instance);
-            var isValid = (bool)(validateMethod?.Invoke(form, null) ?? false);
+            var isValid = (bool)(validateMethod?.Invoke(form, new object[] { true }) ?? false);
 
             Assert.False(isValid);
 

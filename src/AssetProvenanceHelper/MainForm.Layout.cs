@@ -252,8 +252,53 @@ partial class MainForm
             Margin = new Padding(14, 0, 0, 0)
         };
 
+        chkKeepSettings = new CheckBox
+        {
+            Name = "chkKeepSettings",
+            Text = "Keep settings",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(14, 0, 0, 0)
+        };
+        _toolTip.SetToolTip(
+            chkKeepSettings,
+            "Keeps Asset Name, Final Prompt and the Variants count after an asset is "
+            + "completed or cancelled. Image selections are always cleared.");
+
+        lblVariants = new Label
+        {
+            Name = "lblVariants",
+            Text = "Variants",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(14, 6, 0, 0)
+        };
+
+        cmbVariants = new ComboBox
+        {
+            Name = "cmbVariants",
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(4, 0, 0, 0),
+            Width = 60
+        };
+        cmbVariants.Items.Add("none");
+        for (var i = 1; i <= AppConstants.MaxVariantCount; i++)
+        {
+            cmbVariants.Items.Add(i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        cmbVariants.SelectedIndex = 0;
+        _toolTip.SetToolTip(
+            cmbVariants,
+            "Number of Main-image variants to produce from one prompt. Set this "
+            + "before clicking Reference - the count is locked once a reference "
+            + "session is active.");
+
         modeFlow.Controls.Add(chkNoReference);
         modeFlow.Controls.Add(chkDirectMode);
+        modeFlow.Controls.Add(chkKeepSettings);
+        modeFlow.Controls.Add(lblVariants);
+        modeFlow.Controls.Add(cmbVariants);
 
         layout.Controls.Add(lblName, 0, 0);
         layout.Controls.Add(pnlAssetFolderNameHost, 1, 0);

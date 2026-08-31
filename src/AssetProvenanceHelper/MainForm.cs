@@ -44,6 +44,14 @@ private readonly SettingsService _settingsService;
         new(StringComparer.Ordinal);
     private bool _settingRequestBoundFields;
 
+    /// <summary>
+    /// Source paths of Main images durably committed during this app session.
+    /// In-memory only and intentionally not persisted - "momentary session" per the
+    /// feature request. Used to warn before reprocessing the same downloads.
+    /// </summary>
+    private readonly HashSet<string> _committedMainSourcesThisSession =
+        new(StringComparer.OrdinalIgnoreCase);
+
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal Func<string?>? ClipboardProvider { get; set; }
 
@@ -106,6 +114,10 @@ private readonly SettingsService _settingsService;
 
         chkNoReference.CheckedChanged += (_, _) => OnNoReferenceChanged();
         chkDirectMode.CheckedChanged += (_, _) => OnDirectModeChanged();
+        chkKeepSettings.CheckedChanged += (_, _) =>
+        {
+            _settings.KeepSettingsEnabled = chkKeepSettings.Checked;
+        };
 
         btnReference.Click += (_, _) =>
         {
@@ -188,6 +200,7 @@ private readonly SettingsService _settingsService;
         txtDownloadFolder.Text = _settings.DownloadFolder;
         txtAssetRoot.Text = _settings.AssetRootFolder;
         chkDirectMode.Checked = _settings.DirectModeEnabled;
+        chkKeepSettings.Checked = _settings.KeepSettingsEnabled;
     }
 
     private void ValidateTemplatesAtStartup()
@@ -447,10 +460,40 @@ private readonly SettingsService _settingsService;
             !referenceReady
             && _providerCatalog?.HasUsableTemplates == true;
 
+        // Variants are available in BOTH workflows, but the count binds the asset
+        // folder name at Reference time (plan D-1), so it locks once a reference
+        // session is active - exactly like chkNoReference / chkDirectMode above.
+        // The selection itself is never reset here: it is still needed while a
+        // reference session is live, because it drives the batch that finishes
+        // variant A.
+        cmbVariants.Enabled = !referenceReady;
+
         var assetFolder = _currentSession?.AssetFolder ?? _lastCompletedAssetFolderPath;
         btnOpenAssetFolder.Enabled = !string.IsNullOrWhiteSpace(assetFolder) && Directory.Exists(assetFolder);
 
         ApplyRequestQueueState();
+    }
+
+    /// <summary>
+    /// Resets the per-asset input fields after a durable completion or cancellation.
+    /// Image selections and the saved-reference label are always cleared - a stale
+    /// selection points at a file a committed asset has already consumed. Text
+    /// inputs and the Variants count survive when Keep Settings is on.
+    /// </summary>
+    private void ResetAssetInputFieldsAfterDurableAction()
+    {
+        if (!chkKeepSettings.Checked)
+        {
+            txtPrompt.Clear();
+            txtAssetFolderName.Clear();
+            ResetVariantSelectionToNone();
+        }
+
+        lblReference.Text = "Saved reference: none";
+
+        SetSelectedImage(ImageSlot.Reference, null);
+        SetSelectedImage(ImageSlot.Main, null);
+        ClearValidationVisuals();
     }
 
     private void ShowHelpOverlay()
@@ -570,4 +613,7 @@ private readonly SettingsService _settingsService;
 
     [ThreadStatic]
     internal static Action? OnReplacementDurableCommitUiHook;
+
+    [ThreadStatic]
+    internal static Action<int, string>? OnVariantCommittedHook;
 }

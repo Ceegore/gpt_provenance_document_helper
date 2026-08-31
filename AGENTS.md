@@ -65,27 +65,54 @@ reported as one.
 
 ## ⚠️ Windows Smart App Control (SAC) — the rule that governs how we test
 
-Dev machines here run with **SAC on**, and the app is unsigned. SAC evaluates the
-**executable image that Windows launches**. The consequences:
+Dev machines here run with **SAC on**, and the app is unsigned.
 
-- ✅ `dotnet build` / `dotnet test` / `dotnet run` all launch **Microsoft-signed hosts**
-  (`dotnet.exe`, `testhost.exe`). App code loads as a managed **DLL inside** those trusted
-  processes, so SAC never evaluates it. **The entire test suite — including the in-process
-  UI tests that `new MainForm()` and drive the form — runs SAC-free.** This is the intended
-  path and where all bug-finding happens.
-- ❌ The **only** SAC-tripping artifact in the repo is the **self-contained, win-x64
-  published** `artifacts/publish/AssetProvenanceHelper.exe` — a freshly built, unsigned
-  *native apphost*. SAC blocks/kills it on launch. `scripts/run_smoke_tests.ps1` does
-  `Start-Process` on exactly that exe, so it can fail with **"Process exited prematurely" /
-  "Main window was not created"** on a SAC-enabled machine. **That is an environment block,
-  not a product bug — never report it as a defect.**
+> **🛑 READ THIS BEFORE BELIEVING ANY FAILING TEST RUN.**
+> If a `dotnet test` run reports a large number of failures and/or
+> `Der Testhostprozess ist abgestürzt` / `test host process crashed`,
+> **first grep the output for `0x800711C7`**. If it is there, those failures are
+> **fake** — SAC blocked the assembly, no test actually executed, and nothing was
+> proven about the code. Do **not** debug them, do **not** "fix" anything, and do
+> **not** revert work because of them. Re-run via
+> `powershell -File scripts/run_tests_sac_safe.ps1`.
+>
+> This has burned real time more than once. Full evidence and the general
+> playbook: [`docs/sac-test-execution.md`](docs/sac-test-execution.md).
+> Machine-wide, project-agnostic field guide (shared with other repos on this
+> box): `C:\Projects\SACsolutions.md`.
+
+Two different artifacts can trip SAC. Keep them straight:
+
+- ❌ **The published apphost.** `artifacts/publish/AssetProvenanceHelper.exe` is a freshly
+  built, unsigned *native apphost*. SAC blocks/kills it on launch.
+  `scripts/run_smoke_tests.ps1` does `Start-Process` on exactly that exe, so it can fail
+  with **"Process exited prematurely" / "Main window was not created"**. **Environment
+  block, not a product bug — never report it as a defect.**
+- ⚠️ **The product assembly itself, during `dotnet test`.** `AssetProvenanceHelper.dll`
+  is a GUI-subsystem *executable image* (`OutputType=WinExe`), and SAC **does** evaluate
+  it when `testhost.exe` loads it. It is blocked **intermittently** with `0x800711C7`.
+  Measured on this repo: **80 Code Integrity block events, 100% of them against
+  `AssetProvenanceHelper.dll`** — never against `AssetProvenanceHelper.Tests.dll` and
+  never against a NuGet dependency.
+
+  **The trigger is rate-based, not content-based.** A single run, or a targeted filtered
+  run, is reliable. What provokes it is a long chain of *rebuild → run the whole suite*
+  cycles in quick succession (independently confirmed in a sibling project: the block
+  appeared only after 40+ sequential runs, never on individual ones). Waiting ~30–60s
+  after a rebuild clears it.
+
+  ⚠️ An earlier version of this file claimed the test suite "runs SAC-free" and that the
+  published exe was "the only SAC-tripping artifact". **Both were wrong**, and that wrong
+  claim is precisely what caused a later agent to misread a SAC block as a code
+  regression. Do not restore those claims.
 
 ### Rules for agents
 
-1. Do **all** functional and bug-finding work through `dotnet test`. It is SAC-safe.
+1. Do **all** functional and bug-finding work through `dotnet test`. It is *usually* fine
+   — but see rule 6 for how to keep it that way and how to spot a block.
 2. **Do not** launch `artifacts/publish/AssetProvenanceHelper.exe`, and **do not** run
    `scripts/run_smoke_tests.ps1` as-is on a SAC machine. That self-contained exe tests
-   packaging, not app logic, and is the one thing SAC blocks.
+   packaging, not app logic.
 3. If you need to verify the **published package**, do it SAC-safely:
    - **Structurally** — publish, then verify the folder contents (templates/,
      provider_templates/, examples/, core DLLs, no shipped mutable state) **without
@@ -100,6 +127,27 @@ Dev machines here run with **SAC on**, and the app is unsigned. SAC evaluates th
    *skipped — environment* and move on.
 5. **Do not assume GitHub Actions is available** — CI may be disabled/out of credits. The
    full suite must be runnable locally; don't push just to trigger CI or rely on its output.
+6. **Keep test runs under the SAC trigger threshold.** In order of preference:
+   - **Default to targeted runs while iterating:**
+     `dotnet test AssetProvenanceHelper.sln -c Release --no-build --filter "FullyQualifiedName~<TestClass>"`
+     Small filtered runs are fast and do not provoke the block.
+   - **Use the wrapper for full-suite runs**, which settles, canaries, detects
+     `0x800711C7`, backs off and retries, and exits **42** (not 1) on an environment block
+     so it can never be confused with a real failure:
+     ```powershell
+     powershell -File scripts/run_tests_sac_safe.ps1                 # full suite, Release
+     powershell -File scripts/run_tests_sac_safe.ps1 -Filter "FullyQualifiedName~FeatureV14"
+     powershell -File scripts/run_tests_sac_safe.ps1 -SettleSeconds 0 # nothing was rebuilt
+     ```
+     It streams live output with a 30s heartbeat and enforces hard timeouts, so it
+     can never sit silent. Exit codes: **0** pass, **1** real failure, **42**
+     environment block, **43** timeout/inconclusive, **44** filter matched nothing.
+   - **Wait ~30–60s after a rebuild** before the first heavy run.
+   - **Do not re-run the full suite once it is green.** Repeat full runs are the single
+     biggest contributor to the block.
+   - **Avoid `--collect:"XPlat Code Coverage"` in tight loops** — the coverage collector
+     roughly triples run time and was the most block-prone path observed. Run coverage
+     once, at the end.
 
 ## SAC-safe smoke test
 

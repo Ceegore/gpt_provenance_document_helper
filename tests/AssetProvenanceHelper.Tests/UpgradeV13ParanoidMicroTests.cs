@@ -89,9 +89,9 @@ public class UpgradeV13ParanoidMicroTests
                         "TrySelectDirectReferencePair",
                         BindingFlags.NonPublic | BindingFlags.Instance);
 
-                var ok = (bool)(pair!.Invoke(form, null) ?? false);
+                var result = pair!.Invoke(form, new object[] { 1 });
 
-                Assert.False(ok);
+                Assert.Null(result);
                 Assert.True(errorShown);
             }
             finally
@@ -148,9 +148,9 @@ public class UpgradeV13ParanoidMicroTests
                         "TrySelectDirectReferencePair",
                         BindingFlags.NonPublic | BindingFlags.Instance);
 
-                var ok = (bool)(pair!.Invoke(form, null) ?? false);
+                var result = pair!.Invoke(form, new object[] { 1 });
 
-                Assert.False(ok);
+                Assert.Null(result);
                 Assert.True(errorShown);
                 Assert.Null(form.GetSelectedImage(ImageSlot.Reference));
             }

@@ -2,6 +2,7 @@
 using System.Windows.Forms;
 using AssetProvenanceHelper.Dialogs;
 using AssetProvenanceHelper.Models;
+using AssetProvenanceHelper.Services;
 using AssetProvenanceHelper.Ui;
 
 namespace AssetProvenanceHelper;
@@ -34,6 +35,15 @@ partial class MainForm
         {
             var settings = ReadSettingsFromUi();
             var folderName = txtAssetFolderName.Text.Trim();
+
+            var variantCount = GetSelectedVariantCount();
+            if (variantCount > 0)
+            {
+                // Plan D-1: the reference is committed into the FIRST variant's folder, so
+                // variant A needs no replication and no base folder is ever created.
+                folderName = AssetNaming.BuildVariantAssetName(folderName, 1);
+            }
+
             var sourceImage = GetSelectedImage(ImageSlot.Reference)!;
 
             var targetAssetFolder = Path.Combine(settings.AssetRootFolder, folderName);
@@ -644,13 +654,7 @@ partial class MainForm
 
             AddStatus("Current asset session cancelled.");
 
-            txtPrompt.Clear();
-            txtAssetFolderName.Clear();
-            lblReference.Text = "Saved reference: none";
-
-            SetSelectedImage(ImageSlot.Reference, null);
-            SetSelectedImage(ImageSlot.Main, null);
-            ClearValidationVisuals();
+            ResetAssetInputFieldsAfterDurableAction();
 
             // Only after durable cancellation succeeds:
             RemoveRecentDocumentsForCancelledSession(cancelledSession);

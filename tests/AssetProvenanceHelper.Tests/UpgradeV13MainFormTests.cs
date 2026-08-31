@@ -1035,7 +1035,7 @@ public class UpgradeV13MainFormTests
             chkDirect.Checked = true;
 
             var selectMethod = typeof(MainForm).GetMethod("TrySelectDirectReferencePair", BindingFlags.NonPublic | BindingFlags.Instance);
-            var selected = (bool)(selectMethod?.Invoke(form, null) ?? false);
+            var selected = selectMethod?.Invoke(form, new object[] { 1 }) is not null;
 
             Assert.True(selected);
             Assert.Equal(
