@@ -90,78 +90,61 @@ jobs:
           --no-build
           --logger "trx;LogFileName=release.trx"
 
-      - name: Prepare clean publish directories
+      - name: Prepare clean publish directory
         shell: pwsh
         run: |
-          foreach ($d in 'artifacts/publish', 'artifacts/publish-fd') {
-            $p = Join-Path $PWD $d
-            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
-          }
+          $p = Join-Path $PWD 'artifacts/publish-sacsafe'
+          if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
 
-      # Primary artifact: self-contained, so end users need no .NET installation.
-      - name: Publish win-x64 (self-contained)
-        run: >
-          dotnet publish
-          src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:SourceRevisionId=${{ github.sha }}
-          -o artifacts/publish
-
-      # Verifies package integrity and startup, and creates
-      # artifacts/AssetProvenanceHelper-v<version>-win-x64.zip (-CreateArchive
-      # defaults to true). Safe here: GitHub runners do not enforce Smart App
-      # Control, so launching the unsigned apphost is fine. Do NOT run this on a
-      # SAC-enabled dev box - see AGENTS.md.
-      - name: Verify package integrity, startup smoke, and create archive
-        shell: pwsh
-        run: pwsh scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
-
-      # Fallback artifact: the self-contained exe is unsigned, so a user whose own
-      # machine enforces Smart App Control cannot launch it at all. This variant
-      # runs through the signed dotnet host instead.
-      - name: Publish framework-dependent (SAC-safe fallback)
+      # Framework-dependent AND without an apphost. Smart App Control refuses to
+      # launch unsigned .exe files outright, so shipping one produces a package
+      # that silently does nothing when double-clicked. With no .exe present the
+      # launcher runs the app inside Microsoft's signed dotnet host instead.
+      - name: Publish (no apphost)
         run: >
           dotnet publish
           src/AssetProvenanceHelper/AssetProvenanceHelper.csproj
           -c Release
           --no-self-contained
+          -p:UseAppHost=false
           -p:SourceRevisionId=${{ github.sha }}
-          -o artifacts/publish-fd
+          -o artifacts/publish-sacsafe
 
-      - name: Package framework-dependent archive
+      - name: Add launcher and README
+        shell: pwsh
+        run: |
+          Copy-Item 'scripts/launcher/Start AI Asset Provenance Helper.cmd' 'artifacts/publish-sacsafe' -Force
+          Copy-Item 'scripts/launcher/README.txt' 'artifacts/publish-sacsafe' -Force
+
+          $exes = @(Get-ChildItem 'artifacts/publish-sacsafe' -Filter *.exe -Recurse)
+          if ($exes.Count -gt 0) {
+            throw "Package contains $($exes.Count) .exe file(s); Smart App Control would block them. UseAppHost=false must be set."
+          }
+          Get-ChildItem 'artifacts/publish-sacsafe' | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
+
+      # Proves the shipped payload actually starts, via the signed dotnet host.
+      - name: Verify the package launches
+        shell: pwsh
+        run: pwsh scripts/run_smoke_tests_sac_safe.ps1 -AppDir artifacts/publish-sacsafe
+
+      - name: Package archive
         shell: pwsh
         run: |
           $version = '${{ steps.ver.outputs.version }}'
-          $zip = "artifacts/AssetProvenanceHelper-v$version-framework-dependent.zip"
+          $zip = "artifacts/AssetProvenanceHelper-v$version.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path 'artifacts/publish-fd/*' -DestinationPath $zip -CompressionLevel Optimal -Force
-          Write-Host "Created $zip"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path 'artifacts/publish-sacsafe'),
+            (Join-Path $PWD $zip),
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false)
 
-      - name: Verify archives and write checksums
-        shell: pwsh
-        run: |
-          $version = '${{ steps.ver.outputs.version }}'
-          $expected = @(
-            "artifacts/AssetProvenanceHelper-v$version-win-x64.zip",
-            "artifacts/AssetProvenanceHelper-v$version-framework-dependent.zip"
-          )
-
-          foreach ($f in $expected) {
-            if (-not (Test-Path $f)) { throw "Expected release archive missing: $f" }
-            $size = (Get-Item $f).Length
-            if ($size -lt 100KB) { throw "Archive '$f' is implausibly small ($size bytes)." }
-          }
-
-          $lines = foreach ($f in $expected) {
-            $h = (Get-FileHash $f -Algorithm SHA256).Hash
-            $name = Split-Path $f -Leaf
-            Write-Host ("{0}  {1:N0} bytes  {2}" -f $name, (Get-Item $f).Length, $h)
-            "$h  $name"
-          }
-          $lines | Out-File -FilePath 'artifacts/SHA256SUMS.txt' -Encoding ascii
-          Get-Content artifacts/SHA256SUMS.txt
+          if ((Get-Item $zip).Length -lt 50KB) { throw "Archive '$zip' is implausibly small." }
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash
+          Write-Host ("{0}  {1:N0} bytes" -f (Split-Path $zip -Leaf), (Get-Item $zip).Length)
+          Write-Host "SHA256: $h"
+          "$h  AssetProvenanceHelper-v$version.zip" | Out-File 'artifacts/SHA256SUMS.txt' -Encoding ascii
 
       # Never overwrite hand-written release notes: only create the release when it
       # does not already exist.
@@ -196,8 +179,7 @@ jobs:
           $tag = '${{ steps.resolve.outputs.tag }}'
           $version = '${{ steps.ver.outputs.version }}'
           gh release upload $tag `
-            "artifacts/AssetProvenanceHelper-v$version-win-x64.zip" `
-            "artifacts/AssetProvenanceHelper-v$version-framework-dependent.zip" `
+            "artifacts/AssetProvenanceHelper-v$version.zip" `
             "artifacts/SHA256SUMS.txt" `
             --clobber --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { throw "Failed to upload release assets for $tag." }
@@ -212,9 +194,7 @@ jobs:
           $version = '${{ steps.ver.outputs.version }}'
           $names = gh release view $tag --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
           Write-Host "Attached assets:`n$names"
-          foreach ($required in @(
-              "AssetProvenanceHelper-v$version-win-x64.zip",
-              "AssetProvenanceHelper-v$version-framework-dependent.zip")) {
+          foreach ($required in @("AssetProvenanceHelper-v$version.zip")) {
             if ($names -notcontains $required) { throw "Release $tag is missing required asset '$required'." }
           }
           Write-Host "All required release assets are attached."

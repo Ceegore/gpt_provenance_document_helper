@@ -99,8 +99,10 @@ partial class MainForm
 
         Text = AppInfo.ProductName;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1240, 700);
-        Size = new Size(1500, 800);
+        // Sized so the whole workflow - settings, cards, prompt and actions - is
+        // fully visible without resizing. Below this the prompt box collapses.
+        MinimumSize = new Size(1240, 780);
+        Size = new Size(1500, 880);
         KeyPreview = true;
         AutoScroll = false;
 

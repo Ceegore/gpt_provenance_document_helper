@@ -8,7 +8,15 @@ namespace AssetProvenanceHelper;
 
 partial class MainForm
 {
-    private static Panel CreateFieldHost(Control innerControl)
+    /// <summary>
+    /// Wraps an input control in a thin coloured border panel.
+    /// <paramref name="compact"/> must be set for SINGLE-LINE inputs: without it the
+    /// host stretches to the full row height and its border colour renders as a large
+    /// grey block under the field, which also starves the cards section of vertical
+    /// space. Leave it false for controls that genuinely should fill (the multiline
+    /// prompt box and the two image drop targets).
+    /// </summary>
+    private static Panel CreateFieldHost(Control innerControl, bool compact = false)
     {
         var host = new Panel
         {
@@ -24,6 +32,29 @@ partial class MainForm
 
         innerControl.Dock = DockStyle.Fill;
         host.Controls.Add(innerControl);
+
+        if (compact)
+        {
+            // Both TextBox.PreferredHeight and Control.PreferredSize.Height are
+            // always positive for a constructed control, so no fallback is needed
+            // (an unreachable guard here only adds uncovered lines).
+            var innerHeight = innerControl is TextBox singleLine
+                ? singleLine.PreferredHeight
+                : innerControl.PreferredSize.Height;
+
+            // Anchor rather than Dock: a docked host fills the whole cell and its
+            // border colour becomes a grey block whenever a taller control (the
+            // Browse button, or the stacked mode checkboxes) sets the row height.
+            // Left|Right keeps full width while staying vertically centred.
+            host.Dock = DockStyle.None;
+            host.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            host.Height = innerHeight + host.Padding.Vertical;
+            host.Margin = new Padding(0, 3, 0, 3);
+            // Anchored width follows the cell, which a narrow window can drive to
+            // zero. Keep the field usable rather than letting it vanish.
+            host.MinimumSize = new Size(160, host.Height);
+        }
+
         return host;
     }
 
@@ -149,10 +180,17 @@ partial class MainForm
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
+        // Rows must hug their content. Without explicit AutoSize row styles the
+        // TableLayoutPanel splits its height evenly across the rows, which is what
+        // produced the oversized grey blocks under each field.
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         // Download folder
         var lblDl = new Label { Text = "Image Download Folder", AutoSize = true, Anchor = AnchorStyles.Left };
         txtDownloadFolder = new TextBox { Name = "txtDownloadFolder" };
-        pnlDownloadFolderHost = CreateFieldHost(txtDownloadFolder);
+        pnlDownloadFolderHost = CreateFieldHost(txtDownloadFolder, compact: true);
         btnBrowseDownload = CreateButton("Browse");
         btnBrowseDownload.Name = "btnBrowseDownload";
 
@@ -163,7 +201,7 @@ partial class MainForm
         // Asset Root
         var lblRoot = new Label { Text = "Asset Root Folder", AutoSize = true, Anchor = AnchorStyles.Left };
         txtAssetRoot = new TextBox { Name = "txtAssetRoot" };
-        pnlAssetRootHost = CreateFieldHost(txtAssetRoot);
+        pnlAssetRootHost = CreateFieldHost(txtAssetRoot, compact: true);
         btnBrowseAssetRoot = CreateButton("Browse");
         btnBrowseAssetRoot.Name = "btnBrowseAssetRoot";
 
@@ -189,7 +227,7 @@ partial class MainForm
             Margin = new Padding(6, 0, 0, 0),
             Visible = false
         };
-        var pnlProviderHost = CreateFieldHost(cmbProvider);
+        var pnlProviderHost = CreateFieldHost(cmbProvider, compact: true);
 
         layout.Controls.Add(lblProvider, 0, 2);
         layout.Controls.Add(pnlProviderHost, 1, 2);
@@ -223,15 +261,24 @@ partial class MainForm
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
+        // Hug the content; see BuildSettingsGroup for why this is required.
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         var lblName = new Label { Text = "Asset Name", AutoSize = true, Anchor = AnchorStyles.Left };
         txtAssetFolderName = new TextBox { Name = "txtAssetFolderName" };
-        pnlAssetFolderNameHost = CreateFieldHost(txtAssetFolderName);
+        pnlAssetFolderNameHost = CreateFieldHost(txtAssetFolderName, compact: true);
 
         var modeFlow = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Anchor = AnchorStyles.Left,
+            FlowDirection = FlowDirection.LeftToRight,
+            // Keep the mode controls on ONE line. Wrapping stacked them into four
+            // rows, inflating the Current Asset group and squeezing the cards
+            // section off screen at the default window size.
+            WrapContents = false,
+            Margin = new Padding(0)
         };
 
         chkNoReference = new CheckBox
@@ -378,7 +425,10 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight
+            FlowDirection = FlowDirection.LeftToRight,
+            // One row only: wrapping tripled this row's height at narrow widths and
+            // stole space from the drop target and prompt.
+            WrapContents = false
         };
 
         btnRefreshReference = CreateButton("Refresh");
@@ -449,9 +499,9 @@ partial class MainForm
 
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Selected text
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Timestamp
-        mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 45)); // Drop box
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 35)); // Drop box
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Buttons
-        mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 55)); // Prompt
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); // Prompt
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // CTA
 
         lblMainSelectedImage = new Label
@@ -488,7 +538,8 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
         };
 
         btnRefreshMain = CreateButton("Refresh");
@@ -535,7 +586,9 @@ partial class MainForm
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
             ForeColor = Color.Gray,
-            Margin = new Padding(0, 2, 0, 2)
+            Margin = new Padding(0, 1, 0, 1),
+            Height = 16,
+            MaximumSize = new Size(0, 16)
         };
         _toolTip.SetToolTip(lblPromptPreview, "Hover for the full Prompt.");
 
@@ -547,12 +600,16 @@ partial class MainForm
             Dock = DockStyle.Fill
         };
         pnlPromptHost = CreateFieldHost(txtPrompt);
+        // Without a floor the three AutoSize rows around it consumed the whole
+        // prompt container and the textbox rendered at zero height.
+        pnlPromptHost.MinimumSize = new Size(0, 44);
 
         var promptButtons = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
         };
 
         btnPasteClipboard = CreateButton("Paste Clipboard");
