@@ -212,6 +212,29 @@ public class HelpOverlayControl : UserControl
             "When Direct mode is enabled, the Refresh buttons remain visible but disabled.\r\n\r\n" +
             "Main Image in Direct mode performs a fresh automatic Download-folder selection\r\n" +
             "and therefore can replace a manually selected candidate.\r\n\r\n" +
+            "KEEP SETTINGS\r\n\r\n" +
+            "When checked, completing or cancelling an asset keeps Asset Name, Final Prompt\r\n" +
+            "and the Variants count so they do not have to be reentered.\r\n\r\n" +
+            "Image selections and the 'Saved reference' label are always cleared, even with\r\n" +
+            "Keep Settings on - a retained image selection points at a download-folder file\r\n" +
+            "a committed asset has already consumed.\r\n\r\n" +
+            "Keep Settings never applies to Request Manifest import, which always clears the\r\n" +
+            "current fields.\r\n\r\n" +
+            "The Variants count itself always resets to 'none' on every application start,\r\n" +
+            "even when Keep Settings is on.\r\n\r\n" +
+            "VARIANTS\r\n\r\n" +
+            "Produces multiple independent assets from one Asset Name and one prompt in a\r\n" +
+            "single sequential batch, named with an A/B/C... suffix.\r\n\r\n" +
+            "• Works in both No-reference and Reference-assisted mode.\r\n" +
+            "• N variants use the N newest supported downloads (N + 1 in Direct mode +\r\n" +
+            "  Reference-assisted mode: the oldest of those is the Reference).\r\n" +
+            "• The OLDEST of those N becomes 'A', the next 'B', and so on.\r\n" +
+            "• Set the Variants count BEFORE clicking Reference - it locks once a reference\r\n" +
+            "  session is active, because that click binds the variant-A folder name.\r\n" +
+            "• In Reference-assisted mode every variant folder gets its own byte-identical\r\n" +
+            "  copy of the same Reference image and its own Reference provenance document.\r\n" +
+            "• If one variant fails, the earlier variants stay completed; later variants are\r\n" +
+            "  not attempted. A summary reports which variants succeeded and which failed.\r\n\r\n" +
             "NO-REFERENCE\r\n\r\n" +
             "1. Prepare/select the asset and Prompt.\r\n" +
             "2. Generate the image in the browser.\r\n" +

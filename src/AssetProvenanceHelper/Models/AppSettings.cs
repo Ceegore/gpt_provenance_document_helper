@@ -16,4 +16,7 @@ public sealed class AppSettings
 
     public bool DirectModeEnabled { get; set; }
         = false;
+
+    public bool KeepSettingsEnabled { get; set; }
+        = false;
 }

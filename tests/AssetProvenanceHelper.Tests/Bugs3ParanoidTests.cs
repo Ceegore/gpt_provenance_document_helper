@@ -450,7 +450,7 @@ public sealed class Bugs3ParanoidTests
                 typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(form, session);
 
                 var executeMethod = typeof(MainForm).GetMethod("ExecuteMainCommit", BindingFlags.NonPublic | BindingFlags.Instance);
-                executeMethod?.Invoke(form, new object[] { session, main1, "test prompt", processedAt });
+                executeMethod?.Invoke(form, new object[] { session, main1, "test prompt", processedAt, false });
 
                 // Main outputs rolled back
                 var rootMain = Path.Combine(session.AssetFolder, "main1.png");

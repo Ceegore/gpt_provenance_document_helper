@@ -42,6 +42,8 @@ public static class AppConstants
     public const string NotRecordedValue =
         "not recorded";
 
+    public const int MaxVariantCount = 10;
+
     public static readonly IReadOnlyList<string> DefaultImageExtensions =
         new[]
         {

@@ -81,6 +81,16 @@ partial class MainForm
 
     internal void RefreshImageSelection(ImageSlot slot)
     {
+        if (slot == ImageSlot.Main)
+        {
+            var variantCount = GetSelectedVariantCount();
+            if (variantCount > 0)
+            {
+                RefreshMainVariantBatchSelection(variantCount);
+                return;
+            }
+        }
+
         var downloadFolder = txtDownloadFolder.Text;
         var validation = _validationService.ValidateDownloadFolder(downloadFolder);
         if (!validation.IsValid)

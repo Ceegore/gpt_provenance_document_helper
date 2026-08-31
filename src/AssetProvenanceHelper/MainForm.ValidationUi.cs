@@ -150,7 +150,7 @@ partial class MainForm
         return true;
     }
 
-    internal bool ValidateMainActionUi()
+    internal bool ValidateMainActionUi(bool requireSelectedMainImage = true)
     {
         ClearValidationVisuals();
 
@@ -180,21 +180,24 @@ partial class MainForm
             }
         }
 
-        var mainImage = GetSelectedImage(ImageSlot.Main);
-        if (string.IsNullOrWhiteSpace(mainImage) || !File.Exists(mainImage))
+        if (requireSelectedMainImage)
         {
-            HighlightField(pnlMainImageHost, true);
-            hasError = true;
-            firstInvalid ??= btnChooseMain;
-        }
-        else
-        {
-            var imgValidation = _validationService.ValidateImageFile(mainImage, _settings.AcceptedExtensions);
-            if (!imgValidation.IsValid)
+            var mainImage = GetSelectedImage(ImageSlot.Main);
+            if (string.IsNullOrWhiteSpace(mainImage) || !File.Exists(mainImage))
             {
                 HighlightField(pnlMainImageHost, true);
                 hasError = true;
                 firstInvalid ??= btnChooseMain;
+            }
+            else
+            {
+                var imgValidation = _validationService.ValidateImageFile(mainImage, _settings.AcceptedExtensions);
+                if (!imgValidation.IsValid)
+                {
+                    HighlightField(pnlMainImageHost, true);
+                    hasError = true;
+                    firstInvalid ??= btnChooseMain;
+                }
             }
         }
 

@@ -12,6 +12,13 @@ partial class MainForm
 {
     private void HandleMainImage()
     {
+        var variantCount = GetSelectedVariantCount();
+        if (variantCount > 0)
+        {
+            HandleVariantBatch(variantCount);
+            return;
+        }
+
         if (!ValidateMainActionUi())
         {
             return;
@@ -76,6 +83,17 @@ partial class MainForm
             }
         }
 
+        CommitNoReferenceAsset(settings, assetName, sourceImage, prompt, processedAt, suppressUiCompletion: false);
+    }
+
+    private bool CommitNoReferenceAsset(
+        AppSettings settings,
+        string assetName,
+        string sourceImage,
+        string prompt,
+        DateTimeOffset processedAt,
+        bool suppressUiCompletion)
+    {
         AssetSession session;
         try
         {
@@ -95,7 +113,7 @@ partial class MainForm
             ShowError(
                 "Could not initialize and save no-reference asset session.",
                 ex);
-            return;
+            return false;
         }
 
         try
@@ -108,7 +126,7 @@ partial class MainForm
             // Best-effort UI update; proceed with commit
         }
 
-        ExecuteMainCommit(session, sourceImage, prompt, processedAt);
+        return ExecuteMainCommit(session, sourceImage, prompt, processedAt, suppressUiCompletion);
     }
 
     private void HandleReferenceAssistedMainImage(
@@ -179,11 +197,12 @@ partial class MainForm
         ExecuteMainCommit(session, sourceImage, prompt, processedAt);
     }
 
-    private void ExecuteMainCommit(
+    private bool ExecuteMainCommit(
         AssetSession session,
         string sourceImage,
         string prompt,
-        DateTimeOffset processedAt)
+        DateTimeOffset processedAt,
+        bool suppressUiCompletion = false)
     {
         string committedFilename;
 
@@ -216,7 +235,7 @@ partial class MainForm
                         MessageBoxIcon.Error);
 
                     Close();
-                    return;
+                    return false;
                 }
 
                 if (session.WorkflowMode == AssetWorkflowMode.ReferenceAssisted)
@@ -236,7 +255,7 @@ partial class MainForm
                             + "Main outputs were rolled back and the Reference session was restored.",
                             deleteException);
 
-                        return;
+                        return false;
                     }
                     catch (Exception saveException)
                     {
@@ -245,7 +264,7 @@ partial class MainForm
                             saveException);
 
                         Close();
-                        return;
+                        return false;
                     }
                 }
                 else
@@ -258,7 +277,7 @@ partial class MainForm
                         _currentSession = null;
                         _state = UiState.Idle;
                         ApplyState();
-                        return;
+                        return false;
                     }
                     catch (Exception retryDeleteException)
                     {
@@ -267,7 +286,7 @@ partial class MainForm
                             retryDeleteException);
 
                         Close();
-                        return;
+                        return false;
                     }
                 }
             }
@@ -281,7 +300,7 @@ partial class MainForm
                 MessageBoxIcon.Error);
 
             Close();
-            return;
+            return false;
         }
         catch (Exception ex)
         {
@@ -290,11 +309,18 @@ partial class MainForm
             {
                 ShowError("Main Image processing failed.", ex);
             }
-            return;
+            return false;
         }
 
         // DURABLE COMMIT POINT: Complete outputs exist and active session.json is deleted.
-        CompleteMainUiAfterDurableCommit(session, committedFilename, processedAt);
+        _committedMainSourcesThisSession.Add(ValidationService.NormalizePath(sourceImage));
+
+        if (!suppressUiCompletion)
+        {
+            CompleteMainUiAfterDurableCommit(session, committedFilename, processedAt);
+        }
+
+        return true;
     }
 
     private void CompleteMainUiAfterDurableCommit(
@@ -311,13 +337,7 @@ partial class MainForm
 
         try
         {
-            txtPrompt.Clear();
-            txtAssetFolderName.Clear();
-            lblReference.Text = "Saved reference: none";
-
-            SetSelectedImage(ImageSlot.Reference, null);
-            SetSelectedImage(ImageSlot.Main, null);
-            ClearValidationVisuals();
+            ResetAssetInputFieldsAfterDurableAction();
 
             RecordRecentDocument(
                 ProvenanceDocumentKind.Final,

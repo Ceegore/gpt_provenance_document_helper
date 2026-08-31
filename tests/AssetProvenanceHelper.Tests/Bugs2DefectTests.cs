@@ -483,7 +483,7 @@ public sealed class Bugs2DefectTests
                 typeof(MainForm).GetField("_currentSession", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(form, session);
 
                 var executeMethod = typeof(MainForm).GetMethod("ExecuteMainCommit", BindingFlags.NonPublic | BindingFlags.Instance);
-                executeMethod?.Invoke(form, new object[] { session, main1, "test prompt", processedAt });
+                executeMethod?.Invoke(form, new object[] { session, main1, "test prompt", processedAt, false });
 
                 // Main outputs must have been rolled back
                 var rootMain = Path.Combine(session.AssetFolder, "main1.png");
