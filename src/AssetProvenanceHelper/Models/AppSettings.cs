@@ -19,4 +19,31 @@ public sealed class AppSettings
 
     public bool KeepSettingsEnabled { get; set; }
         = false;
+
+    public bool ApiGenerationEnabled { get; set; }
+        = false;
+
+    public string OpenAiModel { get; set; }
+        = "gpt-image-2";
+
+    public string DirectImageQuality { get; set; }
+        = "medium";
+
+    public string BatchImageQuality { get; set; }
+        = "medium";
+
+    public int DirectStartsPerMinute { get; set; }
+        = 5;
+
+    public int DirectMaxConcurrency { get; set; }
+        = 5;
+
+    public int BatchPollSeconds { get; set; }
+        = 30;
+
+    public int MaxBatchRequestsPerSubmission { get; set; }
+        = 500;
+
+    public int DirectRetryAttempts { get; set; }
+        = 3;
 }

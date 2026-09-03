@@ -211,7 +211,7 @@ public class UpgradeV13RequestManifestTests
     }
 
     [Fact]
-    public void VersionTwoRejected()
+    public void VersionThreeRejected()
     {
         using var workspace = new TestWorkspace();
 
@@ -221,7 +221,7 @@ public class UpgradeV13RequestManifestTests
                     workspace,
                     """
                     {
-                      "manifestVersion": 2,
+                      "manifestVersion": 3,
                       "assets": [
                         { "filename": "a.png", "resolution": "10x10", "prompt": "p" }
                       ]

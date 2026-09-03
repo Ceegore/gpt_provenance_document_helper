@@ -113,6 +113,19 @@ public sealed class AssetSession
     /// </summary>
     public string? MainTransactionId { get; set; }
 
+    public string? ApiCandidateId { get; set; }
+    public string? ApiProvider { get; set; }
+    public string? ApiModel { get; set; }
+    public string? ApiMode { get; set; }
+    public string? ApiCustomId { get; set; }
+    public string? ApiTargetResolution { get; set; }
+    public string? ApiProviderResolution { get; set; }
+    public string? ApiRawSha256 { get; set; }
+    public string? ApiNormalizedSha256 { get; set; }
+    public string? ApiProviderRequestId { get; set; }
+    public string? ApiBatchId { get; set; }
+    public string? ApiCreatedAtUtc { get; set; }
+
     public string GetReferenceTempImagePath()
     {
         if (string.IsNullOrWhiteSpace(ReferenceTransactionId) || string.IsNullOrWhiteSpace(AssetFolder) || string.IsNullOrWhiteSpace(ReferenceFilename))
@@ -241,5 +254,17 @@ public sealed class AssetSession
         MainProcessedAt = null;
         MainHash = null;
         MainTransactionId = null;
+        ApiCandidateId = null;
+        ApiProvider = null;
+        ApiModel = null;
+        ApiMode = null;
+        ApiCustomId = null;
+        ApiTargetResolution = null;
+        ApiProviderResolution = null;
+        ApiRawSha256 = null;
+        ApiNormalizedSha256 = null;
+        ApiProviderRequestId = null;
+        ApiBatchId = null;
+        ApiCreatedAtUtc = null;
     }
 }

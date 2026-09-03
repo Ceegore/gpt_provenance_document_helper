@@ -327,7 +327,43 @@ public sealed class TemplateService
                     referenceFilename,
 
                 Prompt =
-                    prompt
+                    prompt,
+
+                ApiCandidateId =
+                    string.IsNullOrWhiteSpace(session.ApiCandidateId) ? AppConstants.NotRecordedValue : session.ApiCandidateId,
+
+                ApiProvider =
+                    string.IsNullOrWhiteSpace(session.ApiProvider) ? AppConstants.NotRecordedValue : session.ApiProvider,
+
+                ApiModel =
+                    string.IsNullOrWhiteSpace(session.ApiModel) ? AppConstants.NotRecordedValue : session.ApiModel,
+
+                ApiMode =
+                    string.IsNullOrWhiteSpace(session.ApiMode) ? AppConstants.NotRecordedValue : session.ApiMode,
+
+                ApiCustomId =
+                    string.IsNullOrWhiteSpace(session.ApiCustomId) ? AppConstants.NotRecordedValue : session.ApiCustomId,
+
+                ApiTargetResolution =
+                    string.IsNullOrWhiteSpace(session.ApiTargetResolution) ? AppConstants.NotRecordedValue : session.ApiTargetResolution,
+
+                ApiProviderResolution =
+                    string.IsNullOrWhiteSpace(session.ApiProviderResolution) ? AppConstants.NotRecordedValue : session.ApiProviderResolution,
+
+                ApiRawSha256 =
+                    string.IsNullOrWhiteSpace(session.ApiRawSha256) ? AppConstants.NotRecordedValue : session.ApiRawSha256,
+
+                ApiNormalizedSha256 =
+                    string.IsNullOrWhiteSpace(session.ApiNormalizedSha256) ? AppConstants.NotRecordedValue : session.ApiNormalizedSha256,
+
+                ApiProviderRequestId =
+                    string.IsNullOrWhiteSpace(session.ApiProviderRequestId) ? AppConstants.NotRecordedValue : session.ApiProviderRequestId,
+
+                ApiBatchId =
+                    string.IsNullOrWhiteSpace(session.ApiBatchId) ? AppConstants.NotRecordedValue : session.ApiBatchId,
+
+                ApiCreatedAtUtc =
+                    string.IsNullOrWhiteSpace(session.ApiCreatedAtUtc) ? AppConstants.NotRecordedValue : session.ApiCreatedAtUtc
             });
     }
 

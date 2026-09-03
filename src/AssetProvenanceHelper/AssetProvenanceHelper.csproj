@@ -31,6 +31,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\AssetProvenanceHelper.Core\AssetProvenanceHelper.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>AssetProvenanceHelper.Tests</_Parameter1>
     </AssemblyAttribute>

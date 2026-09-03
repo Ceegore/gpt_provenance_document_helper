@@ -191,16 +191,13 @@ partial class MainForm
 
             foreach (var request in _currentManifest.Items)
             {
-                var completed =
-                    request.IsCompleted
-                    || _completedRequestKeys.Contains(
-                        request.RequestKey);
+                var (statusText, backColor) = GetRequestItemVisualStatus(request);
 
                 var lvi =
                     new ListViewItem(
                         new[]
                         {
-                            completed ? "Done" : "Pending",
+                            statusText,
                             request.AssetName,
                             request.Resolution
                         })
@@ -208,9 +205,9 @@ partial class MainForm
                         Tag = request
                     };
 
-                if (completed)
+                if (backColor != Color.White)
                 {
-                    lvi.BackColor = DoneRowBackColor;
+                    lvi.BackColor = backColor;
                 }
 
                 if (_activeRequest is not null
@@ -219,9 +216,7 @@ partial class MainForm
                         request.RequestKey,
                         StringComparison.Ordinal))
                 {
-                    lvi.Font = new Font(
-                        lvRequestQueue.Font,
-                        FontStyle.Bold);
+                    lvi.Font = GetQueueBoldFont();
                 }
 
                 lvRequestQueue.Items.Add(lvi);
@@ -233,8 +228,25 @@ partial class MainForm
         }
     }
 
+    private Font? _queueBoldFont;
+
+    private Font GetQueueBoldFont()
+    {
+        if (_queueBoldFont is null || Math.Abs(_queueBoldFont.SizeInPoints - lvRequestQueue.Font.SizeInPoints) > 0.001f)
+        {
+            _queueBoldFont?.Dispose();
+            _queueBoldFont = new Font(lvRequestQueue.Font, FontStyle.Bold);
+        }
+        return _queueBoldFont;
+    }
+
     private void HandleRequestQueueMouseUp(MouseEventArgs e)
     {
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
         var hit =
             lvRequestQueue.HitTest(
                 e.Location);
@@ -247,7 +259,7 @@ partial class MainForm
         HandleRequestQueueItemActivate(hit.Item);
     }
 
-    private void HandleRequestQueueItemActivate(
+    internal void HandleRequestQueueItemActivate(
         ListViewItem? lvi)
     {
         if (lvi?.Tag is not AssetRequestItem item)
@@ -284,6 +296,8 @@ partial class MainForm
         }
 
         _activeRequest = item;
+        var hadActiveStagedCandidate = _activeApiCandidateMetadata is not null;
+        _activeApiCandidateMetadata = null;
 
         _settingRequestBoundFields = true;
 
@@ -302,6 +316,38 @@ partial class MainForm
 
         UpdatePromptPreview();
         TryCopyPromptToClipboard(item.Prompt);
+
+        if (_currentManifest != null)
+        {
+            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, item.RequestKey);
+            if (job?.Status == Core.Generation.GenerationItemStatus.Ready
+                && !string.IsNullOrEmpty(job.StagedOutputPath)
+                && File.Exists(job.StagedOutputPath))
+            {
+                var candidateId = Path.GetFileNameWithoutExtension(job.StagedOutputPath);
+                var metadata = _stagingService.LoadMetadata(
+                    _currentManifest.ManifestFingerprint,
+                    item.RequestKey,
+                    candidateId);
+
+                if (metadata != null)
+                {
+                    _activeApiCandidateMetadata = metadata;
+                    SelectProviderByFileName("OpenAI API.md");
+                    SetSelectedImage(ImageSlot.Main, job.StagedOutputPath);
+                    AddStatus($"Staged candidate loaded for '{item.AssetName}'. Review and commit when ready.");
+                }
+            }
+            else if (hadActiveStagedCandidate)
+            {
+                SetSelectedImage(ImageSlot.Main, null);
+            }
+        }
+        else if (hadActiveStagedCandidate)
+        {
+            SetSelectedImage(ImageSlot.Main, null);
+        }
+
         RefreshRequestQueueVisuals();
     }
 
@@ -329,6 +375,8 @@ partial class MainForm
         }
 
         _activeRequest =
+            null;
+        _activeApiCandidateMetadata =
             null;
 
         RefreshRequestQueueVisuals();
@@ -388,10 +436,20 @@ partial class MainForm
                 // import is allowed so the queue association can be restored.
                 btnImportRequest.Enabled = true;
             }
+
+            btnGenerateNow.Enabled = false;
+            btnQueueProductionBatch.Enabled = false;
+            _toolTip.SetToolTip(btnGenerateNow, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
+            _toolTip.SetToolTip(btnQueueProductionBatch, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
         }
         else
         {
             btnImportRequest.Enabled = true;
+            var canRunApi = _currentManifest is not null && !_isGeneratingDirect && !_isSubmittingBatch;
+            btnGenerateNow.Enabled = canRunApi;
+            btnQueueProductionBatch.Enabled = canRunApi;
+            _toolTip.SetToolTip(btnGenerateNow, null);
+            _toolTip.SetToolTip(btnQueueProductionBatch, null);
         }
     }
 
@@ -407,11 +465,29 @@ partial class MainForm
             ?? session.SourceRequestKey;
 
         _activeRequest = null;
+        _activeApiCandidateMetadata = null;
 
         if (string.IsNullOrWhiteSpace(completedRequestKey)
             || _currentManifest is null)
         {
             return;
+        }
+
+        var existingJob =
+            _generationJobStore.GetItem(
+                _currentManifest.ManifestFingerprint,
+                completedRequestKey);
+
+        if (existingJob is not null)
+        {
+            _generationJobStore.UpsertItem(
+                existingJob with
+                {
+                    Status =
+                        Core.Generation.GenerationItemStatus.Committed,
+                    UpdatedAtUtc =
+                        DateTimeOffset.UtcNow
+                });
         }
 
         var item =
@@ -429,6 +505,13 @@ partial class MainForm
 
         item.IsCompleted = true;
         _completedRequestKeys.Add(completedRequestKey);
+
+        if (_activeRequest is not null
+            && string.Equals(_activeRequest.RequestKey, completedRequestKey, StringComparison.Ordinal))
+        {
+            _activeRequest = null;
+            _activeApiCandidateMetadata = null;
+        }
 
         try
         {
@@ -448,6 +531,7 @@ partial class MainForm
     private void HandleRequestCancellation()
     {
         _activeRequest = null;
+        _activeApiCandidateMetadata = null;
         RefreshRequestQueueVisuals();
         UpdateRequestProgressLabel();
     }

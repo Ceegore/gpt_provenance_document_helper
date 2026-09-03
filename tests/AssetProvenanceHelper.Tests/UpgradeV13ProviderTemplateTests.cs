@@ -547,4 +547,50 @@ public class UpgradeV13ProviderTemplateTests
 
         Assert.Equal(directory, catalog.TemplateDirectory);
     }
+
+    [Fact]
+    public void ProviderTemplateRenderer_WithEmptyApiTags_RendersNotRecorded()
+    {
+        var templateContent =
+            """
+            Provider: <<<PROVIDER>>>
+            Date: <<<DATE>>>
+            File: <<<FILENAME>>>
+            Asset: <<<ASSET_NAME>>>
+            Project: <<<PROJECT>>>
+            Role: <<<ROLE>>>
+            Workflow: <<<WORKFLOW>>>
+            Reference: <<<REFERENCE_FILENAME>>>
+            Candidate: <<<API_CANDIDATE_ID>>>
+            Model: <<<API_MODEL>>>
+            Prompt:
+            <<<PROMPT>>>
+            """;
+
+        var snapshot = new AssetProvenanceHelper.Models.ProviderTemplateSnapshot
+        {
+            FileName = "OpenAI API.md",
+            DisplayName = "OpenAI API",
+            Content = templateContent,
+            ContentSha256 = ProviderTemplateRules.ComputeContentSha256(templateContent)
+        };
+
+        var context = new AssetProvenanceHelper.Models.ProviderRenderContext
+        {
+            Provider = "OpenAI API",
+            Date = "2026-09-03",
+            Filename = "test.png",
+            AssetName = "test",
+            Project = "Demo",
+            Role = "Final",
+            Workflow = "Direct",
+            ReferenceFilename = "none",
+            Prompt = "A cat"
+        };
+
+        var rendered = ProviderTemplateRenderer.Render(snapshot, context);
+
+        Assert.Contains("Candidate: not recorded", rendered);
+        Assert.Contains("Model: not recorded", rendered);
+    }
 }

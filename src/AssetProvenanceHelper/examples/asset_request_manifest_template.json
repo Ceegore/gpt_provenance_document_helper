@@ -1,15 +1,17 @@
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "assets": [
     {
-      "filename": "asset_ui_screen_settings.webp",
+      "filename": "background_castle.webp",
       "resolution": "1920x1080",
-      "prompt": "Place the complete exact generation prompt here."
+      "alpha": "not_required",
+      "prompt": "Complete prompt..."
     },
     {
       "filename": "enemy_armored.png",
       "resolution": "512x512",
-      "prompt": "Place the complete exact generation prompt here."
+      "alpha": "required",
+      "prompt": "Complete prompt..."
     }
   ]
 }

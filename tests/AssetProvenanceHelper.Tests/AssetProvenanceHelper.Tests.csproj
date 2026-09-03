@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\AssetProvenanceHelper\AssetProvenanceHelper.csproj" />
+    <ProjectReference Include="..\..\src\AssetProvenanceHelper.Core\AssetProvenanceHelper.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

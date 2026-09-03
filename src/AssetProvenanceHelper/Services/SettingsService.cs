@@ -210,6 +210,30 @@ public sealed class SettingsService
             settings.SelectedProviderTemplateFileName =
                 AppConstants.DefaultProviderTemplateFileName;
         }
+
+        settings.OpenAiModel = string.IsNullOrWhiteSpace(settings.OpenAiModel)
+            ? "gpt-image-2"
+            : settings.OpenAiModel.Trim();
+
+        settings.DirectImageQuality = NormalizeQuality(settings.DirectImageQuality);
+        settings.BatchImageQuality = NormalizeQuality(settings.BatchImageQuality);
+
+        settings.DirectStartsPerMinute = Math.Clamp(settings.DirectStartsPerMinute, 1, 60);
+        settings.DirectMaxConcurrency = Math.Clamp(settings.DirectMaxConcurrency, 1, 20);
+        settings.BatchPollSeconds = Math.Clamp(settings.BatchPollSeconds, 5, 300);
+        settings.MaxBatchRequestsPerSubmission = Math.Clamp(settings.MaxBatchRequestsPerSubmission, 1, 5000);
+        settings.DirectRetryAttempts = Math.Clamp(settings.DirectRetryAttempts, 1, 10);
+    }
+
+    private static string NormalizeQuality(string? quality)
+    {
+        if (string.IsNullOrWhiteSpace(quality))
+        {
+            return "medium";
+        }
+
+        var lower = quality.Trim().ToLowerInvariant();
+        return lower is "low" or "medium" or "high" ? lower : "medium";
     }
 
     private static string NormalizeExtension(

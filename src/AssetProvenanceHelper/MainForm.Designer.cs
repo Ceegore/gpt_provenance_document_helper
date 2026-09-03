@@ -17,6 +17,7 @@ partial class MainForm
     private Label lblHeaderTitle = null!;
     private Label lblHeaderVersion = null!;
     private Button btnHelp = null!;
+    private Button btnSettings = null!;
 
     private GroupBox grpSettings = null!;
     private TextBox txtDownloadFolder = null!;
@@ -74,6 +75,8 @@ partial class MainForm
 
     private GroupBox grpRequestQueue = null!;
     private Button btnImportRequest = null!;
+    private Button btnGenerateNow = null!;
+    private Button btnQueueProductionBatch = null!;
     private Label lblRequestSource = null!;
     private ListView lvRequestQueue = null!;
     private Label lblRequestProgress = null!;
@@ -86,6 +89,26 @@ partial class MainForm
         if (disposing)
         {
             StopCtaPulse();
+            _batchPollingTimer?.Dispose();
+            _batchPollingTimer = null;
+
+            if (_apiGenerationCts is not null)
+            {
+                try
+                {
+                    _apiGenerationCts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
+                _apiGenerationCts.Dispose();
+                _apiGenerationCts = null;
+            }
+
+            _queueBoldFont?.Dispose();
+            _queueBoldFont = null;
+
             components?.Dispose();
         }
 

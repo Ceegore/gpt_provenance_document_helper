@@ -1,5 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using AssetProvenanceHelper.Core.Generation;
+using AssetProvenanceHelper.Core.Generation.Providers;
+using AssetProvenanceHelper.Core.Generation.Providers.OpenAi;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
 
@@ -46,6 +49,12 @@ public sealed class AppBootstrapContext
     public required RecentDocumentHistoryService RecentDocumentHistoryService { get; init; }
 
     public required RequestProgressService RequestProgressService { get; init; }
+
+    public required ISecretStore SecretStore { get; init; }
+
+    public required GenerationJobStore GenerationJobStore { get; init; }
+
+    public required IImageGenerationProvider ImageGenerationProvider { get; init; }
 }
 
 public static class AppBootstrap
@@ -192,11 +201,8 @@ public static class AppBootstrap
         }
     }
 
-    private static bool PathsEqual(string left, string right) =>
-        string.Equals(
-            Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-            StringComparison.OrdinalIgnoreCase);
+    private static bool PathsEqual(string? left, string? right) =>
+        ValidationService.PathsEqual(left, right);
 
     public static string GetSettingsPath(
         string baseDirectory) =>
@@ -347,6 +353,21 @@ public static class AppBootstrap
                 GetRequestProgressPath(
                     stateDirectory));
 
+        var secretStore =
+            new DpapiSecretStore(
+                Path.Combine(
+                    stateDirectory,
+                    "secrets.dat"));
+
+        var generationJobStore =
+            new GenerationJobStore(
+                Path.Combine(
+                    stateDirectory,
+                    "generation-jobs.json"));
+
+        var imageGenerationProvider =
+            new OpenAiImageGenerationProvider();
+
         return new AppBootstrapContext
         {
             BaseDirectory =
@@ -410,7 +431,16 @@ public static class AppBootstrap
                 recentDocumentHistoryService,
 
             RequestProgressService =
-                requestProgressService
+                requestProgressService,
+
+            SecretStore =
+                secretStore,
+
+            GenerationJobStore =
+                generationJobStore,
+
+            ImageGenerationProvider =
+                imageGenerationProvider
         };
     }
 }

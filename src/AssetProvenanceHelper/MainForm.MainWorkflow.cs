@@ -106,6 +106,22 @@ partial class MainForm
                 GetProviderSnapshotForNewAsset(),
                 _activeRequest?.RequestKey);
 
+            if (_activeApiCandidateMetadata is not null)
+            {
+                PopulateApiCandidateMetadataIntoSession(session);
+
+                var recomputedProvenance = _templateService.RenderFinalForSession(
+                    session,
+                    session.MainFilename!,
+                    prompt,
+                    processedAt);
+
+                session.MainProvenanceHash = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        new System.Text.UTF8Encoding(false).GetBytes(recomputedProvenance)))
+                    .ToLowerInvariant();
+            }
+
             _sessionService.Save(session);
         }
         catch (Exception ex)
@@ -168,6 +184,8 @@ partial class MainForm
 
         try
         {
+            PopulateApiCandidateMetadataIntoSession(session);
+
             _assetProcessorService.PrepareMainCommit(
                 session,
                 settings.AcceptedExtensions,
@@ -582,5 +600,26 @@ partial class MainForm
         {
             ShowError($"Could not open folder '{path}'.", ex);
         }
+    }
+
+    private void PopulateApiCandidateMetadataIntoSession(AssetSession session)
+    {
+        if (_activeApiCandidateMetadata is null)
+        {
+            return;
+        }
+
+        session.ApiCandidateId = _activeApiCandidateMetadata.CandidateId;
+        session.ApiProvider = _activeApiCandidateMetadata.Provider;
+        session.ApiModel = _activeApiCandidateMetadata.Model;
+        session.ApiMode = _activeApiCandidateMetadata.Mode;
+        session.ApiCustomId = _activeApiCandidateMetadata.CustomId;
+        session.ApiTargetResolution = _activeApiCandidateMetadata.TargetResolution;
+        session.ApiProviderResolution = _activeApiCandidateMetadata.ProviderResolution;
+        session.ApiRawSha256 = _activeApiCandidateMetadata.RawSha256;
+        session.ApiNormalizedSha256 = _activeApiCandidateMetadata.NormalizedSha256;
+        session.ApiProviderRequestId = _activeApiCandidateMetadata.ProviderRequestId;
+        session.ApiBatchId = _activeApiCandidateMetadata.BatchId;
+        session.ApiCreatedAtUtc = _activeApiCandidateMetadata.CreatedAtUtc.ToString("O");
     }
 }

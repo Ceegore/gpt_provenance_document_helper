@@ -9,6 +9,12 @@ A robust, fail-safe Windows desktop utility for tracking, organizing, and record
 - **Dual Workflow Modes**:
   - **Reference-Assisted Workflow**: Manage assets generated from a visual reference image (e.g. concept art, draft) with multi-stage verification.
   - **No Reference Mode**: Manage direct single-step generation assets without reference image dependencies.
+- **Automated API & Production Batch Generation**:
+  - **Generate Now (API)**: Rate-limited direct generation via official provider APIs (e.g. OpenAI `gpt-image-2`).
+  - **Production Batch Automation**: Asynchronous batch generation with a **50% API cost discount** and separate batch quotas.
+  - **Manifest V2 & Alpha Detection**: Automated request manifest processing supporting transparency requirements (`"alpha": "required" | "not_required" | "unknown"`).
+  - **Secure DPAPI Secret Storage**: Windows Data Protection API (DPAPI) ensures API keys are encrypted at rest and never saved in plaintext logs, settings, or manifests.
+  - **Full Automation Provenance**: End-to-end provenance capturing generation model, mode (direct/batch), target vs provider resolutions, raw and normalized SHA-256 hashes, provider request IDs, and batch IDs.
 - **Independent Image Slots**: Select, refresh, choose, or drag-and-drop reference and main image candidates independently with immediate previews.
 - **Canonical Ingame Copy**: Automatically creates an `ingame/<assetName>.<ext>` copy with the normalized asset name while retaining the original source filename in the root directory.
 - **Non-Destructive File Copying**: Downloaded source files are copied. They are **not** moved or deleted by a normal save operation.

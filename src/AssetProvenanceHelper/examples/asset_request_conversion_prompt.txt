@@ -7,15 +7,16 @@ OUTPUT RULES
 2. Do not wrap the JSON in Markdown code fences.
 3. Use exactly this top-level structure:
    {
-     "manifestVersion": 1,
+     "manifestVersion": 2,
      "assets": [...]
    }
 
 4. Every requested asset must become exactly one object in "assets".
 
-5. Every asset object must contain exactly these three properties:
+5. Every asset object must contain these four properties:
    "filename"
    "resolution"
+   "alpha"
    "prompt"
 
 6. Do not add any other properties.
@@ -33,30 +34,43 @@ OUTPUT RULES
    - Example:
      1920x1080
 
-9. "prompt":
-   - Copy the complete generation prompt.
-   - Do not summarize it.
-   - Do not improve it.
-   - Do not rewrite it.
-   - Do not translate it.
-   - Do not shorten it.
-   - Do not omit any line or technical specification.
-   - Preserve the prompt's content exactly, using valid JSON escaping.
+9. "alpha":
+   - If the source explicitly requires transparency / true alpha: "required"
+   - If the source explicitly specifies an opaque backdrop / full background: "not_required"
+   - Otherwise: "unknown"
+   - Do not guess!
 
-10. Do not omit any requested asset.
+10. "prompt":
+    - Copy the complete generation prompt.
+    - Do not summarize it.
+    - Do not improve it.
+    - Do not rewrite it.
+    - Do not translate it.
+    - Do not shorten it.
+    - Do not omit any line or technical specification.
+    - Preserve the prompt's content exactly, using valid JSON escaping.
 
-11. Do not invent information that is missing.
+11. Do not omit any requested asset.
 
-12. The order of assets should remain the same as in the source document.
+12. Do not invent information that is missing.
+
+13. The order of assets should remain the same as in the source document.
 
 EXACT FORMAT EXAMPLE
 
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "assets": [
     {
       "filename": "example.webp",
       "resolution": "1920x1080",
+      "alpha": "not_required",
+      "prompt": "Exact complete prompt here."
+    },
+    {
+      "filename": "enemy_sprite.png",
+      "resolution": "512x512",
+      "alpha": "required",
       "prompt": "Exact complete prompt here."
     }
   ]
