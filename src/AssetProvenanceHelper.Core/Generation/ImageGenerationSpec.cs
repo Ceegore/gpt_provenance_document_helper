@@ -14,4 +14,5 @@ public sealed record ImageGenerationSpec(
     string Quality,
     int GenerationWidth,
     int GenerationHeight,
-    string CustomId);
+    string CustomId,
+    int? RetryAttempts = null);

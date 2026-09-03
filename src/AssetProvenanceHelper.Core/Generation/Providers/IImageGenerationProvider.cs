@@ -46,6 +46,18 @@ public interface IImageGenerationProvider
         string apiKey,
         CancellationToken cancellationToken = default);
 
+    Task<string> UploadBatchInputFileAsync(
+        IReadOnlyList<ImageGenerationSpec> specs,
+        string apiKey,
+        CancellationToken cancellationToken = default) =>
+        throw new NotImplementedException();
+
+    Task<BatchSubmissionResult> CreateBatchAsync(
+        string inputFileId,
+        string apiKey,
+        CancellationToken cancellationToken = default) =>
+        throw new NotImplementedException();
+
     Task<BatchStatusResult> GetBatchStatusAsync(
         string providerBatchId,
         string apiKey,

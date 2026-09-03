@@ -110,4 +110,26 @@ public sealed class OpenAiBatchJsonlBuilderTests
 
         Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec1, spec2 }));
     }
+
+    [Fact]
+    public void Build_EmptySpecs_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(Array.Empty<ImageGenerationSpec>()));
+    }
+
+    [Fact]
+    public void Build_EmptyCustomId_ThrowsArgumentException()
+    {
+        var spec = new ImageGenerationSpec("fp", "rk", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "");
+        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec }));
+    }
+
+    [Fact]
+    public void Build_MismatchedModel_ThrowsArgumentException()
+    {
+        var spec1 = new ImageGenerationSpec("fp", "rk1", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "c1");
+        var spec2 = new ImageGenerationSpec("fp", "rk2", "b", "b.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "other-model", "medium", 816, 816, "c2");
+
+        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec1, spec2 }));
+    }
 }

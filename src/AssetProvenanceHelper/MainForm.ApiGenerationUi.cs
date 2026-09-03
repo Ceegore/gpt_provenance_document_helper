@@ -12,7 +12,7 @@ partial class MainForm
     private static readonly Color FailedRowBackColor = Color.FromArgb(254, 226, 226);
     private static readonly Color UncertainRowBackColor = Color.FromArgb(254, 215, 170);
 
-    private (string StatusText, Color BackColor) GetRequestItemVisualStatus(AssetRequestItem request)
+    private (string StatusText, Color BackColor) GetRequestItemVisualStatus(AssetRequestItem request, GenerationItemRecord? preloadedJob = null)
     {
         if (request.IsCompleted || _completedRequestKeys.Contains(request.RequestKey))
         {
@@ -21,7 +21,7 @@ partial class MainForm
 
         if (_currentManifest != null)
         {
-            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, request.RequestKey);
+            var job = preloadedJob ?? _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, request.RequestKey);
             if (job != null)
             {
                 if (job.Status == GenerationItemStatus.Ready && !string.IsNullOrEmpty(job.StagedOutputPath) && File.Exists(job.StagedOutputPath))

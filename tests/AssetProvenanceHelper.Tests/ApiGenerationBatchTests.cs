@@ -101,6 +101,21 @@ public sealed class ApiGenerationBatchTests : IDisposable
         public Task<ImageGenerationCandidate> GenerateAsync(ImageGenerationSpec spec, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
+        public Task<string> UploadBatchInputFileAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default)
+        {
+            SubmittedBatches.Add(specs);
+            return Task.FromResult("file-input-123");
+        }
+
+        public Task<BatchSubmissionResult> CreateBatchAsync(string inputFileId, string apiKey, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new BatchSubmissionResult(
+                ProviderInputFileId: inputFileId,
+                ProviderBatchId: "batch-prov-123",
+                SubmittedCount: 0,
+                CreatedAtUtc: DateTimeOffset.UtcNow));
+        }
+
         public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default)
         {
             SubmittedBatches.Add(specs);

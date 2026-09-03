@@ -83,30 +83,40 @@ public sealed class ApiSettingsUiTests : IDisposable
             var settings = new AppSettings();
             var fakeSecrets = new FakeSecretStore();
 
-            using var dialog = new SettingsDialog(settings, fakeSecrets);
-            dialog.Show();
+            try
+            {
+                SettingsDialog.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.Yes;
 
-            var txtKey = dialog.Controls.Find("txtApiKey", true).FirstOrDefault() as TextBox;
-            var btnSave = dialog.Controls.Find("btnSaveKey", true).FirstOrDefault() as Button;
-            var btnDelete = dialog.Controls.Find("btnDeleteKey", true).FirstOrDefault() as Button;
+                using var dialog = new SettingsDialog(settings, fakeSecrets);
+                dialog.Show();
 
-            Assert.NotNull(txtKey);
-            Assert.NotNull(btnSave);
-            Assert.NotNull(btnDelete);
-            Assert.True(txtKey.UseSystemPasswordChar);
+                var txtKey = dialog.Controls.Find("txtApiKey", true).FirstOrDefault() as TextBox;
+                var btnSave = dialog.Controls.Find("btnSaveKey", true).FirstOrDefault() as Button;
+                var btnDelete = dialog.Controls.Find("btnDeleteApiKey", true).FirstOrDefault() as Button
+                    ?? dialog.Controls.Find("btnDeleteKey", true).FirstOrDefault() as Button;
 
-            // Test saving key
-            txtKey.Text = "sk-test-secret-12345";
-            btnSave.PerformClick();
+                Assert.NotNull(txtKey);
+                Assert.NotNull(btnSave);
+                Assert.NotNull(btnDelete);
+                Assert.True(txtKey.UseSystemPasswordChar);
 
-            Assert.Equal("sk-test-secret-12345", fakeSecrets.LoadSecret(SettingsDialog.OpenAiApiKeySecretName));
+                // Test saving key
+                txtKey.Text = "sk-test-secret-12345";
+                btnSave.PerformClick();
 
-            // Test deleting key
-            btnDelete.PerformClick();
-            Assert.Null(fakeSecrets.LoadSecret(SettingsDialog.OpenAiApiKeySecretName));
-            Assert.Equal(string.Empty, txtKey.Text);
+                Assert.Equal("sk-test-secret-12345", fakeSecrets.LoadSecret(SettingsDialog.OpenAiApiKeySecretName));
 
-            dialog.Close();
+                // Test deleting key
+                btnDelete.PerformClick();
+                Assert.Null(fakeSecrets.LoadSecret(SettingsDialog.OpenAiApiKeySecretName));
+                Assert.Equal(string.Empty, txtKey.Text);
+
+                dialog.Close();
+            }
+            finally
+            {
+                SettingsDialog.ConfirmBoxProvider = null;
+            }
         });
     }
 

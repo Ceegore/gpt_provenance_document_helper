@@ -76,4 +76,47 @@ public sealed class OpenAiBatchResultParserTests
         Assert.Equal("malformed_base64", item.ErrorCode);
         Assert.Contains("malformed base64", item.ErrorMessage);
     }
+
+    [Fact]
+    public void ParseResults_InvalidJsonAndMissingCustomId_SkipsGracefully()
+    {
+        var outputJsonl =
+            "not valid json at all\n" +
+            "{\"id\":\"req_empty_custom_id\",\"custom_id\":\"   \"}\n" +
+            "{\"id\":\"req_no_custom_id\"}\n";
+
+        var results = OpenAiBatchResultParser.ParseResults(outputJsonl, null);
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void ParseResults_200WithEmptyDataOrNoStatusCode_FailsGracefully()
+    {
+        var outputJsonl =
+            "{\"id\":\"req_empty_data\",\"custom_id\":\"aph-c1\",\"response\":{\"status_code\":200,\"body\":{\"data\":[]}}}\n" +
+            "{\"id\":\"req_no_status\",\"custom_id\":\"aph-c2\",\"response\":{}}";
+
+        var results = OpenAiBatchResultParser.ParseResults(outputJsonl, null);
+        Assert.Equal(2, results.Count);
+
+        var c1 = results.First(r => r.CustomId == "aph-c1");
+        Assert.False(c1.IsSuccess);
+        Assert.Equal("unknown_error", c1.ErrorCode);
+
+        var c2 = results.First(r => r.CustomId == "aph-c2");
+        Assert.False(c2.IsSuccess);
+        Assert.Equal(500, c2.StatusCode);
+    }
+
+    [Fact]
+    public void ParseResults_DuplicatesAcrossOutputAndErrorFiles_MarksAllDuplicates()
+    {
+        var outputJsonl = "{\"id\":\"req_1\",\"custom_id\":\"aph-dup\",\"response\":{\"status_code\":200,\"body\":{\"data\":[{\"b64_json\":\"AQID\"}]}}}";
+        var errorJsonl = "{\"id\":\"req_2\",\"custom_id\":\"aph-dup\",\"response\":{\"status_code\":400}}";
+
+        var results = OpenAiBatchResultParser.ParseResults(outputJsonl, errorJsonl);
+        Assert.Single(results);
+        Assert.False(results[0].IsSuccess);
+        Assert.Equal("duplicate_custom_id", results[0].ErrorCode);
+    }
 }

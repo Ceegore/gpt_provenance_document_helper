@@ -47,14 +47,16 @@ public sealed class OpenAiApiClient : IDisposable
     public async Task<OpenAiImageGenerationResponse> GenerateImageAsync(
         OpenAiImageGenerationRequest request,
         string apiKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        RetryPolicy? retryPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
 
         var json = JsonSerializer.Serialize(request, JsonOptions);
+        var policy = retryPolicy ?? _retryPolicy;
 
-        for (var attempt = 1; attempt <= _retryPolicy.MaxAttempts; attempt++)
+        for (var attempt = 1; attempt <= policy.MaxAttempts; attempt++)
         {
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "images/generations")
             {
@@ -77,23 +79,23 @@ public sealed class OpenAiApiClient : IDisposable
                     {
                         throw new OpenAiApiException(response.StatusCode, "empty_response", null, "OpenAI API returned empty generation data.", requestId);
                     }
-                    return result;
+                    return result with { RequestId = requestId };
                 }
 
                 var errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
-                if (_retryPolicy.MaxAttempts > attempt && RetryPolicy.IsRetryableStatusCode(response.StatusCode))
+                if (policy.MaxAttempts > attempt && RetryPolicy.IsRetryableStatusCode(response.StatusCode))
                 {
-                    var delay = _retryPolicy.GetDelay(attempt, response.Headers);
+                    var delay = policy.GetDelay(attempt, response.Headers);
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 throw OpenAiErrorParser.Parse(response.StatusCode, errorBody, requestId);
             }
-            catch (Exception ex) when (ex is not OpenAiApiException && _retryPolicy.MaxAttempts > attempt && RetryPolicy.IsRetryableException(ex))
+            catch (Exception ex) when (ex is not OpenAiApiException && policy.MaxAttempts > attempt && RetryPolicy.IsRetryableException(ex))
             {
-                var delay = _retryPolicy.GetDelay(attempt, response?.Headers);
+                var delay = policy.GetDelay(attempt, response?.Headers);
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
             finally
@@ -239,18 +241,8 @@ public sealed class OpenAiApiClient : IDisposable
             return true;
         }
 
-        // Try generic models list if specific model endpoint fails
-        using var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "models");
-        modelsRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-
-        using var modelsResponse = await _httpClient.SendAsync(modelsRequest, cancellationToken).ConfigureAwait(false);
-        if (modelsResponse.IsSuccessStatusCode)
-        {
-            return true;
-        }
-
-        var errorBody = await modelsResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        throw OpenAiErrorParser.Parse(modelsResponse.StatusCode, errorBody, GetRequestId(modelsResponse));
+        var errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        throw OpenAiErrorParser.Parse(response.StatusCode, errorBody, GetRequestId(response));
     }
 
     private static string? GetRequestId(HttpResponseMessage response)

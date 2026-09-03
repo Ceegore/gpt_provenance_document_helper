@@ -77,7 +77,8 @@ private readonly SettingsService _settingsService;
         RequestProgressService? requestProgressService = null,
         IImageGenerationProvider? imageGenerationProvider = null,
         ISecretStore? secretStore = null,
-        GenerationJobStore? generationJobStore = null)
+        GenerationJobStore? generationJobStore = null,
+        GeneratedImageStagingService? stagingService = null)
     {
         _settings = settings;
         _settingsService = settingsService;
@@ -92,6 +93,7 @@ private readonly SettingsService _settingsService;
         _imageGenerationProvider = imageGenerationProvider ?? new OpenAiImageGenerationProvider();
         _secretStore = secretStore ?? new DpapiSecretStore();
         _generationJobStore = generationJobStore ?? new GenerationJobStore(Path.Combine(AppBootstrap.GetStateDirectory(), "generation-jobs.json"));
+        _stagingService = stagingService ?? new GeneratedImageStagingService();
 
         InitializeComponent();
 

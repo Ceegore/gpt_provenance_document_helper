@@ -62,6 +62,19 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void GetDelay_WithNearFutureRetryAfterDate_UsesDateDifference()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var policy = new RetryPolicy(3, timeProvider: () => now);
+        using var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        response.Headers.RetryAfter = new RetryConditionHeaderValue(now.AddSeconds(12));
+
+        var delay = policy.GetDelay(1, response.Headers);
+
+        Assert.Equal(TimeSpan.FromSeconds(12), delay);
+    }
+
+    [Fact]
     public void GetDelay_WithoutHeaders_AppliesBackoff()
     {
         var random = new Random(42);

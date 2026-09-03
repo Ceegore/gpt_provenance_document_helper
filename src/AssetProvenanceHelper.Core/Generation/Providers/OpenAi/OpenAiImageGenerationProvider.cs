@@ -49,7 +49,11 @@ public sealed class OpenAiImageGenerationProvider : IImageGenerationProvider
             OutputFormat: "png",
             Background: "opaque");
 
-        var response = await _client.GenerateImageAsync(request, apiKey, cancellationToken).ConfigureAwait(false);
+        var effectivePolicy = spec.RetryAttempts.HasValue
+            ? new RetryPolicy(Math.Max(1, spec.RetryAttempts.Value + 1))
+            : null;
+
+        var response = await _client.GenerateImageAsync(request, apiKey, cancellationToken, effectivePolicy).ConfigureAwait(false);
 
         var firstData = response.Data?.FirstOrDefault()
             ?? throw new InvalidOperationException("OpenAI API response contained no image data.");
@@ -77,10 +81,11 @@ public sealed class OpenAiImageGenerationProvider : IImageGenerationProvider
             RawBytes: rawBytes,
             RawSha256: rawSha256,
             ProviderWidth: spec.GenerationWidth,
-            ProviderHeight: spec.GenerationHeight);
+            ProviderHeight: spec.GenerationHeight,
+            ProviderRequestId: response.RequestId);
     }
 
-    public async Task<BatchSubmissionResult> SubmitBatchAsync(
+    public async Task<string> UploadBatchInputFileAsync(
         IReadOnlyList<ImageGenerationSpec> specs,
         string apiKey,
         CancellationToken cancellationToken = default)
@@ -103,14 +108,34 @@ public sealed class OpenAiImageGenerationProvider : IImageGenerationProvider
 
         var jsonlBytes = OpenAiBatchJsonlBuilder.Build(specs);
         var fileResponse = await _client.UploadBatchFileAsync(jsonlBytes, "batch.jsonl", apiKey, cancellationToken).ConfigureAwait(false);
+        return fileResponse.Id;
+    }
 
-        var batchResponse = await _client.CreateBatchAsync(fileResponse.Id, apiKey, cancellationToken).ConfigureAwait(false);
+    public async Task<BatchSubmissionResult> CreateBatchAsync(
+        string inputFileId,
+        string apiKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(inputFileId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+
+        var batchResponse = await _client.CreateBatchAsync(inputFileId, apiKey, cancellationToken).ConfigureAwait(false);
 
         return new BatchSubmissionResult(
-            ProviderInputFileId: fileResponse.Id,
+            ProviderInputFileId: inputFileId,
             ProviderBatchId: batchResponse.Id,
-            SubmittedCount: specs.Count,
+            SubmittedCount: 0,
             CreatedAtUtc: DateTimeOffset.UtcNow);
+    }
+
+    public async Task<BatchSubmissionResult> SubmitBatchAsync(
+        IReadOnlyList<ImageGenerationSpec> specs,
+        string apiKey,
+        CancellationToken cancellationToken = default)
+    {
+        var inputFileId = await UploadBatchInputFileAsync(specs, apiKey, cancellationToken).ConfigureAwait(false);
+        var result = await CreateBatchAsync(inputFileId, apiKey, cancellationToken).ConfigureAwait(false);
+        return result with { SubmittedCount = specs.Count };
     }
 
     public async Task<BatchStatusResult> GetBatchStatusAsync(

@@ -8,6 +8,7 @@ public enum GenerationItemStatus
     DirectRateLimited,
     DirectInFlight,
     BatchPreparing,
+    BatchQueued,
     BatchSubmitted,
     BatchRunning,
     Downloading,

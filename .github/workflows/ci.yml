@@ -154,9 +154,18 @@ jobs:
         shell: pwsh
         run: pwsh scripts/verify_coverage.ps1
 
+      - name: Core Test with Coverage
+        run: dotnet test tests/AssetProvenanceHelper.Core.Tests/AssetProvenanceHelper.Core.Tests.csproj -c Release --no-build --collect:"XPlat Code Coverage" --results-directory artifacts/coverage-core
+
+      - name: Verify Core Coverage Artifact
+        shell: pwsh
+        run: pwsh scripts/verify_core_coverage.ps1 -NoRunTests
+
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage
-          path: artifacts/coverage/**
+          path: |
+            artifacts/coverage/**
+            artifacts/coverage-core/**

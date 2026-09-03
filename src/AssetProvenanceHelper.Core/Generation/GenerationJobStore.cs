@@ -74,16 +74,28 @@ public sealed class GenerationJobStore
             for (var i = 0; i < state.Batches.Count; i++)
             {
                 var batch = state.Batches[i];
-                if (string.Equals(batch.Status, "preparing", StringComparison.OrdinalIgnoreCase) &&
-                    string.IsNullOrWhiteSpace(batch.ProviderBatchId))
+                if (string.IsNullOrWhiteSpace(batch.ProviderBatchId))
                 {
-                    state.Batches[i] = batch with
+                    if (string.Equals(batch.Status, "preparing", StringComparison.OrdinalIgnoreCase))
                     {
-                        Status = "failed",
-                        ErrorMessage = "Batch preparation was interrupted before submission completed.",
-                        UpdatedAtUtc = DateTimeOffset.UtcNow
-                    };
-                    mutated = true;
+                        state.Batches[i] = batch with
+                        {
+                            Status = "failed",
+                            ErrorMessage = "Batch preparation was interrupted before submission completed.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow
+                        };
+                        mutated = true;
+                    }
+                    else if (string.Equals(batch.Status, "PendingSubmission", StringComparison.OrdinalIgnoreCase))
+                    {
+                        state.Batches[i] = batch with
+                        {
+                            Status = "FailedLocal",
+                            ErrorMessage = "Batch preparation was interrupted before submission completed.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow
+                        };
+                        mutated = true;
+                    }
                 }
             }
 
@@ -101,6 +113,7 @@ public sealed class GenerationJobStore
                     mutated = true;
                 }
                 else if (item.Status == GenerationItemStatus.BatchPreparing ||
+                         item.Status == GenerationItemStatus.BatchQueued ||
                          (item.Status == GenerationItemStatus.BatchSubmitted &&
                           !string.IsNullOrEmpty(item.BatchId) &&
                           state.Batches.Any(b => string.Equals(b.LocalBatchId, item.BatchId, StringComparison.Ordinal) && string.IsNullOrWhiteSpace(b.ProviderBatchId))))
@@ -122,6 +135,8 @@ public sealed class GenerationJobStore
         }
     }
 
+    internal static Action<GenerationState>? OnBeforeSaveCoreForTests;
+
     public void Save(GenerationState state)
     {
         ArgumentNullException.ThrowIfNull(state);
@@ -134,6 +149,8 @@ public sealed class GenerationJobStore
 
     private void SaveCore(GenerationState state)
     {
+        OnBeforeSaveCoreForTests?.Invoke(state);
+
         var dir = Path.GetDirectoryName(_statePath);
         if (!string.IsNullOrEmpty(dir))
         {
@@ -196,6 +213,41 @@ public sealed class GenerationJobStore
         }
     }
 
+    public void UpsertItems(IEnumerable<GenerationItemRecord> items)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+
+        lock (_lock)
+        {
+            var state = Load();
+            var mutated = false;
+
+            foreach (var item in items)
+            {
+                if (item == null) continue;
+
+                var existingIndex = state.Items.FindIndex(i =>
+                    string.Equals(i.ManifestFingerprint, item.ManifestFingerprint, StringComparison.Ordinal) &&
+                    string.Equals(i.RequestKey, item.RequestKey, StringComparison.Ordinal));
+
+                if (existingIndex >= 0)
+                {
+                    state.Items[existingIndex] = item;
+                }
+                else
+                {
+                    state.Items.Add(item);
+                }
+                mutated = true;
+            }
+
+            if (mutated)
+            {
+                SaveCore(state);
+            }
+        }
+    }
+
     public void UpsertBatch(GenerationBatchRecord batch)
     {
         ArgumentNullException.ThrowIfNull(batch);
@@ -227,6 +279,19 @@ public sealed class GenerationJobStore
             return state.Items.FirstOrDefault(i =>
                 string.Equals(i.ManifestFingerprint, manifestFingerprint, StringComparison.Ordinal) &&
                 string.Equals(i.RequestKey, requestKey, StringComparison.Ordinal));
+        }
+    }
+
+    public IReadOnlyList<GenerationItemRecord> GetItemsForManifest(string manifestFingerprint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(manifestFingerprint);
+
+        lock (_lock)
+        {
+            var state = Load();
+            return state.Items
+                .Where(i => string.Equals(i.ManifestFingerprint, manifestFingerprint, StringComparison.Ordinal))
+                .ToList();
         }
     }
 

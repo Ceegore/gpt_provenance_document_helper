@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -6,11 +7,21 @@ namespace AssetProvenanceHelper.Services;
 
 public sealed class DpapiSecretStore : ISecretStore
 {
+    public static Func<bool>? IsWindowsPlatformProviderForTests { get; set; }
+
     private readonly string _storagePath;
     private readonly object _lock = new();
 
     public DpapiSecretStore(string? storagePath = null)
     {
+        var isWindows = IsWindowsPlatformProviderForTests?.Invoke()
+            ?? RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+        if (!isWindows)
+        {
+            throw new PlatformNotSupportedException("DPAPI secret store is only supported on Windows.");
+        }
+
         if (string.IsNullOrWhiteSpace(storagePath))
         {
             _storagePath = Path.Combine(AppBootstrap.GetStateDirectory(), "secrets.dat");

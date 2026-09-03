@@ -17,7 +17,10 @@ public sealed record OpenAiImageGenerationData(
 
 public sealed record OpenAiImageGenerationResponse(
     [property: JsonPropertyName("created")] long Created,
-    [property: JsonPropertyName("data")] IReadOnlyList<OpenAiImageGenerationData>? Data);
+    [property: JsonPropertyName("data")] IReadOnlyList<OpenAiImageGenerationData>? Data)
+{
+    public string? RequestId { get; init; }
+}
 
 public sealed record OpenAiCreateBatchRequest(
     [property: JsonPropertyName("input_file_id")] string InputFileId,

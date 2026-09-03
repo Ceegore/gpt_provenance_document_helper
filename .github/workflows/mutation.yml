@@ -35,3 +35,14 @@ jobs:
         with:
           name: mutation-report
           path: tests/AssetProvenanceHelper.Tests/StrykerOutput/**
+
+      - name: Run Core mutation tests
+        working-directory: tests/AssetProvenanceHelper.Core.Tests
+        run: dotnet stryker
+
+      - name: Upload Core mutation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: core-mutation-report
+          path: tests/AssetProvenanceHelper.Core.Tests/StrykerOutput/**

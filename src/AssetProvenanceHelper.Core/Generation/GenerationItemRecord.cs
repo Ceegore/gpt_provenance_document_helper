@@ -25,4 +25,6 @@ public sealed record GenerationItemRecord(
     string? RawSha256 = null,
     string? NormalizedSha256 = null,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    string? CandidateId = null,
+    string? ProviderRawPath = null);

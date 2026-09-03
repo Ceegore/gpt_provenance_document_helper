@@ -24,6 +24,42 @@ partial class MainForm
             return;
         }
 
+        if (_activeApiCandidateMetadata != null && _activeRequest != null && _currentManifest != null)
+        {
+            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, _activeRequest.RequestKey);
+            if (job == null)
+            {
+                _activeApiCandidateMetadata = null;
+                SetSelectedImage(ImageSlot.Main, null);
+                ShowMessageBox("Candidate job record could not be found. Commit cancelled.", "Commit blocked", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var verifier = new CandidateVerificationService(_stagingService);
+            var verification = verifier.VerifyCandidate(job, _activeRequest.Width, _activeRequest.Height);
+            if (!verification.IsValid)
+            {
+                _activeApiCandidateMetadata = null;
+                SetSelectedImage(ImageSlot.Main, null);
+                _generationJobStore.UpsertItem(job with
+                {
+                    Status = Core.Generation.GenerationItemStatus.FailedPermanent,
+                    ErrorCode = verification.ErrorCode ?? "candidate_corrupt",
+                    ErrorMessage = verification.ErrorMessage ?? "Candidate verification failed before commit.",
+                    UpdatedAtUtc = DateTimeOffset.UtcNow
+                });
+                RefreshRequestQueueVisuals();
+                ShowMessageBox(
+                    $"Candidate verification failed before commit:" + Environment.NewLine + Environment.NewLine +
+                    $"{verification.ErrorMessage}" + Environment.NewLine + Environment.NewLine +
+                    "The commit was cancelled and the candidate was unloaded.",
+                    "Commit blocked",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+        }
+
         var isNoReference = chkNoReference.Checked || (_currentSession?.WorkflowMode == AssetWorkflowMode.NoReference);
         var sourceImage = GetSelectedImage(ImageSlot.Main)!;
         var prompt = txtPrompt.Text;

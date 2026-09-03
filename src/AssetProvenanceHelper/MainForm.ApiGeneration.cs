@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Core.Generation;
 using AssetProvenanceHelper.Core.Generation.Providers;
+using AssetProvenanceHelper.Core.Generation.Providers.OpenAi;
 using AssetProvenanceHelper.Dialogs;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
@@ -10,7 +11,7 @@ namespace AssetProvenanceHelper;
 
 partial class MainForm
 {
-    private readonly GeneratedImageStagingService _stagingService = new();
+    private readonly GeneratedImageStagingService _stagingService;
     private ApiCandidateMetadata? _activeApiCandidateMetadata;
     private CancellationTokenSource? _apiGenerationCts;
     private bool _isGeneratingDirect;
@@ -80,63 +81,34 @@ partial class MainForm
             return;
         }
 
-        var eligible = new List<AssetRequestItem>();
-        var blockedAlphaCount = 0;
-        var alreadyReadyCount = 0;
-        var inFlightCount = 0;
-        var uncertainCount = 0;
+        var preflightService = new ApiPreflightService(_generationJobStore);
+        var preflight = preflightService.Preflight(
+            _currentManifest.ManifestFingerprint,
+            _currentManifest.Items,
+            _completedRequestKeys);
 
-        foreach (var item in pendingItems)
+        if (preflight.Errors.Count > 0)
         {
-            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, item.RequestKey);
-            if (job != null)
-            {
-                if (job.Status == GenerationItemStatus.Ready && !string.IsNullOrEmpty(job.StagedOutputPath) && File.Exists(job.StagedOutputPath))
-                {
-                    alreadyReadyCount++;
-                    continue;
-                }
-
-                if (job.Status == GenerationItemStatus.UncertainAfterInterruption)
-                {
-                    uncertainCount++;
-                    continue;
-                }
-
-                if (IsJobActiveOrInFlight(job))
-                {
-                    inFlightCount++;
-                    continue;
-                }
-            }
-
-            if (item.Alpha == AlphaRequirement.Required)
-            {
-                blockedAlphaCount++;
-                continue;
-            }
-
-            try
-            {
-                ImageSizePlanner.Plan(item.Width, item.Height);
-            }
-            catch
-            {
-                continue;
-            }
-
-            eligible.Add(item);
+            var errorDetails = string.Join(Environment.NewLine, preflight.Errors.Select(e => $"- {e.FileName} ({e.RequestKey}): {e.Message}"));
+            ShowMessageBox(
+                $"Cannot start generation because {preflight.Errors.Count} local error(s) were found in the manifest:" + Environment.NewLine + Environment.NewLine +
+                errorDetails + Environment.NewLine + Environment.NewLine +
+                "No API requests were started. Please fix the manifest issues.",
+                "Preflight validation failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
         }
 
-        if (eligible.Count == 0)
+        if (preflight.Eligible.Count == 0)
         {
             var details =
                 $"No eligible pending assets found to generate." + Environment.NewLine + Environment.NewLine +
-                $"Total pending: {pendingItems.Count}" + Environment.NewLine +
-                $"Already ready: {alreadyReadyCount}" + Environment.NewLine +
-                $"In flight/queued: {inFlightCount}" + Environment.NewLine +
-                (uncertainCount > 0 ? $"Uncertain (requires manual retry): {uncertainCount}" + Environment.NewLine : string.Empty) +
-                $"Blocked (alpha required): {blockedAlphaCount}";
+                $"Total pending: {preflight.TotalPendingCount}" + Environment.NewLine +
+                $"Already ready: {preflight.AlreadyReadyCount}" + Environment.NewLine +
+                $"In flight/queued: {preflight.InFlightCount}" + Environment.NewLine +
+                (preflight.UncertainCount > 0 ? $"Uncertain (requires manual retry): {preflight.UncertainCount}" + Environment.NewLine : string.Empty) +
+                $"Blocked (alpha required): {preflight.BlockedAlpha.Count}";
 
             ShowMessageBox(
                 details,
@@ -145,6 +117,9 @@ partial class MainForm
                 MessageBoxIcon.Information);
             return;
         }
+
+        var eligible = preflight.Eligible;
+        var blockedAlphaCount = preflight.BlockedAlpha.Count;
 
         var confirmMsg =
             $"Generate {eligible.Count} pending assets now using the standard API?" + Environment.NewLine + Environment.NewLine +
@@ -168,19 +143,33 @@ partial class MainForm
             return;
         }
 
+        var manifest = _currentManifest
+            ?? throw new InvalidOperationException("Manifest disappeared before generation start.");
+
+        var run = new ApiGenerationRunSnapshot(
+            ManifestFingerprint: manifest.ManifestFingerprint,
+            ProviderId: "OpenAI",
+            Model: _settings.OpenAiModel,
+            Quality: _settings.DirectImageQuality,
+            DirectStartsPerMinute: _settings.DirectStartsPerMinute,
+            DirectMaxConcurrency: _settings.DirectMaxConcurrency,
+            DirectRetryAttempts: _settings.DirectRetryAttempts,
+            CreatedAtUtc: DateTimeOffset.UtcNow);
+
+        var itemsToQueue = new List<GenerationItemRecord>(eligible.Count);
         foreach (var item in eligible)
         {
             var plan = ImageSizePlanner.Plan(item.Width, item.Height);
-            var customId = GenerationCustomId.Create(_currentManifest.ManifestFingerprint, item.RequestKey);
-            _generationJobStore.UpsertItem(new GenerationItemRecord(
-                ManifestFingerprint: _currentManifest.ManifestFingerprint,
+            var customId = GenerationCustomId.Create(run.ManifestFingerprint, item.RequestKey);
+            itemsToQueue.Add(new GenerationItemRecord(
+                ManifestFingerprint: run.ManifestFingerprint,
                 RequestKey: item.RequestKey,
                 AssetName: item.AssetName,
                 FileName: item.FileName,
                 Mode: GenerationMode.Direct,
-                ProviderId: "OpenAI",
-                Model: _settings.OpenAiModel,
-                Quality: _settings.DirectImageQuality,
+                ProviderId: run.ProviderId,
+                Model: run.Model,
+                Quality: run.Quality,
                 TargetWidth: item.Width,
                 TargetHeight: item.Height,
                 GenerationWidth: plan.GenerationWidth,
@@ -190,31 +179,31 @@ partial class MainForm
                 SubmittedAtUtc: DateTimeOffset.UtcNow,
                 UpdatedAtUtc: DateTimeOffset.UtcNow));
         }
+        _generationJobStore.UpsertItems(itemsToQueue);
 
         RefreshRequestQueueVisuals();
-        _ = RunDirectGenerationAsync(eligible, apiKey);
+        _ = RunDirectGenerationAsync(eligible, apiKey, run);
     }
 
-    private async Task RunDirectGenerationAsync(IReadOnlyList<AssetRequestItem> items, string apiKey)
+    private async Task RunDirectGenerationAsync(IReadOnlyList<AssetRequestItem> items, string apiKey, ApiGenerationRunSnapshot run)
     {
         _isGeneratingDirect = true;
         _apiGenerationCts = new CancellationTokenSource();
+        var globalErrorSignaled = 0;
         ApplyRequestQueueState();
 
         using var rateLimiter = new RequestStartRateLimiter(
-            _settings.DirectStartsPerMinute,
-            _settings.DirectMaxConcurrency);
+            run.DirectStartsPerMinute,
+            run.DirectMaxConcurrency);
 
         try
         {
             var tasks = items.Select(async item =>
             {
-                if (_currentManifest == null || _apiGenerationCts.IsCancellationRequested) return;
-
                 var plan = ImageSizePlanner.Plan(item.Width, item.Height);
-                var customId = GenerationCustomId.Create(_currentManifest.ManifestFingerprint, item.RequestKey);
+                var customId = GenerationCustomId.Create(run.ManifestFingerprint, item.RequestKey);
                 var spec = new ImageGenerationSpec(
-                    ManifestFingerprint: _currentManifest.ManifestFingerprint,
+                    ManifestFingerprint: run.ManifestFingerprint,
                     RequestKey: item.RequestKey,
                     AssetName: item.AssetName,
                     FileName: item.FileName,
@@ -222,22 +211,23 @@ partial class MainForm
                     TargetWidth: item.Width,
                     TargetHeight: item.Height,
                     AlphaRequirement: item.Alpha,
-                    ProviderId: "OpenAI",
-                    Model: _settings.OpenAiModel,
-                    Quality: _settings.DirectImageQuality,
+                    ProviderId: run.ProviderId,
+                    Model: run.Model,
+                    Quality: run.Quality,
                     GenerationWidth: plan.GenerationWidth,
                     GenerationHeight: plan.GenerationHeight,
-                    CustomId: customId);
+                    CustomId: customId,
+                    RetryAttempts: run.DirectRetryAttempts);
 
                 var itemRecord = new GenerationItemRecord(
-                    ManifestFingerprint: _currentManifest.ManifestFingerprint,
+                    ManifestFingerprint: run.ManifestFingerprint,
                     RequestKey: item.RequestKey,
                     AssetName: item.AssetName,
                     FileName: item.FileName,
                     Mode: GenerationMode.Direct,
-                    ProviderId: "OpenAI",
-                    Model: _settings.OpenAiModel,
-                    Quality: _settings.DirectImageQuality,
+                    ProviderId: run.ProviderId,
+                    Model: run.Model,
+                    Quality: run.Quality,
                     TargetWidth: item.Width,
                     TargetHeight: item.Height,
                     GenerationWidth: plan.GenerationWidth,
@@ -246,6 +236,16 @@ partial class MainForm
                     Status: GenerationItemStatus.QueuedDirect,
                     SubmittedAtUtc: DateTimeOffset.UtcNow,
                     UpdatedAtUtc: DateTimeOffset.UtcNow);
+
+                if (_apiGenerationCts.IsCancellationRequested)
+                {
+                    _generationJobStore.UpsertItem(itemRecord with
+                    {
+                        Status = GenerationItemStatus.Pending,
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    });
+                    return;
+                }
 
                 var acquiredPermit = false;
                 try
@@ -261,36 +261,69 @@ partial class MainForm
                     SafeInvoke(RefreshRequestQueueVisuals);
 
                     var candidate = await _imageGenerationProvider.GenerateAsync(spec, apiKey, _apiGenerationCts.Token).ConfigureAwait(false);
+
+                    if (candidate.RawBytes == null || candidate.RawBytes.Length == 0)
+                    {
+                        throw new InvalidDataException("Provider returned empty image data.");
+                    }
+
+                    var rawSha = string.IsNullOrEmpty(candidate.RawSha256)
+                        ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(candidate.RawBytes)).ToLowerInvariant()
+                        : candidate.RawSha256;
+
+                    // 1. Raw atomic write + Flush(true) before normalization
+                    var rawPath = _stagingService.SaveRawCandidate(
+                        run.ManifestFingerprint,
+                        item.RequestKey,
+                        candidate.CandidateId,
+                        candidate.RawBytes);
+
+                    // 2. Persist job Normalizing + raw path
+                    _generationJobStore.UpsertItem(itemRecord with
+                    {
+                        Status = GenerationItemStatus.Normalizing,
+                        CandidateId = candidate.CandidateId,
+                        ProviderRawPath = rawPath,
+                        RawSha256 = rawSha,
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    });
+                    SafeInvoke(RefreshRequestQueueVisuals);
+
+                    // 3. Normalize
                     var normResult = ImageNormalizationService.Normalize(candidate.RawBytes, plan);
 
+                    // 4. Final atomic write + metadata atomic write
                     var metadata = new ApiCandidateMetadata(
                         CandidateId: candidate.CandidateId,
-                        Provider: "OpenAI",
-                        Model: _settings.OpenAiModel,
+                        Provider: run.ProviderId,
+                        Model: run.Model,
                         Mode: "direct",
                         CustomId: customId,
                         TargetResolution: $"{item.Width}x{item.Height}",
                         ProviderResolution: $"{plan.GenerationWidth}x{plan.GenerationHeight}",
-                        RawSha256: normResult.RawSha256,
+                        RawSha256: rawSha,
                         NormalizedSha256: normResult.NormalizedSha256,
                         NormalizedImagePath: string.Empty,
                         CreatedAtUtc: DateTimeOffset.UtcNow,
                         ProviderRequestId: candidate.ProviderRequestId);
 
-                    var normalizedPath = _stagingService.SaveCandidate(
-                        _currentManifest.ManifestFingerprint,
+                    var normalizedPath = _stagingService.CompleteCandidate(
+                        run.ManifestFingerprint,
                         item.RequestKey,
                         candidate.CandidateId,
-                        candidate.RawBytes,
                         normResult.NormalizedBytes,
                         metadata);
 
+                    // 5. Job Ready
                     _generationJobStore.UpsertItem(itemRecord with
                     {
                         Status = GenerationItemStatus.Ready,
+                        CandidateId = candidate.CandidateId,
+                        ProviderRawPath = rawPath,
                         StagedOutputPath = normalizedPath,
-                        RawSha256 = normResult.RawSha256,
+                        RawSha256 = rawSha,
                         NormalizedSha256 = normResult.NormalizedSha256,
+                        ProviderRequestId = candidate.ProviderRequestId,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
                     });
                 }
@@ -317,13 +350,29 @@ partial class MainForm
                 }
                 catch (Exception ex)
                 {
+                    var isGlobal = IsGlobalDirectError(ex, out var globalReason);
+
                     _generationJobStore.UpsertItem(itemRecord with
                     {
                         Status = GenerationItemStatus.FailedPermanent,
-                        ErrorCode = "direct_failed",
+                        ErrorCode = isGlobal ? "global_direct_error" : "direct_failed",
                         ErrorMessage = ex.Message,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
                     });
+
+                    if (isGlobal && Interlocked.CompareExchange(ref globalErrorSignaled, 1, 0) == 0)
+                    {
+                        _apiGenerationCts?.Cancel();
+
+                        SafeInvoke(() =>
+                        {
+                            ShowMessageBox(
+                                $"Direct API generation stopped due to a global error:{Environment.NewLine}{Environment.NewLine}{globalReason}",
+                                "Direct Generation Halted",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Error);
+                        });
+                    }
                 }
                 finally
                 {
@@ -344,6 +393,54 @@ partial class MainForm
             SafeInvoke(ApplyRequestQueueState);
             SafeInvoke(RefreshRequestQueueVisuals);
         }
+    }
+
+    internal static bool IsGlobalDirectError(Exception ex, out string reason)
+    {
+        var current = ex;
+        while (current != null)
+        {
+            if (current is OpenAiApiException apiEx)
+            {
+                if (apiEx.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    reason = "Invalid or expired API key (HTTP 401 Unauthorized).";
+                    return true;
+                }
+                if (apiEx.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    reason = "Access forbidden for this account or project (HTTP 403 Forbidden).";
+                    return true;
+                }
+                if (apiEx.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    reason = $"Model or resource not found (HTTP 404): {apiEx.Message}";
+                    return true;
+                }
+            }
+            if (current is HttpRequestException httpEx && httpEx.StatusCode.HasValue)
+            {
+                if (httpEx.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    reason = "Invalid or expired API key (HTTP 401 Unauthorized).";
+                    return true;
+                }
+                if (httpEx.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    reason = "Access forbidden for this account or project (HTTP 403 Forbidden).";
+                    return true;
+                }
+                if (httpEx.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    reason = $"Model or resource not found (HTTP 404): {httpEx.Message}";
+                    return true;
+                }
+            }
+            current = current.InnerException;
+        }
+
+        reason = string.Empty;
+        return false;
     }
 
     private void SafeInvoke(Action action)
@@ -449,63 +546,34 @@ partial class MainForm
             return;
         }
 
-        var eligible = new List<AssetRequestItem>();
-        var blockedAlphaCount = 0;
-        var alreadyReadyCount = 0;
-        var inFlightCount = 0;
-        var uncertainCount = 0;
+        var preflightService = new ApiPreflightService(_generationJobStore);
+        var preflight = preflightService.Preflight(
+            _currentManifest.ManifestFingerprint,
+            _currentManifest.Items,
+            _completedRequestKeys);
 
-        foreach (var item in pendingItems)
+        if (preflight.Errors.Count > 0)
         {
-            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, item.RequestKey);
-            if (job != null)
-            {
-                if (job.Status == GenerationItemStatus.Ready && !string.IsNullOrEmpty(job.StagedOutputPath) && File.Exists(job.StagedOutputPath))
-                {
-                    alreadyReadyCount++;
-                    continue;
-                }
-
-                if (job.Status == GenerationItemStatus.UncertainAfterInterruption)
-                {
-                    uncertainCount++;
-                    continue;
-                }
-
-                if (IsJobActiveOrInFlight(job))
-                {
-                    inFlightCount++;
-                    continue;
-                }
-            }
-
-            if (item.Alpha == AlphaRequirement.Required)
-            {
-                blockedAlphaCount++;
-                continue;
-            }
-
-            try
-            {
-                ImageSizePlanner.Plan(item.Width, item.Height);
-            }
-            catch
-            {
-                continue;
-            }
-
-            eligible.Add(item);
+            var errorDetails = string.Join(Environment.NewLine, preflight.Errors.Select(e => $"- {e.FileName} ({e.RequestKey}): {e.Message}"));
+            ShowMessageBox(
+                $"Cannot queue production batch because {preflight.Errors.Count} local error(s) were found in the manifest:" + Environment.NewLine + Environment.NewLine +
+                errorDetails + Environment.NewLine + Environment.NewLine +
+                "No batch was submitted. Please fix the manifest issues.",
+                "Preflight validation failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
         }
 
-        if (eligible.Count == 0)
+        if (preflight.Eligible.Count == 0)
         {
             var details =
                 $"No eligible pending assets found for production batch." + Environment.NewLine + Environment.NewLine +
-                $"Total pending: {pendingItems.Count}" + Environment.NewLine +
-                $"Already ready: {alreadyReadyCount}" + Environment.NewLine +
-                $"In flight/queued: {inFlightCount}" + Environment.NewLine +
-                (uncertainCount > 0 ? $"Uncertain (requires manual retry): {uncertainCount}" + Environment.NewLine : string.Empty) +
-                $"Blocked (alpha required): {blockedAlphaCount}";
+                $"Total pending: {preflight.TotalPendingCount}" + Environment.NewLine +
+                $"Already ready: {preflight.AlreadyReadyCount}" + Environment.NewLine +
+                $"In flight/queued: {preflight.InFlightCount}" + Environment.NewLine +
+                (preflight.UncertainCount > 0 ? $"Uncertain (requires manual retry): {preflight.UncertainCount}" + Environment.NewLine : string.Empty) +
+                $"Blocked (alpha required): {preflight.BlockedAlpha.Count}";
 
             ShowMessageBox(
                 details,
@@ -514,6 +582,9 @@ partial class MainForm
                 MessageBoxIcon.Information);
             return;
         }
+
+        var eligible = preflight.Eligible.ToList();
+        var blockedAlphaCount = preflight.BlockedAlpha.Count;
 
         var totalEligibleCount = eligible.Count;
         if (eligible.Count > _settings.MaxBatchRequestsPerSubmission)
@@ -569,7 +640,7 @@ partial class MainForm
             Model: _settings.OpenAiModel,
             Quality: _settings.BatchImageQuality,
             RequestKeys: eligible.Select(e => e.RequestKey).ToList(),
-            Status: "preparing",
+            Status: "PendingSubmission",
             CreatedAtUtc: DateTimeOffset.UtcNow,
             UpdatedAtUtc: DateTimeOffset.UtcNow,
             SubmittedCount: eligible.Count,
@@ -578,7 +649,8 @@ partial class MainForm
 
         _generationJobStore.UpsertBatch(batchRecord);
 
-        var specs = new List<ImageGenerationSpec>();
+        var specs = new List<ImageGenerationSpec>(eligible.Count);
+        var batchItemsToQueue = new List<GenerationItemRecord>(eligible.Count);
         foreach (var item in eligible)
         {
             var plan = ImageSizePlanner.Plan(item.Width, item.Height);
@@ -601,7 +673,7 @@ partial class MainForm
 
             specs.Add(spec);
 
-            _generationJobStore.UpsertItem(new GenerationItemRecord(
+            batchItemsToQueue.Add(new GenerationItemRecord(
                 ManifestFingerprint: _currentManifest.ManifestFingerprint,
                 RequestKey: item.RequestKey,
                 AssetName: item.AssetName,
@@ -615,38 +687,169 @@ partial class MainForm
                 GenerationWidth: plan.GenerationWidth,
                 GenerationHeight: plan.GenerationHeight,
                 CustomId: customId,
-                Status: GenerationItemStatus.BatchSubmitted,
+                Status: GenerationItemStatus.BatchQueued,
                 SubmittedAtUtc: DateTimeOffset.UtcNow,
                 UpdatedAtUtc: DateTimeOffset.UtcNow,
                 BatchId: localBatchId));
         }
 
+        _generationJobStore.UpsertItems(batchItemsToQueue);
+
         SafeInvoke(RefreshRequestQueueVisuals);
 
+        string inputFileId;
         try
         {
-            var result = await _imageGenerationProvider.SubmitBatchAsync(specs, apiKey).ConfigureAwait(false);
-
+            inputFileId = await _imageGenerationProvider.UploadBatchInputFileAsync(specs, apiKey).ConfigureAwait(false);
+        }
+        catch (Exception uploadEx)
+        {
             _generationJobStore.UpsertBatch(batchRecord with
             {
-                ProviderBatchId = result.ProviderBatchId,
-                ProviderInputFileId = result.ProviderInputFileId,
-                Status = "submitted",
+                Status = "FailedLocal",
+                ErrorMessage = $"Upload failed: {uploadEx.Message}",
                 UpdatedAtUtc = DateTimeOffset.UtcNow
             });
 
-            foreach (var item in eligible)
-            {
-                var existing = _generationJobStore.GetItem(_currentManifest!.ManifestFingerprint, item.RequestKey);
-                if (existing != null)
+            var manifestItems = _generationJobStore.GetItemsForManifest(_currentManifest.ManifestFingerprint)
+                .ToDictionary(i => i.RequestKey, StringComparer.Ordinal);
+            var failedItems = eligible
+                .Select(item => manifestItems.TryGetValue(item.RequestKey, out var existing) ? existing : null)
+                .Where(i => i != null)
+                .Select(i => i! with
                 {
-                    _generationJobStore.UpsertItem(existing with
-                    {
-                        ProviderBatchId = result.ProviderBatchId,
-                        UpdatedAtUtc = DateTimeOffset.UtcNow
-                    });
-                }
+                    Status = GenerationItemStatus.FailedRetryable,
+                    ErrorCode = "batch_upload_failed",
+                    ErrorMessage = uploadEx.Message,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow
+                })
+                .ToList();
+            _generationJobStore.UpsertItems(failedItems);
+
+            SafeInvoke(() =>
+            {
+                _isSubmittingBatch = false;
+                ApplyRequestQueueState();
+                RefreshRequestQueueVisuals();
+                ShowMessageBox($"Failed to upload batch input file: {uploadEx.Message}", "Batch Submission Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            });
+            return;
+        }
+
+        try
+        {
+            batchRecord = batchRecord with
+            {
+                ProviderInputFileId = inputFileId,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            };
+            _generationJobStore.UpsertBatch(batchRecord);
+        }
+        catch (Exception persistInputEx)
+        {
+            try
+            {
+                _generationJobStore.UpsertBatch(batchRecord with
+                {
+                    Status = "FailedLocal",
+                    ProviderInputFileId = inputFileId,
+                    ErrorMessage = $"Failed to persist input file ID '{inputFileId}': {persistInputEx.Message}",
+                    UpdatedAtUtc = DateTimeOffset.UtcNow
+                });
             }
+            catch { }
+
+            SafeInvoke(() =>
+            {
+                _isSubmittingBatch = false;
+                ApplyRequestQueueState();
+                RefreshRequestQueueVisuals();
+                ShowMessageBox(
+                    $"Uploaded input file '{inputFileId}', but failed to save state locally: {persistInputEx.Message}. " +
+                    "Batch creation was aborted to prevent untracked remote batches. Retain this input file ID for manual cleanup.",
+                    "Batch Persistence Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            });
+            return;
+        }
+
+        BatchSubmissionResult result;
+        try
+        {
+            result = await _imageGenerationProvider.CreateBatchAsync(inputFileId, apiKey).ConfigureAwait(false);
+        }
+        catch (Exception createEx)
+        {
+            _generationJobStore.UpsertBatch(batchRecord with
+            {
+                Status = "FailedLocal",
+                ErrorMessage = $"Batch creation failed: {createEx.Message}",
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+
+            var isInterruption = createEx is TaskCanceledException or TimeoutException or HttpRequestException;
+            var targetStatus = isInterruption
+                ? GenerationItemStatus.UncertainAfterInterruption
+                : GenerationItemStatus.FailedPermanent;
+            var errorMsg = isInterruption
+                ? $"Batch creation timed out or was interrupted ({createEx.Message}). Remote status is uncertain; check OpenAI dashboard for input file '{inputFileId}' before retrying."
+                : createEx.Message;
+
+            var manifestItems = _generationJobStore.GetItemsForManifest(_currentManifest.ManifestFingerprint)
+                .ToDictionary(i => i.RequestKey, StringComparer.Ordinal);
+            var failedItems = eligible
+                .Select(item => manifestItems.TryGetValue(item.RequestKey, out var existing) ? existing : null)
+                .Where(i => i != null)
+                .Select(i => i! with
+                {
+                    Status = targetStatus,
+                    ErrorCode = isInterruption ? "batch_creation_uncertain" : "batch_creation_failed",
+                    ErrorMessage = errorMsg,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow
+                })
+                .ToList();
+            _generationJobStore.UpsertItems(failedItems);
+
+            SafeInvoke(() =>
+            {
+                _isSubmittingBatch = false;
+                ApplyRequestQueueState();
+                RefreshRequestQueueVisuals();
+                ShowMessageBox(
+                    $"Batch creation failed: {createEx.Message}." + Environment.NewLine + Environment.NewLine +
+                    $"Input file ID '{inputFileId}' was uploaded and retained.",
+                    "Batch Creation Failed",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            });
+            return;
+        }
+
+        try
+        {
+            _generationJobStore.UpsertBatch(batchRecord with
+            {
+                ProviderBatchId = result.ProviderBatchId,
+                ProviderInputFileId = inputFileId,
+                Status = "Submitted",
+                SubmittedCount = eligible.Count,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+
+            var manifestItems = _generationJobStore.GetItemsForManifest(_currentManifest!.ManifestFingerprint)
+                .ToDictionary(i => i.RequestKey, StringComparer.Ordinal);
+            var submittedItems = eligible
+                .Select(item => manifestItems.TryGetValue(item.RequestKey, out var existing) ? existing : null)
+                .Where(i => i != null)
+                .Select(i => i! with
+                {
+                    Status = GenerationItemStatus.BatchSubmitted,
+                    ProviderBatchId = result.ProviderBatchId,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow
+                })
+                .ToList();
+            _generationJobStore.UpsertItems(submittedItems);
 
             SafeInvoke(() =>
             {
@@ -655,44 +858,15 @@ partial class MainForm
                 RefreshRequestQueueVisuals();
             });
         }
-        catch (Exception ex)
+        catch (Exception persistBatchIdEx)
         {
-            _generationJobStore.UpsertBatch(batchRecord with
-            {
-                Status = "failed",
-                ErrorMessage = ex.Message,
-                UpdatedAtUtc = DateTimeOffset.UtcNow
-            });
-
-            var isInterruption = ex is TaskCanceledException or TimeoutException or HttpRequestException;
-            var targetStatus = isInterruption
-                ? GenerationItemStatus.UncertainAfterInterruption
-                : GenerationItemStatus.FailedPermanent;
-            var errorMsg = isInterruption
-                ? $"Batch submission timed out or interrupted ({ex.Message}). Remote status is uncertain; verify OpenAI dashboard before retrying."
-                : ex.Message;
-
-            foreach (var item in eligible)
-            {
-                var existingItem = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, item.RequestKey);
-                if (existingItem != null)
-                {
-                    _generationJobStore.UpsertItem(existingItem with
-                    {
-                        Status = targetStatus,
-                        ErrorCode = isInterruption ? "batch_submission_uncertain" : "batch_submission_failed",
-                        ErrorMessage = errorMsg,
-                        UpdatedAtUtc = DateTimeOffset.UtcNow
-                    });
-                }
-            }
-
             SafeInvoke(() =>
             {
-                AddStatus(isInterruption
-                    ? $"Production batch submission interrupted: {ex.Message} (status uncertain)"
-                    : $"Production batch submission failed: {ex.Message}");
-                RefreshRequestQueueVisuals();
+                ShowMessageBox(
+                    $"Batch was submitted to OpenAI with ID '{result.ProviderBatchId}', but saving state locally failed: {persistBatchIdEx.Message}",
+                    "State Save Warning",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
             });
         }
         finally
@@ -728,150 +902,43 @@ partial class MainForm
                     var status = await _imageGenerationProvider.GetBatchStatusAsync(batch.ProviderBatchId, apiKey).ConfigureAwait(false);
 
                     var hasOutputFile = !string.IsNullOrWhiteSpace(status.OutputFileId);
+                    var hasErrorFile = !string.IsNullOrWhiteSpace(status.ErrorFileId);
                     var isTerminal = string.Equals(status.Status, "completed", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(status.Status, "failed", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(status.Status, "expired", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(status.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
 
-                    if (isTerminal && hasOutputFile)
+                    var ingestionService = new BatchIngestionService(_generationJobStore, _stagingService);
+
+                    if (isTerminal && (hasOutputFile || hasErrorFile))
                     {
-                        _generationJobStore.UpsertBatch(batch with
+                        BatchDownloadResult results;
+                        try
                         {
-                            CompletedCount = status.CompletedCount,
-                            FailedCount = status.FailedCount,
-                            UpdatedAtUtc = DateTimeOffset.UtcNow
-                        });
-
-                        var results = await _imageGenerationProvider.DownloadBatchResultsAsync(status, apiKey).ConfigureAwait(false);
-
-                        var batchItems = _generationJobStore.GetItemsForBatch(batch.LocalBatchId);
-                        var handledCustomIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                        foreach (var output in results.Items)
+                            results = await _imageGenerationProvider.DownloadBatchResultsAsync(status, apiKey).ConfigureAwait(false);
+                        }
+                        catch (Exception dlEx)
                         {
-                            var itemRecord = batchItems.FirstOrDefault(i => string.Equals(i.CustomId, output.CustomId, StringComparison.OrdinalIgnoreCase));
-                            if (itemRecord == null) continue;
-
-                            handledCustomIds.Add(output.CustomId);
-
-                            if (output.IsSuccess && output.ImageBytes != null && output.ImageBytes.Length > 0)
+                            ingestionService.HandleDownloadInterruption(batch, dlEx);
+                            SafeInvoke(() =>
                             {
-                                try
-                                {
-                                    var plan = ImageSizePlanner.Plan(itemRecord.TargetWidth, itemRecord.TargetHeight);
-                                    var normResult = ImageNormalizationService.Normalize(output.ImageBytes, plan);
-
-                                    var candidateId = Guid.NewGuid().ToString("N");
-                                    var metadata = new ApiCandidateMetadata(
-                                        CandidateId: candidateId,
-                                        Provider: batch.ProviderId,
-                                        Model: batch.Model,
-                                        Mode: "batch",
-                                        CustomId: output.CustomId,
-                                        TargetResolution: $"{itemRecord.TargetWidth}x{itemRecord.TargetHeight}",
-                                        ProviderResolution: $"{plan.GenerationWidth}x{plan.GenerationHeight}",
-                                        RawSha256: normResult.RawSha256,
-                                        NormalizedSha256: normResult.NormalizedSha256,
-                                        NormalizedImagePath: string.Empty,
-                                        CreatedAtUtc: DateTimeOffset.UtcNow,
-                                        ProviderRequestId: output.ProviderRequestId,
-                                        BatchId: !string.IsNullOrEmpty(batch.ProviderBatchId) ? batch.ProviderBatchId : batch.LocalBatchId);
-
-                                    var normalizedPath = _stagingService.SaveCandidate(
-                                        batch.ManifestFingerprint,
-                                        itemRecord.RequestKey,
-                                        candidateId,
-                                        output.ImageBytes,
-                                        normResult.NormalizedBytes,
-                                        metadata);
-
-                                    _generationJobStore.UpsertItem(itemRecord with
-                                    {
-                                        Status = GenerationItemStatus.Ready,
-                                        StagedOutputPath = normalizedPath,
-                                        RawSha256 = normResult.RawSha256,
-                                        NormalizedSha256 = normResult.NormalizedSha256,
-                                        UpdatedAtUtc = DateTimeOffset.UtcNow
-                                    });
-                                }
-                                catch (Exception normEx)
-                                {
-                                    _generationJobStore.UpsertItem(itemRecord with
-                                    {
-                                        Status = GenerationItemStatus.FailedPermanent,
-                                        ErrorCode = "normalization_error",
-                                        ErrorMessage = normEx.Message,
-                                        UpdatedAtUtc = DateTimeOffset.UtcNow
-                                    });
-                                }
-                            }
-                            else
-                            {
-                                _generationJobStore.UpsertItem(itemRecord with
-                                {
-                                    Status = GenerationItemStatus.FailedPermanent,
-                                    ErrorCode = output.ErrorCode ?? "batch_item_failed",
-                                    ErrorMessage = output.ErrorMessage ?? "Batch item failed",
-                                    UpdatedAtUtc = DateTimeOffset.UtcNow
-                                });
-                            }
+                                AddStatus($"Batch {batch.ProviderBatchId} download failed: {dlEx.Message}");
+                                RefreshRequestQueueVisuals();
+                            });
+                            continue;
                         }
 
-                        // Any item in the batch that never appeared in the output/error files (e.g. uncompleted when expired):
-                        foreach (var bItem in batchItems)
-                        {
-                            if (!handledCustomIds.Contains(bItem.CustomId) &&
-                                bItem.Status != GenerationItemStatus.Ready &&
-                                bItem.Status != GenerationItemStatus.Committed)
-                            {
-                                _generationJobStore.UpsertItem(bItem with
-                                {
-                                    Status = GenerationItemStatus.FailedPermanent,
-                                    ErrorCode = status.Status,
-                                    ErrorMessage = $"Batch ended with status '{status.Status}' before item was processed.",
-                                    UpdatedAtUtc = DateTimeOffset.UtcNow
-                                });
-                            }
-                        }
-
-                        _generationJobStore.UpsertBatch(batch with
-                        {
-                            Status = status.Status,
-                            CompletedAtUtc = DateTimeOffset.UtcNow,
-                            UpdatedAtUtc = DateTimeOffset.UtcNow
-                        });
+                        var summary = ingestionService.IngestResults(batch, status, results);
 
                         SafeInvoke(() =>
                         {
-                            AddStatus($"Batch {batch.ProviderBatchId} ended with status '{status.Status}'. Results ingested.");
+                            AddStatus($"Batch {batch.ProviderBatchId} ended with status '{status.Status}'. Ingested {summary.SuccessCount} ready, {summary.FailureCount} failed, {summary.MissingCustomIds.Count} missing.");
                             RefreshRequestQueueVisuals();
                         });
                     }
                     else if (isTerminal)
                     {
-                        _generationJobStore.UpsertBatch(batch with
-                        {
-                            Status = status.Status,
-                            CompletedCount = status.CompletedCount,
-                            FailedCount = status.FailedCount,
-                            ErrorMessage = $"Batch {status.Status}",
-                            UpdatedAtUtc = DateTimeOffset.UtcNow
-                        });
-
-                        var batchItems = _generationJobStore.GetItemsForBatch(batch.LocalBatchId);
-                        foreach (var bItem in batchItems)
-                        {
-                            if (bItem.Status != GenerationItemStatus.Ready && bItem.Status != GenerationItemStatus.Committed)
-                            {
-                                _generationJobStore.UpsertItem(bItem with
-                                {
-                                    Status = GenerationItemStatus.FailedPermanent,
-                                    ErrorCode = status.Status,
-                                    ErrorMessage = $"Batch {status.Status}",
-                                    UpdatedAtUtc = DateTimeOffset.UtcNow
-                                });
-                            }
-                        }
+                        ingestionService.IngestResults(batch, status, new BatchDownloadResult(batch.ProviderBatchId, []));
 
                         SafeInvoke(() =>
                         {

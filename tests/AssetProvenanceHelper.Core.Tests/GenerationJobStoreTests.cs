@@ -193,4 +193,47 @@ public sealed class GenerationJobStoreTests : IDisposable
         Assert.NotNull(loadedItem);
         Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, loadedItem.Status);
     }
+
+    [Fact]
+    public void UpsertItems_And_GetItemsForManifest_RoundtripsCorrectly()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+
+        var item1 = new GenerationItemRecord("fpA", "rk1", "a1", "a1.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c1", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var item2 = new GenerationItemRecord("fpA", "rk2", "a2", "a2.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c2", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var item3 = new GenerationItemRecord("fpB", "rk3", "a3", "a3.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c3", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        store.UpsertItems([item1, item2, item3]);
+
+        var fpAItems = store.GetItemsForManifest("fpA");
+        Assert.Equal(2, fpAItems.Count);
+
+        var fpBItems = store.GetItemsForManifest("fpB");
+        Assert.Single(fpBItems);
+    }
+
+    [Fact]
+    public void GetItemsForBatch_And_GetActiveBatches_FiltersAccurately()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+
+        var item1 = new GenerationItemRecord("fpA", "rk1", "a1", "a1.png", GenerationMode.Batch, "p", "m", "q", 512, 512, 816, 816, "c1", GenerationItemStatus.BatchSubmitted, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, BatchId: "b1");
+        var item2 = new GenerationItemRecord("fpA", "rk2", "a2", "a2.png", GenerationMode.Batch, "p", "m", "q", 512, 512, 816, 816, "c2", GenerationItemStatus.BatchSubmitted, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, BatchId: "b2");
+
+        store.UpsertItems([item1, item2]);
+
+        var batch1Items = store.GetItemsForBatch("b1");
+        Assert.Single(batch1Items);
+        Assert.Equal("rk1", batch1Items[0].RequestKey);
+
+        var activeBatch = new GenerationBatchRecord("b1", "fpA", "p", "m", "q", ["rk1"], "in_progress", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ProviderBatchId: "pb1");
+        var completedBatch = new GenerationBatchRecord("b2", "fpA", "p", "m", "q", ["rk2"], "completed", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ProviderBatchId: "pb2");
+
+        store.UpsertBatch(activeBatch);
+        store.UpsertBatch(completedBatch);
+
+        var active = store.GetActiveBatches();
+        Assert.Single(active);
+        Assert.Equal("b1", active[0].LocalBatchId);
+    }
 }

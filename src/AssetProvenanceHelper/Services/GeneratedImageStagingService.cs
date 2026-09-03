@@ -34,18 +34,38 @@ public sealed class GeneratedImageStagingService
         return Path.Combine(_baseStagingPath, safeFp, safeRk);
     }
 
-    public string SaveCandidate(
+    internal static Action<string>? OnBeforeCandidatePromoteForTests;
+
+    public string SaveRawCandidate(
         string manifestFingerprint,
         string requestKey,
         string candidateId,
-        byte[] rawBytes,
+        byte[] rawBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(manifestFingerprint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidateId);
+        ArgumentNullException.ThrowIfNull(rawBytes);
+
+        var safeCandidateId = SanitizePathSegment(candidateId);
+        var itemDir = GetItemDirectory(manifestFingerprint, requestKey);
+        Directory.CreateDirectory(itemDir);
+
+        var rawPath = Path.Combine(itemDir, $"{safeCandidateId}.raw.png");
+        WriteBytesAtomicNoOverwrite(rawPath, rawBytes);
+        return rawPath;
+    }
+
+    public string CompleteCandidate(
+        string manifestFingerprint,
+        string requestKey,
+        string candidateId,
         byte[] normalizedBytes,
         ApiCandidateMetadata metadata)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(manifestFingerprint);
         ArgumentException.ThrowIfNullOrWhiteSpace(requestKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(candidateId);
-        ArgumentNullException.ThrowIfNull(rawBytes);
         ArgumentNullException.ThrowIfNull(normalizedBytes);
         ArgumentNullException.ThrowIfNull(metadata);
 
@@ -53,12 +73,12 @@ public sealed class GeneratedImageStagingService
         var itemDir = GetItemDirectory(manifestFingerprint, requestKey);
         Directory.CreateDirectory(itemDir);
 
-        var rawPath = Path.Combine(itemDir, $"{safeCandidateId}.raw.png");
         var normalizedPath = Path.Combine(itemDir, $"{safeCandidateId}.png");
         var metadataPath = Path.Combine(itemDir, $"{safeCandidateId}.metadata.json");
 
-        WriteBytesAtomic(rawPath, rawBytes);
-        WriteBytesAtomic(normalizedPath, normalizedBytes);
+        OnBeforeCandidatePromoteForTests?.Invoke(normalizedPath);
+
+        WriteBytesAtomicNoOverwrite(normalizedPath, normalizedBytes);
 
         var json = JsonSerializer.Serialize(new StagingMetadataDto
         {
@@ -77,9 +97,21 @@ public sealed class GeneratedImageStagingService
             CreatedAtUtc = metadata.CreatedAtUtc.ToString("O")
         }, JsonOptions);
 
-        WriteTextAtomic(metadataPath, json);
+        WriteTextAtomicNoOverwrite(metadataPath, json);
 
         return normalizedPath;
+    }
+
+    public string SaveCandidate(
+        string manifestFingerprint,
+        string requestKey,
+        string candidateId,
+        byte[] rawBytes,
+        byte[] normalizedBytes,
+        ApiCandidateMetadata metadata)
+    {
+        SaveRawCandidate(manifestFingerprint, requestKey, candidateId, rawBytes);
+        return CompleteCandidate(manifestFingerprint, requestKey, candidateId, normalizedBytes, metadata);
     }
 
     public ApiCandidateMetadata? LoadMetadata(string manifestFingerprint, string requestKey, string candidateId)
@@ -119,6 +151,39 @@ public sealed class GeneratedImageStagingService
         {
             return null;
         }
+    }
+
+    private static void WriteBytesAtomicNoOverwrite(string destinationPath, byte[] bytes)
+    {
+        if (File.Exists(destinationPath))
+        {
+            throw new IOException($"Destination already exists: {destinationPath}");
+        }
+
+        var tempPath = destinationPath + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var stream = new FileStream(
+                       tempPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None))
+            {
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+
+            File.Move(tempPath, destinationPath, overwrite: false);
+        }
+        finally
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+        }
+    }
+
+    private static void WriteTextAtomicNoOverwrite(string destinationPath, string text)
+    {
+        WriteBytesAtomicNoOverwrite(destinationPath, new UTF8Encoding(false).GetBytes(text));
     }
 
     private static void WriteBytesAtomic(string destinationPath, byte[] bytes)

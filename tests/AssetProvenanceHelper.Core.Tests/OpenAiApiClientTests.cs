@@ -170,4 +170,67 @@ public sealed class OpenAiApiClientTests
         Assert.Equal("html_gateway_error", ex.ErrorType);
         Assert.Contains("502 Bad Gateway", ex.Message);
     }
+
+    [Fact]
+    public async Task TestConnectionAsync_QueriesModelEndpoint_ReturnsSuccess()
+    {
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            Assert.Equal(HttpMethod.Get, req.Method);
+            Assert.Equal("/v1/models/gpt-image-2", req.RequestUri?.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"id\":\"gpt-image-2\"}", Encoding.UTF8, "application/json")
+            });
+        });
+
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.openai.com/v1/") };
+        var client = new OpenAiApiClient(httpClient);
+
+        var success = await client.TestConnectionAsync("test-key", "gpt-image-2");
+        Assert.True(success);
+    }
+
+    [Fact]
+    public async Task DownloadFileContentAsync_Success_ReturnsStringContent()
+    {
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            Assert.Equal(HttpMethod.Get, req.Method);
+            Assert.Equal("/v1/files/f1/content", req.RequestUri?.AbsolutePath);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("file payload line 1\nfile payload line 2")
+            });
+        });
+
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.openai.com/v1/") };
+        var client = new OpenAiApiClient(httpClient);
+
+        var content = await client.GetFileContentAsync("f1", "test-key");
+        Assert.Equal("file payload line 1\nfile payload line 2", content);
+    }
+
+    [Fact]
+    public async Task GetBatchAsync_Success_ReturnsBatch()
+    {
+        var handler = new FakeHttpMessageHandler(req =>
+        {
+            if (req.Method == HttpMethod.Get && req.RequestUri?.AbsolutePath == "/v1/batches/b1")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"id\":\"b1\",\"status\":\"in_progress\"}", Encoding.UTF8, "application/json")
+                });
+            }
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        });
+
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.openai.com/v1/") };
+        var client = new OpenAiApiClient(httpClient);
+
+        var retrieved = await client.GetBatchAsync("b1", "test-key");
+        Assert.Equal("b1", retrieved.Id);
+        Assert.Equal("in_progress", retrieved.Status);
+    }
 }

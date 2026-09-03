@@ -151,13 +151,20 @@ public sealed class SettingsDialog : Form
 
         btnDeleteKey = new Button
         {
-            Name = "btnDeleteKey",
+            Name = "btnDeleteApiKey",
             Text = "Delete Key",
             Location = new Point(240, 84),
             Size = new Size(90, 28),
             UseVisualStyleBackColor = true
         };
         btnDeleteKey.Click += (_, _) => HandleDeleteKey();
+
+        var btnDeleteKeyAlias = new Button
+        {
+            Name = "btnDeleteKey",
+            Visible = false
+        };
+        btnDeleteKeyAlias.Click += (_, _) => btnDeleteKey.PerformClick();
 
         btnTestConnection = new Button
         {
@@ -195,6 +202,7 @@ public sealed class SettingsDialog : Form
         tab.Controls.Add(txtApiKey);
         tab.Controls.Add(btnSaveKey);
         tab.Controls.Add(btnDeleteKey);
+        tab.Controls.Add(btnDeleteKeyAlias);
         tab.Controls.Add(btnTestConnection);
         tab.Controls.Add(lblConnectionStatus);
         tab.Controls.Add(lblModel);
@@ -329,13 +337,21 @@ public sealed class SettingsDialog : Form
         tab.Controls.Add(chkResume);
     }
 
+    public static Func<IWin32Window, string, string, MessageBoxButtons, MessageBoxIcon, DialogResult>? ConfirmBoxProvider { get; set; }
+
     private void LoadSettingsIntoDialog()
     {
         var existingKey = _secretStore.LoadSecret(OpenAiApiKeySecretName);
-        if (!string.IsNullOrEmpty(existingKey))
+        var secretExists = !string.IsNullOrWhiteSpace(existingKey);
+        txtApiKey.Text = string.Empty;
+        txtApiKey.PlaceholderText = secretExists
+            ? "●●●●●●●● (Key configured, leave blank to keep)"
+            : "sk-...";
+
+        if (secretExists)
         {
-            txtApiKey.Text = existingKey;
             lblConnectionStatus.Text = "Status: Key configured";
+            lblConnectionStatus.ForeColor = Color.DarkGreen;
         }
 
         if (!string.IsNullOrEmpty(_settings.OpenAiModel) && cmbModel.Items.Contains(_settings.OpenAiModel))
@@ -368,6 +384,8 @@ public sealed class SettingsDialog : Form
         try
         {
             _secretStore.SaveSecret(OpenAiApiKeySecretName, key);
+            txtApiKey.Clear();
+            txtApiKey.PlaceholderText = "●●●●●●●● (Key configured, leave blank to keep)";
             lblConnectionStatus.Text = "Status: Key saved securely";
             lblConnectionStatus.ForeColor = Color.DarkGreen;
         }
@@ -379,10 +397,20 @@ public sealed class SettingsDialog : Form
 
     private void HandleDeleteKey()
     {
+        var confirmResult = ConfirmBoxProvider != null
+            ? ConfirmBoxProvider(this, "Are you sure you want to delete the stored API key?", "Delete API Key", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+            : MessageBox.Show(this, "Are you sure you want to delete the stored API key?", "Delete API Key", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+        if (confirmResult != DialogResult.Yes && confirmResult != DialogResult.OK)
+        {
+            return;
+        }
+
         try
         {
             _secretStore.DeleteSecret(OpenAiApiKeySecretName);
             txtApiKey.Clear();
+            txtApiKey.PlaceholderText = "sk-...";
             lblConnectionStatus.Text = "Status: Key deleted";
             lblConnectionStatus.ForeColor = Color.DimGray;
         }
@@ -397,6 +425,11 @@ public sealed class SettingsDialog : Form
         var key = txtApiKey.Text.Trim();
         if (string.IsNullOrEmpty(key))
         {
+            key = _secretStore.LoadSecret(OpenAiApiKeySecretName)?.Trim() ?? string.Empty;
+        }
+
+        if (string.IsNullOrEmpty(key))
+        {
             lblConnectionStatus.Text = "Status: No API key provided";
             lblConnectionStatus.ForeColor = Color.Red;
             return;
@@ -407,15 +440,26 @@ public sealed class SettingsDialog : Form
         btnTestConnection.Enabled = false;
 
         OpenAiApiClient? tempClient = null;
+        var selectedModel = (string?)cmbModel.SelectedItem ?? "gpt-image-2";
         try
         {
             var client = _apiClient ?? (tempClient = new OpenAiApiClient());
-            var success = await client.TestConnectionAsync(key);
+            var success = await client.TestConnectionAsync(key, selectedModel);
             if (success)
             {
-                lblConnectionStatus.Text = "Status: OK (Connected)";
+                lblConnectionStatus.Text = $"Status: Connected; model '{selectedModel}' available";
                 lblConnectionStatus.ForeColor = Color.DarkGreen;
             }
+        }
+        catch (OpenAiApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            lblConnectionStatus.Text = $"Status: Failed - Model '{selectedModel}' not found or not accessible for this account";
+            lblConnectionStatus.ForeColor = Color.Red;
+        }
+        catch (OpenAiApiException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            lblConnectionStatus.Text = "Status: Failed - Invalid API key";
+            lblConnectionStatus.ForeColor = Color.Red;
         }
         catch (Exception ex)
         {
@@ -443,14 +487,11 @@ public sealed class SettingsDialog : Form
         try
         {
             var key = txtApiKey.Text.Trim();
-            if (!string.IsNullOrEmpty(key))
+            if (!string.IsNullOrWhiteSpace(key))
             {
                 _secretStore.SaveSecret(OpenAiApiKeySecretName, key);
             }
-            else
-            {
-                _secretStore.DeleteSecret(OpenAiApiKeySecretName);
-            }
+            // Blank key leaves existing secret untouched; only explicit delete removes it
         }
         catch (Exception ex)
         {

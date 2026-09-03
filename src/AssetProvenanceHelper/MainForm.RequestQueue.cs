@@ -13,6 +13,17 @@ partial class MainForm
 
     private void HandleImportRequest()
     {
+        if (_isGeneratingDirect || _isSubmittingBatch)
+        {
+            ShowMessageBox(
+                "A generation or batch submission is currently being prepared. "
+                + "Wait until the local operation has finished before importing another manifest.",
+                "Import blocked",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         string? path = null;
 
         if (OpenFileDialogProvider is not null)
@@ -189,9 +200,14 @@ partial class MainForm
                 return;
             }
 
+            var preloadedJobs = _generationJobStore
+                .GetItemsForManifest(_currentManifest.ManifestFingerprint)
+                .ToDictionary(j => j.RequestKey, StringComparer.Ordinal);
+
             foreach (var request in _currentManifest.Items)
             {
-                var (statusText, backColor) = GetRequestItemVisualStatus(request);
+                preloadedJobs.TryGetValue(request.RequestKey, out var preloadedJob);
+                var (statusText, backColor) = GetRequestItemVisualStatus(request, preloadedJob);
 
                 var lvi =
                     new ListViewItem(
@@ -320,22 +336,38 @@ partial class MainForm
         if (_currentManifest != null)
         {
             var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, item.RequestKey);
-            if (job?.Status == Core.Generation.GenerationItemStatus.Ready
-                && !string.IsNullOrEmpty(job.StagedOutputPath)
-                && File.Exists(job.StagedOutputPath))
+            if (job?.Status == Core.Generation.GenerationItemStatus.Ready)
             {
-                var candidateId = Path.GetFileNameWithoutExtension(job.StagedOutputPath);
-                var metadata = _stagingService.LoadMetadata(
-                    _currentManifest.ManifestFingerprint,
-                    item.RequestKey,
-                    candidateId);
+                var verifier = new CandidateVerificationService(_stagingService);
+                var verification = verifier.VerifyCandidate(job, item.Width, item.Height);
 
-                if (metadata != null)
+                if (verification.IsValid && verification.Candidate != null)
                 {
-                    _activeApiCandidateMetadata = metadata;
+                    _activeApiCandidateMetadata = verification.Candidate.Metadata;
                     SelectProviderByFileName("OpenAI API.md");
-                    SetSelectedImage(ImageSlot.Main, job.StagedOutputPath);
+                    SetSelectedImage(ImageSlot.Main, verification.Candidate.ImagePath);
                     AddStatus($"Staged candidate loaded for '{item.AssetName}'. Review and commit when ready.");
+                }
+                else
+                {
+                    _activeApiCandidateMetadata = null;
+                    SetSelectedImage(ImageSlot.Main, null);
+
+                    _generationJobStore.UpsertItem(job with
+                    {
+                        Status = Core.Generation.GenerationItemStatus.FailedPermanent,
+                        ErrorCode = verification.ErrorCode ?? "candidate_corrupt",
+                        ErrorMessage = verification.ErrorMessage ?? "Candidate verification failed.",
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    });
+
+                    ShowMessageBox(
+                        $"Staged candidate for '{item.AssetName}' failed verification:" + Environment.NewLine + Environment.NewLine +
+                        $"{verification.ErrorMessage}" + Environment.NewLine + Environment.NewLine +
+                        "The candidate was not loaded into Main.",
+                        "Candidate Verification Failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
                 }
             }
             else if (hadActiveStagedCandidate)
@@ -442,10 +474,17 @@ partial class MainForm
             _toolTip.SetToolTip(btnGenerateNow, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
             _toolTip.SetToolTip(btnQueueProductionBatch, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
         }
-        else
+        var apiMutationActive =
+            _isGeneratingDirect || _isSubmittingBatch;
+
+        if (_state != UiState.ReferenceReady)
         {
-            btnImportRequest.Enabled = true;
-            var canRunApi = _currentManifest is not null && !_isGeneratingDirect && !_isSubmittingBatch;
+            btnImportRequest.Enabled = !apiMutationActive;
+
+            var canRunApi =
+                _currentManifest is not null
+                && !apiMutationActive;
+
             btnGenerateNow.Enabled = canRunApi;
             btnQueueProductionBatch.Enabled = canRunApi;
             _toolTip.SetToolTip(btnGenerateNow, null);
