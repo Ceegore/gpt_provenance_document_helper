@@ -1,10 +1,10 @@
 ﻿{
-    "lines":  821,
-    "totalLines":  939,
-    "branches":  274,
-    "totalBranches":  344,
-    "methods":  223,
-    "totalMethods":  256,
+    "lines":  836,
+    "totalLines":  933,
+    "branches":  286,
+    "totalBranches":  342,
+    "methods":  225,
+    "totalMethods":  257,
     "minLineRate":  0.8,
     "minBranchRate":  0.75
 }
