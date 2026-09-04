@@ -12,7 +12,19 @@ partial class MainForm
 {
     private void HandleMainImage()
     {
+        var hasApiCandidate = _activeApiCandidateMetadata is not null;
         var variantCount = GetSelectedVariantCount();
+
+        if (hasApiCandidate && variantCount > 0)
+        {
+            ShowMessageBox(
+                "A staged API Candidate is active. Variants applies to the legacy download-folder workflow and cannot be combined with this API Candidate. Set Variants to 'none' or unload the API Candidate first.",
+                "Variants unavailable for API Candidate",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         if (variantCount > 0)
         {
             HandleVariantBatch(variantCount);
@@ -133,13 +145,17 @@ partial class MainForm
         AssetSession session;
         try
         {
+            var providerSnapshot = _activeApiCandidateMetadata is not null
+                ? GetOpenAiApiProviderSnapshot()
+                : GetProviderSnapshotForNewAsset();
+
             session = _assetProcessorService.CreateNoReferenceMainSession(
                 settings,
                 assetName,
                 sourceImage,
                 prompt,
                 processedAt,
-                GetProviderSnapshotForNewAsset(),
+                providerSnapshot,
                 _activeRequest?.RequestKey);
 
             if (_activeApiCandidateMetadata is not null)
@@ -657,5 +673,19 @@ partial class MainForm
         session.ApiProviderRequestId = _activeApiCandidateMetadata.ProviderRequestId;
         session.ApiBatchId = _activeApiCandidateMetadata.BatchId;
         session.ApiCreatedAtUtc = _activeApiCandidateMetadata.CreatedAtUtc.ToString("O");
+    }
+
+    private ProviderTemplateSnapshot? GetOpenAiApiProviderSnapshot()
+    {
+        if (_providerTemplateCatalogService is null)
+        {
+            return _selectedProvider?.CreateSnapshot();
+        }
+
+        var catalog = _providerTemplateCatalogService.Load();
+        var definition = catalog.Templates.SingleOrDefault(template =>
+            string.Equals(template.FileName, "OpenAI API.md", StringComparison.OrdinalIgnoreCase));
+
+        return definition?.CreateSnapshot() ?? _selectedProvider?.CreateSnapshot();
     }
 }

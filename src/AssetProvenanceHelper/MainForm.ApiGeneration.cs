@@ -81,6 +81,13 @@ partial class MainForm
             return;
         }
 
+        var recoveryService = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+        var recovered = recoveryService.RecoverAllForManifest(_currentManifest.ManifestFingerprint);
+        if (recovered > 0)
+        {
+            SafeInvoke(RefreshRequestQueueVisuals);
+        }
+
         var preflightService = new ApiPreflightService(_generationJobStore);
         var preflight = preflightService.Preflight(
             _currentManifest.ManifestFingerprint,
@@ -237,9 +244,11 @@ partial class MainForm
                     SubmittedAtUtc: DateTimeOffset.UtcNow,
                     UpdatedAtUtc: DateTimeOffset.UtcNow);
 
+                var currentRecord = itemRecord;
+
                 if (_apiGenerationCts.IsCancellationRequested)
                 {
-                    _generationJobStore.UpsertItem(itemRecord with
+                    _generationJobStore.UpsertItem(currentRecord with
                     {
                         Status = GenerationItemStatus.Pending,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
@@ -253,11 +262,12 @@ partial class MainForm
                     using var permit = await rateLimiter.AcquireAsync(_apiGenerationCts.Token).ConfigureAwait(false);
                     acquiredPermit = true;
 
-                    _generationJobStore.UpsertItem(itemRecord with
+                    currentRecord = currentRecord with
                     {
                         Status = GenerationItemStatus.DirectInFlight,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
-                    });
+                    };
+                    _generationJobStore.UpsertItem(currentRecord);
                     SafeInvoke(RefreshRequestQueueVisuals);
 
                     var candidate = await _imageGenerationProvider.GenerateAsync(spec, apiKey, _apiGenerationCts.Token).ConfigureAwait(false);
@@ -267,9 +277,12 @@ partial class MainForm
                         throw new InvalidDataException("Provider returned empty image data.");
                     }
 
-                    var rawSha = string.IsNullOrEmpty(candidate.RawSha256)
-                        ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(candidate.RawBytes)).ToLowerInvariant()
-                        : candidate.RawSha256;
+                    var rawSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(candidate.RawBytes)).ToLowerInvariant();
+                    if (!string.IsNullOrWhiteSpace(candidate.RawSha256) &&
+                        !string.Equals(candidate.RawSha256, rawSha, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidDataException("Provider candidate raw SHA-256 does not match the received bytes.");
+                    }
 
                     // 1. Raw atomic write + Flush(true) before normalization
                     var rawPath = _stagingService.SaveRawCandidate(
@@ -279,14 +292,16 @@ partial class MainForm
                         candidate.RawBytes);
 
                     // 2. Persist job Normalizing + raw path
-                    _generationJobStore.UpsertItem(itemRecord with
+                    currentRecord = currentRecord with
                     {
                         Status = GenerationItemStatus.Normalizing,
                         CandidateId = candidate.CandidateId,
                         ProviderRawPath = rawPath,
                         RawSha256 = rawSha,
+                        ProviderRequestId = candidate.ProviderRequestId,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
-                    });
+                    };
+                    _generationJobStore.UpsertItem(currentRecord);
                     SafeInvoke(RefreshRequestQueueVisuals);
 
                     // 3. Normalize
@@ -315,7 +330,7 @@ partial class MainForm
                         metadata);
 
                     // 5. Job Ready
-                    _generationJobStore.UpsertItem(itemRecord with
+                    currentRecord = currentRecord with
                     {
                         Status = GenerationItemStatus.Ready,
                         CandidateId = candidate.CandidateId,
@@ -325,23 +340,27 @@ partial class MainForm
                         NormalizedSha256 = normResult.NormalizedSha256,
                         ProviderRequestId = candidate.ProviderRequestId,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
-                    });
+                    };
+                    _generationJobStore.UpsertItem(currentRecord);
                 }
                 catch (OperationCanceledException)
                 {
                     if (acquiredPermit)
                     {
-                        _generationJobStore.UpsertItem(itemRecord with
+                        var hasRaw = !string.IsNullOrWhiteSpace(currentRecord.ProviderRawPath);
+                        _generationJobStore.UpsertItem(currentRecord with
                         {
-                            Status = GenerationItemStatus.UncertainAfterInterruption,
-                            ErrorCode = "direct_interrupted",
-                            ErrorMessage = "Request was cancelled or interrupted while in-flight. Remote billing status is uncertain.",
+                            Status = hasRaw ? GenerationItemStatus.FailedRetryable : GenerationItemStatus.UncertainAfterInterruption,
+                            ErrorCode = hasRaw ? "local_candidate_processing_failed" : "direct_interrupted",
+                            ErrorMessage = hasRaw
+                                ? "Direct generation succeeded remotely, but local processing was cancelled before completion."
+                                : "Request was cancelled or interrupted while in-flight. Remote billing status is uncertain.",
                             UpdatedAtUtc = DateTimeOffset.UtcNow
                         });
                     }
                     else
                     {
-                        _generationJobStore.UpsertItem(itemRecord with
+                        _generationJobStore.UpsertItem(currentRecord with
                         {
                             Status = GenerationItemStatus.Pending,
                             UpdatedAtUtc = DateTimeOffset.UtcNow
@@ -351,11 +370,36 @@ partial class MainForm
                 catch (Exception ex)
                 {
                     var isGlobal = IsGlobalDirectError(ex, out var globalReason);
+                    var providerOutputWasPersisted = !string.IsNullOrWhiteSpace(currentRecord.ProviderRawPath);
 
-                    _generationJobStore.UpsertItem(itemRecord with
+                    GenerationItemStatus finalStatus;
+                    string finalErrorCode;
+
+                    if (providerOutputWasPersisted)
                     {
-                        Status = GenerationItemStatus.FailedPermanent,
-                        ErrorCode = isGlobal ? "global_direct_error" : "direct_failed",
+                        finalStatus = GenerationItemStatus.FailedRetryable;
+                        finalErrorCode = "local_candidate_processing_failed";
+                    }
+                    else if (isGlobal)
+                    {
+                        finalStatus = GenerationItemStatus.FailedPermanent;
+                        finalErrorCode = "global_direct_error";
+                    }
+                    else if (IsRetryableDirectFailure(ex))
+                    {
+                        finalStatus = GenerationItemStatus.FailedRetryable;
+                        finalErrorCode = "direct_failed_retryable";
+                    }
+                    else
+                    {
+                        finalStatus = GenerationItemStatus.FailedPermanent;
+                        finalErrorCode = "direct_failed";
+                    }
+
+                    _generationJobStore.UpsertItem(currentRecord with
+                    {
+                        Status = finalStatus,
+                        ErrorCode = finalErrorCode,
                         ErrorMessage = ex.Message,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
                     });
@@ -381,7 +425,14 @@ partial class MainForm
             });
 
             await Task.WhenAll(tasks).ConfigureAwait(false);
-            SafeInvoke(() => AddStatus("Direct API generation completed."));
+            if (Volatile.Read(ref globalErrorSignaled) == 0)
+            {
+                SafeInvoke(() => AddStatus("Direct API generation completed."));
+            }
+            else
+            {
+                SafeInvoke(() => AddStatus("Direct API generation halted due to a global provider error."));
+            }
         }
         catch (Exception ex)
         {
@@ -441,6 +492,16 @@ partial class MainForm
 
         reason = string.Empty;
         return false;
+    }
+
+    internal static bool IsRetryableDirectFailure(Exception ex)
+    {
+        if (ex is OpenAiApiException api)
+        {
+            return RetryPolicy.IsRetryableStatusCode(api.StatusCode);
+        }
+
+        return RetryPolicy.IsRetryableException(ex);
     }
 
     private void SafeInvoke(Action action)
@@ -544,6 +605,13 @@ partial class MainForm
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
+        }
+
+        var recoveryService = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+        var recovered = recoveryService.RecoverAllForManifest(_currentManifest.ManifestFingerprint);
+        if (recovered > 0)
+        {
+            SafeInvoke(RefreshRequestQueueVisuals);
         }
 
         var preflightService = new ApiPreflightService(_generationJobStore);
@@ -728,7 +796,6 @@ partial class MainForm
 
             SafeInvoke(() =>
             {
-                _isSubmittingBatch = false;
                 ApplyRequestQueueState();
                 RefreshRequestQueueVisuals();
                 ShowMessageBox($"Failed to upload batch input file: {uploadEx.Message}", "Batch Submission Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -761,7 +828,6 @@ partial class MainForm
 
             SafeInvoke(() =>
             {
-                _isSubmittingBatch = false;
                 ApplyRequestQueueState();
                 RefreshRequestQueueVisuals();
                 ShowMessageBox(
@@ -813,7 +879,6 @@ partial class MainForm
 
             SafeInvoke(() =>
             {
-                _isSubmittingBatch = false;
                 ApplyRequestQueueState();
                 RefreshRequestQueueVisuals();
                 ShowMessageBox(
@@ -860,13 +925,37 @@ partial class MainForm
         }
         catch (Exception persistBatchIdEx)
         {
+            try
+            {
+                var uncertainItems = batchItemsToQueue
+                    .Select(item => item with
+                    {
+                        Status = GenerationItemStatus.UncertainAfterInterruption,
+                        ErrorCode = "remote_batch_id_persistence_failed",
+                        ErrorMessage = $"OpenAI created remote batch '{result.ProviderBatchId}', but the local Batch ID could not be persisted. Do not resubmit automatically.",
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    })
+                    .ToList();
+
+                _generationJobStore.UpsertItems(uncertainItems);
+            }
+            catch
+            {
+                // BatchQueued was already durably stored before remote mutation.
+                // Preflight MUST treat it as active so even this secondary
+                // persistence failure cannot allow an immediate duplicate submission.
+            }
+
             SafeInvoke(() =>
             {
                 ShowMessageBox(
-                    $"Batch was submitted to OpenAI with ID '{result.ProviderBatchId}', but saving state locally failed: {persistBatchIdEx.Message}",
+                    $"OpenAI accepted remote batch: {result.ProviderBatchId}" + Environment.NewLine + Environment.NewLine +
+                    $"Local recovery state could not be saved: {persistBatchIdEx.Message}" + Environment.NewLine + Environment.NewLine +
+                    "DO NOT submit these requests again until the remote batch has been checked.",
                     "State Save Warning",
                     MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
+                    MessageBoxIcon.Error);
+                RefreshRequestQueueVisuals();
             });
         }
         finally

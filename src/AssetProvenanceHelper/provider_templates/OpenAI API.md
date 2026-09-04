@@ -17,17 +17,19 @@ Reference asset: <<<REFERENCE_FILENAME>>>
 
 ## Automated API Generation Details
 
-Candidate ID: <<<API_CANDIDATE_ID>>>
+Generation channel: OpenAI API
 API Provider: <<<API_PROVIDER>>>
 Model: <<<API_MODEL>>>
-Mode: <<<API_MODE>>>
-Custom ID: <<<API_CUSTOM_ID>>>
-Target Resolution: <<<API_TARGET_RESOLUTION>>>
-Provider Resolution: <<<API_PROVIDER_RESOLUTION>>>
-Raw SHA-256: <<<API_RAW_SHA256>>>
-Normalized SHA-256: <<<API_NORMALIZED_SHA256>>>
+Generation mode: <<<API_MODE>>>
 Provider Request ID: <<<API_PROVIDER_REQUEST_ID>>>
 Batch ID: <<<API_BATCH_ID>>>
+Provider resolution: <<<API_PROVIDER_RESOLUTION>>>
+Final normalized resolution: <<<API_TARGET_RESOLUTION>>>
+Post-processing: deterministic center-crop/resize by AI Asset Provenance Helper
+Raw output SHA-256: <<<API_RAW_SHA256>>>
+Final normalized SHA-256: <<<API_NORMALIZED_SHA256>>>
+Candidate ID: <<<API_CANDIDATE_ID>>>
+Custom ID: <<<API_CUSTOM_ID>>>
 Generated At (UTC): <<<API_CREATED_AT_UTC>>>
 
 ## Generation/provider declaration

@@ -101,4 +101,22 @@ public sealed class ImageSizePlannerTests
         Assert.True(plan.CropX + plan.CropWidth <= plan.GenerationWidth);
         Assert.True(plan.CropY + plan.CropHeight <= plan.GenerationHeight);
     }
+
+    [Fact]
+    public void Plan_ExceedingMaxPixels_ThrowsArgumentException()
+    {
+        // 3500x2500: edge <= 3840, aspect 1.4:1 <= 3:1, but 8.75M pixels > 8.29M MaxPixels
+        Assert.Throws<ArgumentException>(() => ImageSizePlanner.Plan(3500, 2500));
+    }
+
+    [Theory]
+    [InlineData(150, 450)]
+    [InlineData(450, 150)]
+    public void Plan_SmallNonSquareDimensions_IteratesAspectAdjustment(int w, int h)
+    {
+        var plan = ImageSizePlanner.Plan(w, h);
+        Assert.True((long)plan.GenerationWidth * plan.GenerationHeight >= ImageSizePlanner.MinPixels);
+        Assert.True(plan.GenerationWidth <= ImageSizePlanner.MaxEdge);
+        Assert.True(plan.GenerationHeight <= ImageSizePlanner.MaxEdge);
+    }
 }

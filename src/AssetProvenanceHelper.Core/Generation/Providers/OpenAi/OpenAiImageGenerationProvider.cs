@@ -50,7 +50,7 @@ public sealed class OpenAiImageGenerationProvider : IImageGenerationProvider
             Background: "opaque");
 
         var effectivePolicy = spec.RetryAttempts.HasValue
-            ? new RetryPolicy(Math.Max(1, spec.RetryAttempts.Value + 1))
+            ? new RetryPolicy(Math.Max(1, spec.RetryAttempts.Value))
             : null;
 
         var response = await _client.GenerateImageAsync(request, apiKey, cancellationToken, effectivePolicy).ConfigureAwait(false);

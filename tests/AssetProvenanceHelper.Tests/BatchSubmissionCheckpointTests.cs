@@ -404,7 +404,7 @@ public sealed class BatchSubmissionCheckpointTests : IDisposable
                 Assert.Equal(1, provider.CreateBatchCallCount);
 
                 Assert.NotNull(messageShown);
-                Assert.Contains("saving state locally failed", messageShown);
+                Assert.Contains("Local recovery state could not be saved", messageShown);
 
                 form.Close();
             }
@@ -472,6 +472,91 @@ public sealed class BatchSubmissionCheckpointTests : IDisposable
             }
             finally
             {
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void BatchIdPersistFailure_SecondSubmissionIsBlocked()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var (form, provider, jobStore) = CreateTestForm(workspace);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+
+                var manifestPath = CreateTestManifest();
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnQueue = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnQueue);
+
+                btnImport.PerformClick();
+
+                GenerationJobStore.OnBeforeSaveCoreForTests = state =>
+                {
+                    if (state.Batches.Any(batch => batch.ProviderBatchId == provider.CreatedBatchId))
+                    {
+                        throw new IOException("Simulated persistence failure when saving ProviderBatchId");
+                    }
+                };
+
+                btnQueue.PerformClick();
+
+                // Wait for async submission to attempt and fail persisting ProviderBatchId
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                Assert.Equal(1, provider.CreateBatchCallCount);
+
+                // Clear the persistence failure hook
+                GenerationJobStore.OnBeforeSaveCoreForTests = null;
+
+                // Attempt a second submission - MUST be blocked because items are BatchQueued/Uncertain
+                btnQueue.PerformClick();
+
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                // Critical assertion: CreateBatch must NOT have been called a second time
+                Assert.Equal(1, provider.CreateBatchCallCount);
+
+                var state = jobStore.Load();
+                var item = Assert.Single(state.Items);
+                Assert.Contains(item.Status, new[]
+                {
+                    GenerationItemStatus.BatchQueued,
+                    GenerationItemStatus.UncertainAfterInterruption
+                });
+                Assert.NotEqual(GenerationItemStatus.Pending, item.Status);
+
+                form.Close();
+            }
+            finally
+            {
+                GenerationJobStore.OnBeforeSaveCoreForTests = null;
                 MainForm.OpenFolderProvider = null;
                 MainForm.MessageBoxProvider = null;
                 MainForm.ConfirmBoxProvider = null;

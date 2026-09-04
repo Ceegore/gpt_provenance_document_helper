@@ -190,7 +190,7 @@ public sealed class BatchIngestionTests : IDisposable
     }
 
     [Fact]
-    public void BatchIngestion_UnknownCustomId_ThrowsOrLogsError()
+    public void BatchResults_UnknownCustomId_FailsBeforeAnyCandidateMutation()
     {
         var (batch, item1, _) = SetupBatchWithTwoItems();
         var imgBytes = CreateTestPng(816, 816, Color.Blue);
@@ -212,17 +212,22 @@ public sealed class BatchIngestionTests : IDisposable
                 new BatchItemOutput("aph-unrecognized-id-999", IsSuccess: true, ImageBytes: imgBytes, StatusCode: 200, ErrorCode: null, ErrorMessage: null)
             ]);
 
-        var summary = _ingestionService.IngestResults(batch, status, downloadResult);
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            _ingestionService.IngestResults(batch, status, downloadResult));
+        Assert.Contains("aph-unrecognized-id-999", ex.Message);
 
-        Assert.Contains("aph-unrecognized-id-999", summary.UnknownCustomIds);
+        var stored = _jobStore.GetItemsForBatch(batch.LocalBatchId);
+        Assert.DoesNotContain(stored, item => item.Status == GenerationItemStatus.Ready);
+        Assert.All(stored, item => Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, item.Status));
 
-        var updatedBatch = _jobStore.GetBatch(batch.LocalBatchId);
-        Assert.NotNull(updatedBatch);
-        Assert.Contains("Unknown custom IDs", updatedBatch.ErrorMessage);
+        var files = Directory.Exists(_stagingService.BaseStagingPath)
+            ? Directory.GetFiles(_stagingService.BaseStagingPath, "*.png", SearchOption.AllDirectories)
+            : [];
+        Assert.Empty(files);
     }
 
     [Fact]
-    public void BatchIngestion_DuplicateCustomId_ProcessesOnlyFirst()
+    public void BatchResults_DuplicateCustomId_FailsBeforeAnyCandidateMutation()
     {
         var (batch, item1, _) = SetupBatchWithTwoItems();
         var img1 = CreateTestPng(816, 816, Color.Green);
@@ -245,15 +250,112 @@ public sealed class BatchIngestionTests : IDisposable
                 new BatchItemOutput(item1.CustomId, IsSuccess: true, ImageBytes: img2, StatusCode: 200, ErrorCode: null, ErrorMessage: null)
             ]);
 
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            _ingestionService.IngestResults(batch, status, downloadResult));
+        Assert.Contains("duplicate", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        var stored = _jobStore.GetItemsForBatch(batch.LocalBatchId);
+        Assert.DoesNotContain(stored, item => item.Status == GenerationItemStatus.Ready);
+        Assert.All(stored, item => Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, item.Status));
+    }
+
+    [Fact]
+    public void BatchResults_EmptyCustomId_FailsBeforeAnyCandidateMutation()
+    {
+        var (batch, item1, _) = SetupBatchWithTwoItems();
+        var img = CreateTestPng(816, 816, Color.Green);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-out-1",
+            ErrorFileId: null,
+            TotalCount: 2,
+            CompletedCount: 2,
+            FailedCount: 0);
+
+        var downloadResult = new BatchDownloadResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Items:
+            [
+                new BatchItemOutput(item1.CustomId, IsSuccess: true, ImageBytes: img, StatusCode: 200, ErrorCode: null, ErrorMessage: null),
+                new BatchItemOutput("   ", IsSuccess: true, ImageBytes: img, StatusCode: 200, ErrorCode: null, ErrorMessage: null)
+            ]);
+
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            _ingestionService.IngestResults(batch, status, downloadResult));
+        Assert.Contains("empty", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        var stored = _jobStore.GetItemsForBatch(batch.LocalBatchId);
+        Assert.DoesNotContain(stored, item => item.Status == GenerationItemStatus.Ready);
+    }
+
+    [Fact]
+    public void BatchResults_CustomIdCaseChanged_IsUnknown()
+    {
+        var (batch, item1, _) = SetupBatchWithTwoItems();
+        var img = CreateTestPng(816, 816, Color.Green);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-out-1",
+            ErrorFileId: null,
+            TotalCount: 1,
+            CompletedCount: 1,
+            FailedCount: 0);
+
+        // Case-changed custom ID should NOT match because StringComparer.Ordinal is required
+        var upperCustomId = item1.CustomId.ToUpperInvariant();
+        Assert.NotEqual(item1.CustomId, upperCustomId);
+
+        var downloadResult = new BatchDownloadResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Items:
+            [
+                new BatchItemOutput(upperCustomId, IsSuccess: true, ImageBytes: img, StatusCode: 200, ErrorCode: null, ErrorMessage: null)
+            ]);
+
+        Assert.Throws<InvalidDataException>(() =>
+            _ingestionService.IngestResults(batch, status, downloadResult));
+
+        var stored = _jobStore.GetItemsForBatch(batch.LocalBatchId);
+        Assert.DoesNotContain(stored, item => item.Status == GenerationItemStatus.Ready);
+    }
+
+    [Fact]
+    public void BatchResults_ValidOutOfOrder_StillMapsCorrectly()
+    {
+        var (batch, item1, item2) = SetupBatchWithTwoItems();
+        var img1 = CreateTestPng(816, 816, Color.Green);
+        var img2 = CreateTestPng(816, 816, Color.Red);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-out-1",
+            ErrorFileId: null,
+            TotalCount: 2,
+            CompletedCount: 2,
+            FailedCount: 0);
+
+        // Order reversed: item2 first, then item1
+        var downloadResult = new BatchDownloadResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Items:
+            [
+                new BatchItemOutput(item2.CustomId, IsSuccess: true, ImageBytes: img2, StatusCode: 200, ErrorCode: null, ErrorMessage: null),
+                new BatchItemOutput(item1.CustomId, IsSuccess: true, ImageBytes: img1, StatusCode: 200, ErrorCode: null, ErrorMessage: null)
+            ]);
+
         var summary = _ingestionService.IngestResults(batch, status, downloadResult);
+        Assert.Equal(2, summary.SuccessCount);
 
-        // Only first occurrence processed
-        Assert.Equal(1, summary.SuccessCount);
-        Assert.Contains(item1.CustomId, summary.DuplicateCustomIds);
+        var updated1 = _jobStore.GetItem(item1.ManifestFingerprint, item1.RequestKey)!;
+        var updated2 = _jobStore.GetItem(item2.ManifestFingerprint, item2.RequestKey)!;
 
-        var updatedBatch = _jobStore.GetBatch(batch.LocalBatchId);
-        Assert.NotNull(updatedBatch);
-        Assert.Contains("Duplicate custom IDs", updatedBatch.ErrorMessage);
+        Assert.Equal(GenerationItemStatus.Ready, updated1.Status);
+        Assert.Equal(GenerationItemStatus.Ready, updated2.Status);
     }
 
     [Fact]
@@ -294,5 +396,85 @@ public sealed class BatchIngestionTests : IDisposable
         // Item2 must NEVER remain BatchSubmitted or become Ready; it must be UncertainAfterInterruption
         Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, updatedItem2.Status);
         Assert.Equal("missing_from_batch_results", updatedItem2.ErrorCode);
+    }
+
+    [Fact]
+    public void BatchIngestion_LocalDuplicateCustomId_ThrowsInvalidDataAndMarksUncertain()
+    {
+        var localBatchId = "batch-local-dup";
+        var fp = "fp-manifest";
+
+        var item1 = new GenerationItemRecord(
+            ManifestFingerprint: fp,
+            RequestKey: "k1",
+            AssetName: "asset1",
+            FileName: "asset1.png",
+            Mode: GenerationMode.Batch,
+            ProviderId: "OpenAI",
+            Model: "gpt-image-2",
+            Quality: "medium",
+            TargetWidth: 512,
+            TargetHeight: 512,
+            GenerationWidth: 816,
+            GenerationHeight: 816,
+            CustomId: "dup-custom-id",
+            Status: GenerationItemStatus.BatchSubmitted,
+            SubmittedAtUtc: DateTimeOffset.UtcNow,
+            UpdatedAtUtc: DateTimeOffset.UtcNow,
+            BatchId: localBatchId);
+
+        var item2 = item1 with
+        {
+            RequestKey = "k2",
+            AssetName = "asset2",
+            FileName = "asset2.png",
+            CustomId = "dup-custom-id"
+        };
+
+        var batch = new GenerationBatchRecord(
+            LocalBatchId: localBatchId,
+            ManifestFingerprint: fp,
+            ProviderId: "OpenAI",
+            Model: "gpt-image-2",
+            Quality: "medium",
+            RequestKeys: ["k1", "k2"],
+            Status: "Submitted",
+            CreatedAtUtc: DateTimeOffset.UtcNow,
+            UpdatedAtUtc: DateTimeOffset.UtcNow,
+            SubmittedCount: 2,
+            CompletedCount: 0,
+            FailedCount: 0,
+            ProviderBatchId: "batch_remote_dup");
+
+        _jobStore.UpsertBatch(batch);
+        _jobStore.UpsertItems([item1, item2]);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-out-1",
+            ErrorFileId: null,
+            TotalCount: 2,
+            CompletedCount: 2,
+            FailedCount: 0);
+
+        var downloadResult = new BatchDownloadResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Items:
+            [
+                new BatchItemOutput("dup-custom-id", IsSuccess: true, ImageBytes: CreateTestPng(816, 816, Color.Cyan), StatusCode: 200, ErrorCode: null, ErrorMessage: null)
+            ]);
+
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            _ingestionService.IngestResults(batch, status, downloadResult));
+
+        Assert.Contains("duplicate custom_id", ex.Message);
+
+        var items = _jobStore.GetItemsForBatch(localBatchId);
+        Assert.All(items, item =>
+        {
+            Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, item.Status);
+            Assert.Equal("batch_result_mapping_invalid", item.ErrorCode);
+        });
     }
 }

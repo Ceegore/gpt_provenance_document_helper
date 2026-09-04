@@ -84,7 +84,7 @@ public sealed class DpapiSecretStore : ISecretStore
             var encryptedBytes = File.ReadAllBytes(_storagePath);
             if (encryptedBytes.Length == 0)
             {
-                return new Dictionary<string, string>(StringComparer.Ordinal);
+                throw new InvalidDataException("Secret store exists but is empty.");
             }
 
             var decryptedBytes = ProtectedData.Unprotect(
@@ -94,11 +94,13 @@ public sealed class DpapiSecretStore : ISecretStore
 
             var json = Encoding.UTF8.GetString(decryptedBytes);
             return JsonSerializer.Deserialize<Dictionary<string, string>>(json)
-                ?? new Dictionary<string, string>(StringComparer.Ordinal);
+                ?? throw new InvalidDataException("Secret store could not be deserialized.");
         }
-        catch
+        catch (Exception ex)
         {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
+            throw new InvalidDataException(
+                $"Secret store '{_storagePath}' could not be decrypted or parsed. It was left unchanged.",
+                ex);
         }
     }
 

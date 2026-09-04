@@ -92,7 +92,7 @@ public sealed class DirectRetryAttemptsTests
         }
         """;
 
-        // Scenario 1: DirectRetryAttempts = 2 -> total attempts = 1 initial + 2 retries = 3
+        // Scenario 1: RetryAttempts = 3 -> total attempts = 3
         var handler1 = new CountingHandlerStub
         {
             SuccessJson = successJson,
@@ -103,7 +103,7 @@ public sealed class DirectRetryAttemptsTests
         var client1 = new OpenAiApiClient(httpClient1);
         var provider1 = new OpenAiImageGenerationProvider(client1);
 
-        var specWith2Retries = new ImageGenerationSpec(
+        var specWith3Attempts = new ImageGenerationSpec(
             ManifestFingerprint: "fp",
             RequestKey: "k1",
             AssetName: "asset",
@@ -118,12 +118,12 @@ public sealed class DirectRetryAttemptsTests
             GenerationWidth: 816,
             GenerationHeight: 816,
             CustomId: "custom-1",
-            RetryAttempts: 2); // 2 retries -> 3 attempts
+            RetryAttempts: 3); // Max direct API attempts = 3
 
-        await Assert.ThrowsAnyAsync<Exception>(() => provider1.GenerateAsync(specWith2Retries, "sk-test"));
+        await Assert.ThrowsAnyAsync<Exception>(() => provider1.GenerateAsync(specWith3Attempts, "sk-test"));
         Assert.Equal(3, handler1.RequestCount);
 
-        // Scenario 2: DirectRetryAttempts = 1 -> total attempts = 1 initial + 1 retry = 2
+        // Scenario 2: RetryAttempts = 1 -> total attempts = 1
         var handler2 = new CountingHandlerStub
         {
             SuccessJson = successJson,
@@ -134,7 +134,7 @@ public sealed class DirectRetryAttemptsTests
         var client2 = new OpenAiApiClient(httpClient2);
         var provider2 = new OpenAiImageGenerationProvider(client2);
 
-        var specWith1Retry = new ImageGenerationSpec(
+        var specWith1Attempt = new ImageGenerationSpec(
             ManifestFingerprint: "fp",
             RequestKey: "k1",
             AssetName: "asset",
@@ -149,9 +149,9 @@ public sealed class DirectRetryAttemptsTests
             GenerationWidth: 816,
             GenerationHeight: 816,
             CustomId: "custom-1",
-            RetryAttempts: 1); // 1 retry -> 2 attempts
+            RetryAttempts: 1); // Max direct API attempts = 1
 
-        await Assert.ThrowsAnyAsync<Exception>(() => provider2.GenerateAsync(specWith1Retry, "sk-test"));
-        Assert.Equal(2, handler2.RequestCount);
+        await Assert.ThrowsAnyAsync<Exception>(() => provider2.GenerateAsync(specWith1Attempt, "sk-test"));
+        Assert.Equal(1, handler2.RequestCount);
     }
 }

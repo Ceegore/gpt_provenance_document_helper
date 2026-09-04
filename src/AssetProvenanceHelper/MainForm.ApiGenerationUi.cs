@@ -39,7 +39,7 @@ partial class MainForm
                     return ("Queued", InFlightRowBackColor);
                 }
 
-                if (job.Status == GenerationItemStatus.BatchSubmitted)
+                if (job.Status is GenerationItemStatus.BatchQueued or GenerationItemStatus.BatchSubmitted)
                 {
                     return ("Batch queued", BatchRowBackColor);
                 }

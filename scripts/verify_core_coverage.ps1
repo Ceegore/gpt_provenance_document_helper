@@ -3,8 +3,9 @@
     Coverage gate for AssetProvenanceHelper.Core headless library.
 .DESCRIPTION
     Runs tests/AssetProvenanceHelper.Core.Tests with code coverage collection (with SAC-aware retry),
-    evaluates lines and branches against code-coverage-core-baseline.json,
-    and enforces minimum 80% line coverage and 75% branch coverage.
+    evaluates lines, branches, and methods against code-coverage-core-baseline.json,
+    and enforces minimum 80% line coverage, 75% branch coverage, plus an uncovered-count ratchet.
+    Also verifies every production .cs file in Core appears in the Cobertura report.
 #>
 
 param(
@@ -20,6 +21,7 @@ Push-Location $repoRoot
 
 try {
     $baselinePath = Join-Path $repoRoot "code-coverage-core-baseline.json"
+    $coreSourceRoot = Join-Path $repoRoot "src/AssetProvenanceHelper.Core"
 
     # 1. Run Core tests with coverage if requested
     if (-not $NoRunTests) {
@@ -101,26 +103,108 @@ try {
 
     Write-Host "Using Core coverage report: $validCovPath" -ForegroundColor Cyan
 
-    $linesCovered = [int]$covXml.coverage.'lines-covered'
-    $linesTotal = [int]$covXml.coverage.'lines-valid'
-    $branchesCovered = [int]$covXml.coverage.'branches-covered'
+    # 3. Collect production classes (exclude obj/ paths)
+    $allClasses = $covXml.SelectNodes("//class")
+    $productionClasses = $allClasses | Where-Object {
+        $_.filename -notmatch '^obj[\\/]' -and $_.filename -notmatch '[\\\/]obj[\\\/]'
+    }
+
+    # 4. Exact line / branch / method counters (production only)
+    $linesTotal = 0
+    $linesCovered = 0
+    $methodsTotal = 0
+    $methodsCovered = 0
+    $uncoveredMethodsList = New-Object System.Collections.Generic.List[string]
+
+    foreach ($cls in $productionClasses) {
+        $linesNode = $cls.SelectNodes("lines/line")
+        foreach ($line in $linesNode) {
+            $linesTotal++
+            if ([int]$line.hits -gt 0) { $linesCovered++ }
+        }
+
+        $methodNodes = $cls.SelectNodes("methods/method")
+        foreach ($m in $methodNodes) {
+            $methodsTotal++
+            $lr = [double]$m.'line-rate'
+            if ($lr -gt 0) {
+                $methodsCovered++
+            }
+            else {
+                $uncoveredMethodsList.Add("$($cls.filename) :: $($cls.name).$($m.name)$($m.signature)")
+            }
+        }
+    }
+
     $branchesTotal = [int]$covXml.coverage.'branches-valid'
+    $branchesCovered = [int]$covXml.coverage.'branches-covered'
 
     $lineRate = if ($linesTotal -gt 0) { [double]$linesCovered / $linesTotal } else { 0.0 }
     $branchRate = if ($branchesTotal -gt 0) { [double]$branchesCovered / $branchesTotal } else { 0.0 }
+    $methodRate = if ($methodsTotal -gt 0) { [double]$methodsCovered / $methodsTotal } else { 0.0 }
 
     Write-Host ""
     Write-Host "== AssetProvenanceHelper.Core Coverage Summary ==" -ForegroundColor Cyan
     Write-Host ("Lines:    {0} / {1} ({2:P2})" -f $linesCovered, $linesTotal, $lineRate)
     Write-Host ("Branches: {0} / {1} ({2:P2})" -f $branchesCovered, $branchesTotal, $branchRate)
+    Write-Host ("Methods:  {0} / {1} ({2:P2})" -f $methodsCovered, $methodsTotal, $methodRate)
 
-    # 3. Update baseline or verify
+    if ($uncoveredMethodsList.Count -gt 0) {
+        Write-Host ""
+        Write-Host "UNCOVERED METHODS ($($uncoveredMethodsList.Count)):" -ForegroundColor Yellow
+        $uncoveredMethodsList | ForEach-Object { Write-Host "  - $_" }
+    }
+
+    # 5. Dynamic production file inventory vs. the report
+    $noExecPath = Join-Path $repoRoot "code-coverage-core-no-executable-code.json"
+    $noExecList = @()
+    if (Test-Path $noExecPath) {
+        $noExecJson = Get-Content $noExecPath -Raw | ConvertFrom-Json
+        $noExecList = @($noExecJson.files)
+    }
+
+    $sources = @($covXml.coverage.sources.source)
+    $reportedFullPaths = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($cls in $productionClasses) {
+        $fn = $cls.filename
+        foreach ($src in $sources) {
+            $candidate = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($src, $fn))
+            if (Test-Path $candidate) {
+                $null = $reportedFullPaths.Add($candidate)
+                break
+            }
+        }
+    }
+
+    $inventory = Get-ChildItem -Path $coreSourceRoot -Recurse -Filter "*.cs" |
+        Where-Object { $_.FullName -notmatch '[\\\/](bin|obj)[\\\/]' }
+
+    $failures = New-Object System.Collections.Generic.List[string]
+
+    foreach ($item in $inventory) {
+        $relPath = $item.FullName.Substring($coreSourceRoot.Length + 1).Replace('\', '/')
+        if ($reportedFullPaths.Contains($item.FullName)) {
+            if ($noExecList -contains $relPath) {
+                $failures.Add("File listed in code-coverage-core-no-executable-code.json now has instrumented code and must be removed from that list: $relPath")
+            }
+        }
+        else {
+            if ($noExecList -notcontains $relPath) {
+                $failures.Add("Core production file with no coverage entry and not in code-coverage-core-no-executable-code.json: $relPath")
+            }
+        }
+    }
+
+    # 6. Update baseline or verify against it
     if ($UpdateBaseline) {
         $newBaseline = [ordered]@{
             lines = $linesCovered
             totalLines = $linesTotal
             branches = $branchesCovered
             totalBranches = $branchesTotal
+            methods = $methodsCovered
+            totalMethods = $methodsTotal
             minLineRate = 0.80
             minBranchRate = 0.75
         }
@@ -137,8 +221,6 @@ try {
     $baseline = Get-Content $baselinePath -Raw | ConvertFrom-Json
     $minLineRate = if ($baseline.minLineRate) { [double]$baseline.minLineRate } else { 0.80 }
     $minBranchRate = if ($baseline.minBranchRate) { [double]$baseline.minBranchRate } else { 0.75 }
-
-    $failures = New-Object System.Collections.Generic.List[string]
 
     if ($lineRate -lt $minLineRate) {
         $failures.Add(("Line coverage {0:P2} is below required threshold {1:P2}." -f $lineRate, $minLineRate))
@@ -158,6 +240,15 @@ try {
     $baselineUncoveredBranches = $baseline.totalBranches - $baseline.branches
     if ($uncoveredBranches -gt $baselineUncoveredBranches) {
         $failures.Add("Uncovered branches increased: $baselineUncoveredBranches -> $uncoveredBranches")
+    }
+
+    # Method ratchet (only if baseline contains method counts)
+    if ($null -ne $baseline.totalMethods -and [int]$baseline.totalMethods -gt 0) {
+        $uncoveredMethodsCount = $methodsTotal - $methodsCovered
+        $baselineUncoveredMethods = [int]$baseline.totalMethods - [int]$baseline.methods
+        if ($uncoveredMethodsCount -gt $baselineUncoveredMethods) {
+            $failures.Add("Uncovered methods increased: $baselineUncoveredMethods -> $uncoveredMethodsCount")
+        }
     }
 
     if ($failures.Count -gt 0) {

@@ -138,6 +138,7 @@ public sealed class SettingsDialog : Form
             UseSystemPasswordChar = true,
             PasswordChar = '*'
         };
+        txtApiKey.TextChanged += (_, _) => UpdateApiKeyButtonStates();
 
         btnSaveKey = new Button
         {
@@ -302,7 +303,7 @@ public sealed class SettingsDialog : Form
             Value = 500
         };
 
-        var lblRetry = new Label { Text = "Direct retry attempts:", Location = new Point(16, 100), AutoSize = true };
+        var lblRetry = new Label { Text = "Max direct API attempts:", Location = new Point(16, 100), AutoSize = true };
         numDirectRetryAttempts = new NumericUpDown
         {
             Name = "numDirectRetryAttempts",
@@ -338,6 +339,19 @@ public sealed class SettingsDialog : Form
     }
 
     public static Func<IWin32Window, string, string, MessageBoxButtons, MessageBoxIcon, DialogResult>? ConfirmBoxProvider { get; set; }
+    public static Action<IWin32Window, string, string, MessageBoxButtons, MessageBoxIcon>? MessageBoxProvider { get; set; }
+
+    private void ShowMessageBox(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
+    {
+        if (MessageBoxProvider != null)
+        {
+            MessageBoxProvider(this, text, caption, buttons, icon);
+        }
+        else
+        {
+            MessageBox.Show(this, text, caption, buttons, icon);
+        }
+    }
 
     private void LoadSettingsIntoDialog()
     {
@@ -370,6 +384,17 @@ public sealed class SettingsDialog : Form
         numBatchPollSeconds.Value = Math.Clamp(_settings.BatchPollSeconds, 5, 300);
         numMaxBatchRequests.Value = Math.Clamp(_settings.MaxBatchRequestsPerSubmission, 1, 5000);
         numDirectRetryAttempts.Value = Math.Clamp(_settings.DirectRetryAttempts, 1, 10);
+        UpdateApiKeyButtonStates();
+    }
+
+    private void UpdateApiKeyButtonStates()
+    {
+        var hasText = !string.IsNullOrWhiteSpace(txtApiKey.Text);
+        var hasStoredKey = !string.IsNullOrWhiteSpace(_secretStore.LoadSecret(OpenAiApiKeySecretName));
+
+        btnSaveKey.Enabled = hasText;
+        btnDeleteKey.Enabled = hasStoredKey;
+        btnTestConnection.Enabled = hasText || hasStoredKey;
     }
 
     private void HandleSaveKey()
@@ -377,7 +402,7 @@ public sealed class SettingsDialog : Form
         var key = txtApiKey.Text.Trim();
         if (string.IsNullOrEmpty(key))
         {
-            MessageBox.Show(this, "API Key is empty.", "Invalid Key", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowMessageBox("API Key is empty.", "Invalid Key", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
@@ -388,10 +413,11 @@ public sealed class SettingsDialog : Form
             txtApiKey.PlaceholderText = "●●●●●●●● (Key configured, leave blank to keep)";
             lblConnectionStatus.Text = "Status: Key saved securely";
             lblConnectionStatus.ForeColor = Color.DarkGreen;
+            UpdateApiKeyButtonStates();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to save key securely: {ex.Message}", "Security Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowMessageBox($"Failed to save key securely: {ex.Message}", "Security Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -413,10 +439,11 @@ public sealed class SettingsDialog : Form
             txtApiKey.PlaceholderText = "sk-...";
             lblConnectionStatus.Text = "Status: Key deleted";
             lblConnectionStatus.ForeColor = Color.DimGray;
+            UpdateApiKeyButtonStates();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to delete key: {ex.Message}", "Security Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowMessageBox($"Failed to delete key: {ex.Message}", "Security Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -495,7 +522,7 @@ public sealed class SettingsDialog : Form
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to save key securely: {ex.Message}", "Security Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ShowMessageBox($"Failed to save key securely: {ex.Message}", "Security Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 }

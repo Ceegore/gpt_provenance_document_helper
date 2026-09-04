@@ -1,6 +1,6 @@
 using AssetProvenanceHelper.Core.Generation;
 
-namespace AssetProvenanceHelper.Tests;
+namespace AssetProvenanceHelper.Core.Tests;
 
 public sealed class GenerationJobStoreBulkTests : IDisposable
 {
@@ -9,6 +9,7 @@ public sealed class GenerationJobStoreBulkTests : IDisposable
 
     public GenerationJobStoreBulkTests()
     {
+        GenerationJobStore.OnBeforeSaveCoreForTests = null;
         _tempDir = Path.Combine(Path.GetTempPath(), "aph_jobstore_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
         _statePath = Path.Combine(_tempDir, "jobs.json");
@@ -127,5 +128,25 @@ public sealed class GenerationJobStoreBulkTests : IDisposable
         Assert.Equal(2, existing.Count);
         Assert.Contains(existing, i => i.RequestKey == "seed-1");
         Assert.Contains(existing, i => i.RequestKey == "seed-2");
+    }
+
+    [Fact]
+    public void JobStore_UpsertItems_UpdatesExistingAndSkipsNulls()
+    {
+        var store = new GenerationJobStore(_statePath);
+
+        // Seed 1 item
+        store.UpsertItems([CreateTestRecord("fp-update", "k1", "original-name")]);
+
+        // Now upsert updated version of k1, plus a null item, plus a new item
+        var updated = CreateTestRecord("fp-update", "k1", "updated-name");
+        var newItem = CreateTestRecord("fp-update", "k2", "new-name");
+
+        store.UpsertItems([null!, updated, newItem]);
+
+        var items = store.GetItemsForManifest("fp-update");
+        Assert.Equal(2, items.Count);
+        Assert.Equal("updated-name", items.Single(i => i.RequestKey == "k1").AssetName);
+        Assert.Equal("new-name", items.Single(i => i.RequestKey == "k2").AssetName);
     }
 }

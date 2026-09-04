@@ -88,11 +88,13 @@ public sealed class DirectGlobalErrorTests : IDisposable
             {
                 return GenerateFunc(spec);
             }
+            var rawBytes = CreateTestPng(816, 816);
+            var rawSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(rawBytes)).ToLowerInvariant();
             return Task.FromResult(new ImageGenerationCandidate(
                 CandidateId: Guid.NewGuid().ToString("N"),
                 CustomId: spec.CustomId,
-                RawBytes: CreateTestPng(816, 816),
-                RawSha256: "fake-sha",
+                RawBytes: rawBytes,
+                RawSha256: rawSha,
                 ProviderWidth: 816,
                 ProviderHeight: 816));
         }

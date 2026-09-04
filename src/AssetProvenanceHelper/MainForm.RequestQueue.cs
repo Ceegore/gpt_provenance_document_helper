@@ -149,6 +149,16 @@ partial class MainForm
         lblRequestSource.Text =
             Path.GetFileName(manifest.SourcePath);
 
+        try
+        {
+            var recoveryService = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+            recoveryService.RecoverAllForManifest(manifest.ManifestFingerprint);
+        }
+        catch
+        {
+            // Best effort candidate recovery on import
+        }
+
         RefreshRequestQueueVisuals();
         UpdateRequestProgressLabel();
         BindRecoveredSessionRequest();
@@ -343,6 +353,7 @@ partial class MainForm
 
                 if (verification.IsValid && verification.Candidate != null)
                 {
+                    ResetVariantSelectionToNone();
                     _activeApiCandidateMetadata = verification.Candidate.Metadata;
                     SelectProviderByFileName("OpenAI API.md");
                     SetSelectedImage(ImageSlot.Main, verification.Candidate.ImagePath);
@@ -406,10 +417,15 @@ partial class MainForm
             return;
         }
 
-        _activeRequest =
-            null;
-        _activeApiCandidateMetadata =
-            null;
+        var hadApiCandidate = _activeApiCandidateMetadata is not null;
+        _activeRequest = null;
+        _activeApiCandidateMetadata = null;
+
+        if (hadApiCandidate)
+        {
+            SetSelectedImage(ImageSlot.Main, null);
+            AddStatus("Active API candidate unloaded because asset name or prompt was modified.");
+        }
 
         RefreshRequestQueueVisuals();
     }
@@ -481,14 +497,38 @@ partial class MainForm
         {
             btnImportRequest.Enabled = !apiMutationActive;
 
+            var hasApiKey = HasOpenAiApiKeyConfigured();
             var canRunApi =
                 _currentManifest is not null
-                && !apiMutationActive;
+                && !apiMutationActive
+                && hasApiKey;
 
             btnGenerateNow.Enabled = canRunApi;
             btnQueueProductionBatch.Enabled = canRunApi;
-            _toolTip.SetToolTip(btnGenerateNow, null);
-            _toolTip.SetToolTip(btnQueueProductionBatch, null);
+
+            if (_currentManifest is not null && !hasApiKey)
+            {
+                var noKeyTooltip = "Configure an OpenAI API key in Settings first.";
+                _toolTip.SetToolTip(btnGenerateNow, noKeyTooltip);
+                _toolTip.SetToolTip(btnQueueProductionBatch, noKeyTooltip);
+            }
+            else
+            {
+                _toolTip.SetToolTip(btnGenerateNow, null);
+                _toolTip.SetToolTip(btnQueueProductionBatch, null);
+            }
+        }
+    }
+
+    private bool HasOpenAiApiKeyConfigured()
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(_secretStore.LoadSecret(Dialogs.SettingsDialog.OpenAiApiKeySecretName));
+        }
+        catch
+        {
+            return false;
         }
     }
 

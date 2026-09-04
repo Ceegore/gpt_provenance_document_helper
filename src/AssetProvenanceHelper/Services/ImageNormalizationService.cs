@@ -15,6 +15,30 @@ public sealed record ImageNormalizationResult(
 
 public static class ImageNormalizationService
 {
+    public const int MaxProviderImageBytes = 100 * 1024 * 1024;
+
+    private static readonly byte[] PngSignature =
+    [
+        0x89, 0x50, 0x4E, 0x47,
+        0x0D, 0x0A, 0x1A, 0x0A
+    ];
+
+    public static void ValidateProviderPng(byte[] rawBytes)
+    {
+        ArgumentNullException.ThrowIfNull(rawBytes);
+
+        if (rawBytes.Length > MaxProviderImageBytes)
+        {
+            throw new InvalidDataException($"Provider image payload of {rawBytes.Length} bytes exceeds the maximum allowed size of {MaxProviderImageBytes} bytes.");
+        }
+
+        if (rawBytes.Length < PngSignature.Length ||
+            !rawBytes.AsSpan(0, PngSignature.Length).SequenceEqual(PngSignature))
+        {
+            throw new InvalidDataException("Provider output is not a PNG image.");
+        }
+    }
+
     public static ImageNormalizationResult Normalize(byte[] rawBytes, ImageSizePlan plan)
     {
         ArgumentNullException.ThrowIfNull(rawBytes);
@@ -24,6 +48,8 @@ public static class ImageNormalizationService
         {
             throw new ArgumentException("Raw image bytes cannot be empty.", nameof(rawBytes));
         }
+
+        ValidateProviderPng(rawBytes);
 
         var rawSha256 = Convert.ToHexString(SHA256.HashData(rawBytes)).ToLowerInvariant();
 

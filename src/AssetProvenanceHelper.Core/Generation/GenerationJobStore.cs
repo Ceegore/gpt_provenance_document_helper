@@ -126,6 +126,20 @@ public sealed class GenerationJobStore
                     };
                     mutated = true;
                 }
+                else if (item.Status == GenerationItemStatus.Normalizing)
+                {
+                    if (string.IsNullOrWhiteSpace(item.ProviderRawPath) || !File.Exists(item.ProviderRawPath))
+                    {
+                        state.Items[i] = item with
+                        {
+                            Status = GenerationItemStatus.UncertainAfterInterruption,
+                            ErrorCode = "normalizing_raw_missing",
+                            ErrorMessage = "Process interrupted while normalizing candidate and raw file is missing.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow
+                        };
+                        mutated = true;
+                    }
+                }
             }
 
             if (mutated)

@@ -102,11 +102,12 @@ public sealed class ApiRunSnapshotTests : IDisposable
             DirectRequests.Add(spec);
             await AllowResponse.Task;
             var bytes = CreateTestPng(spec.GenerationWidth, spec.GenerationHeight, Color.DarkBlue);
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
             return new ImageGenerationCandidate(
                 CandidateId: Guid.NewGuid().ToString("N"),
                 CustomId: spec.CustomId,
                 RawBytes: bytes,
-                RawSha256: "fake-sha-blocking",
+                RawSha256: sha,
                 ProviderWidth: spec.GenerationWidth,
                 ProviderHeight: spec.GenerationHeight,
                 ProviderRequestId: "req-block-123");

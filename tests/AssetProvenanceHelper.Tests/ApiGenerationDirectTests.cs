@@ -100,11 +100,12 @@ public sealed class ApiGenerationDirectTests : IDisposable
         {
             DirectRequests.Add(spec);
             var bytes = CreateTestPng(spec.GenerationWidth, spec.GenerationHeight, Color.Blue);
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
             return Task.FromResult(new ImageGenerationCandidate(
                 CandidateId: Guid.NewGuid().ToString("N"),
                 CustomId: spec.CustomId,
                 RawBytes: bytes,
-                RawSha256: "fake-sha",
+                RawSha256: sha,
                 ProviderWidth: spec.GenerationWidth,
                 ProviderHeight: spec.GenerationHeight,
                 ProviderRequestId: "req-123"));
@@ -287,6 +288,69 @@ public sealed class ApiGenerationDirectTests : IDisposable
             Assert.Null(form.ActiveApiCandidateMetadata);
 
             form.Close();
+        });
+    }
+
+    [Fact]
+    public void FormClosing_WhileSubmittingBatch_PromptsAndHonorsCancellation()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var secretStore = new FakeSecretStore();
+            secretStore.SaveSecret(SettingsDialog.OpenAiApiKeySecretName, "sk-test-key");
+
+            var provider = new FakeProvider();
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secretStore,
+                imageGenerationProvider: provider);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+
+                form.Show();
+
+                var isSubmittingBatchField = typeof(MainForm).GetField("_isSubmittingBatch", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+                isSubmittingBatchField.SetValue(form, true);
+
+                string? dialogMessage = null;
+                MainForm.ConfirmBoxProvider = (_, msg, _, _, _) =>
+                {
+                    dialogMessage = msg;
+                    return DialogResult.No;
+                };
+
+                form.Close();
+                Application.DoEvents();
+
+                Assert.NotNull(dialogMessage);
+                Assert.Contains("Batch API submission is currently in progress", dialogMessage);
+                Assert.False(form.IsDisposed);
+
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.Yes;
+                isSubmittingBatchField.SetValue(form, false);
+                form.Close();
+                Application.DoEvents();
+                Assert.True(form.IsDisposed);
+            }
+            finally
+            {
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
         });
     }
 }

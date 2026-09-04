@@ -248,6 +248,40 @@ public sealed class ApiPreflightTests : IDisposable
     }
 
     [Fact]
+    public void Preflight_BatchQueued_NotEligible()
+    {
+        var jobStorePath = Path.Combine(_tempDir, "jobs.json");
+        var jobStore = new GenerationJobStore(jobStorePath);
+
+        jobStore.UpsertItem(new GenerationItemRecord(
+            ManifestFingerprint: "fp",
+            RequestKey: "k1",
+            AssetName: "item",
+            FileName: "item.png",
+            Mode: GenerationMode.Batch,
+            ProviderId: "OpenAI",
+            Model: "gpt-image-2",
+            Quality: "medium",
+            TargetWidth: 512,
+            TargetHeight: 512,
+            GenerationWidth: 816,
+            GenerationHeight: 816,
+            CustomId: "aph-fp-k1",
+            Status: GenerationItemStatus.BatchQueued,
+            SubmittedAtUtc: DateTimeOffset.UtcNow,
+            UpdatedAtUtc: DateTimeOffset.UtcNow));
+
+        var service = new ApiPreflightService(jobStore);
+        var item = CreateItem("k1", "item.png", 512, 512, AlphaRequirement.NotRequired);
+
+        var result = service.Preflight("fp", [item], new HashSet<string>());
+
+        Assert.Empty(result.Eligible);
+        Assert.Equal(1, result.InFlightCount);
+        Assert.True(ApiPreflightService.IsJobActiveOrInFlight(jobStore.GetItem("fp", "k1")!));
+    }
+
+    [Fact]
     public void Preflight_Opaque_Eligible()
     {
         var jobStore = new GenerationJobStore(Path.Combine(_tempDir, "jobs.json"));

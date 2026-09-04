@@ -207,6 +207,31 @@ public sealed class CandidateVerificationTests : IDisposable
     }
 
     [Fact]
+    public void VerifyCandidate_InvalidPngHeader_ReturnsInvalid()
+    {
+        var (job, stagedPath) = StageTestCandidate("fp1", "k1", "cand-badhdr", 512, 512, Color.Green);
+
+        // Replace file content with non-PNG bytes (e.g. BMP magic bytes) and match SHA
+        var fakeBytes = new byte[100];
+        fakeBytes[0] = (byte)'B';
+        fakeBytes[1] = (byte)'M';
+        File.WriteAllBytes(stagedPath, fakeBytes);
+
+        var newSha = ComputeSha(fakeBytes);
+        var metaPath = Path.Combine(Path.GetDirectoryName(stagedPath)!, "cand-badhdr.metadata.json");
+        var meta = System.Text.Json.JsonSerializer.Deserialize<ApiCandidateMetadata>(File.ReadAllText(metaPath))!;
+        var updatedMeta = meta with { NormalizedSha256 = newSha };
+        File.WriteAllText(metaPath, System.Text.Json.JsonSerializer.Serialize(updatedMeta));
+
+        var updatedJob = job with { NormalizedSha256 = newSha };
+
+        var result = _verifier.VerifyCandidate(updatedJob, 512, 512);
+
+        Assert.False(result.IsValid);
+        Assert.Equal("invalid_png_header", result.ErrorCode);
+    }
+
+    [Fact]
     public void Ready_Invalid_NeverCommits()
     {
         RunOnSta(() =>

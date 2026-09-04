@@ -128,6 +128,8 @@ private readonly SettingsService _settingsService;
                 ShowError("Could not save settings.", ex);
             }
         }
+
+        ApplyRequestQueueState();
     }
 
     private void WireEvents()
@@ -182,10 +184,14 @@ private readonly SettingsService _settingsService;
         txtAssetRoot.Leave += (_, _) => SaveSettingsSafe();
         FormClosing += (_, e) =>
         {
-            if (_isGeneratingDirect)
+            if (_isGeneratingDirect || _isSubmittingBatch)
             {
+                var message = _isGeneratingDirect
+                    ? "Direct API generation is currently in progress.\n\nClosing may lose responses to requests that OpenAI has already started and those requests may still be billable.\n\nDo you want to close anyway?"
+                    : "Batch API submission is currently in progress.\n\nClosing may interrupt batch file upload or creation, which may result in an orphaned or untracked batch on OpenAI.\n\nDo you want to close anyway?";
+
                 var choice = ShowConfirmDialog(
-                    "Direct API generation is currently in progress.\n\nClosing may lose responses to requests that OpenAI has already started and those requests may still be billable.\n\nDo you want to close anyway?",
+                    message,
                     "Generation in progress",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning);
@@ -194,6 +200,14 @@ private readonly SettingsService _settingsService;
                 {
                     e.Cancel = true;
                     return;
+                }
+
+                try
+                {
+                    _apiGenerationCts?.Cancel();
+                }
+                catch
+                {
                 }
             }
 

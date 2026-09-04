@@ -34,6 +34,23 @@ public sealed class GeneratedImageStagingService
         return Path.Combine(_baseStagingPath, safeFp, safeRk);
     }
 
+    public string GetFinalCandidatePath(string manifestFingerprint, string requestKey, string candidateId)
+    {
+        var safeCandidateId = SanitizePathSegment(candidateId);
+        return Path.Combine(GetItemDirectory(manifestFingerprint, requestKey), $"{safeCandidateId}.png");
+    }
+
+    public void DeleteIncompleteFinalArtifacts(string manifestFingerprint, string requestKey, string candidateId)
+    {
+        var itemDir = GetItemDirectory(manifestFingerprint, requestKey);
+        var safeCandidateId = SanitizePathSegment(candidateId);
+        var finalPng = Path.Combine(itemDir, $"{safeCandidateId}.png");
+        var metadataJson = Path.Combine(itemDir, $"{safeCandidateId}.metadata.json");
+
+        try { if (File.Exists(finalPng)) File.Delete(finalPng); } catch { }
+        try { if (File.Exists(metadataJson)) File.Delete(metadataJson); } catch { }
+    }
+
     internal static Action<string>? OnBeforeCandidatePromoteForTests;
 
     public string SaveRawCandidate(
@@ -184,30 +201,6 @@ public sealed class GeneratedImageStagingService
     private static void WriteTextAtomicNoOverwrite(string destinationPath, string text)
     {
         WriteBytesAtomicNoOverwrite(destinationPath, new UTF8Encoding(false).GetBytes(text));
-    }
-
-    private static void WriteBytesAtomic(string destinationPath, byte[] bytes)
-    {
-        var tempPath = destinationPath + $".{Guid.NewGuid():N}.tmp";
-        try
-        {
-            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                stream.Write(bytes);
-                stream.Flush(true);
-            }
-            File.Move(tempPath, destinationPath, overwrite: true);
-        }
-        catch
-        {
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-            throw;
-        }
-    }
-
-    private static void WriteTextAtomic(string destinationPath, string text)
-    {
-        WriteBytesAtomic(destinationPath, new UTF8Encoding(false).GetBytes(text));
     }
 
     private static string SanitizePathSegment(string segment)

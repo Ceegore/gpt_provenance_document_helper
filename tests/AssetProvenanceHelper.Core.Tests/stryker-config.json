@@ -10,7 +10,7 @@
     "thresholds": {
       "high": 90,
       "low": 80,
-      "break": 65
+      "break": 80
     },
     "mutate": [
       "**/*.cs"
