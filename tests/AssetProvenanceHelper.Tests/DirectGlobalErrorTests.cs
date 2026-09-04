@@ -99,10 +99,7 @@ public sealed class DirectGlobalErrorTests : IDisposable
                 ProviderHeight: 816));
         }
 
-#pragma warning disable CS0618
-        public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-#pragma warning restore CS0618
+
         public Task<string> UploadBatchInputFileAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
         public Task<BatchSubmissionResult> CreateBatchAsync(string inputFileId, string apiKey, CancellationToken cancellationToken = default) =>

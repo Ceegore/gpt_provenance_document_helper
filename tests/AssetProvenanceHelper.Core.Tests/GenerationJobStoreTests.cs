@@ -236,4 +236,218 @@ public sealed class GenerationJobStoreTests : IDisposable
         Assert.Single(active);
         Assert.Equal("b1", active[0].LocalBatchId);
     }
+
+    [Fact]
+    public void UpsertItem_UpdatesExistingItemAtIndex0()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        var item1 = new GenerationItemRecord("fpA", "rk1", "a1", "a1.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c1", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        store.UpsertItem(item1);
+        var updated = item1 with { Status = GenerationItemStatus.Ready };
+        store.UpsertItem(updated);
+
+        var loaded = store.Load();
+        Assert.Single(loaded.Items);
+        Assert.Equal(GenerationItemStatus.Ready, loaded.Items[0].Status);
+    }
+
+    [Fact]
+    public void UpsertBatch_UpdatesExistingBatchAtIndex0()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        var batch1 = new GenerationBatchRecord("b1", "fpA", "p", "m", "q", ["rk1"], "validating", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ProviderBatchId: "pb1");
+
+        store.UpsertBatch(batch1);
+        var updated = batch1 with { Status = "completed" };
+        store.UpsertBatch(updated);
+
+        var loaded = store.Load();
+        Assert.Single(loaded.Batches);
+        Assert.Equal("completed", loaded.Batches[0].Status);
+    }
+
+    [Fact]
+    public void GetItem_RetrievesMatchingOrReturnsNull()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        var item1 = new GenerationItemRecord("fp1", "rk1", "a1", "a1.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c1", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var item2 = new GenerationItemRecord("fp2", "rk2", "a2", "a2.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c2", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        store.UpsertItems([item1, item2]);
+
+        Assert.NotNull(store.GetItem("fp1", "rk1"));
+        Assert.Null(store.GetItem("fp1", "rk2"));
+        Assert.Null(store.GetItem("fp2", "rk1"));
+        Assert.Null(store.GetItem("non-existent", "non-existent"));
+    }
+
+    [Fact]
+    public void GetBatch_RetrievesMatchingOrReturnsNull()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        var batch1 = new GenerationBatchRecord("b1", "fp1", "p", "m", "q", ["rk1"], "in_progress", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ProviderBatchId: "pb1");
+
+        store.UpsertBatch(batch1);
+
+        Assert.NotNull(store.GetBatch("b1"));
+        Assert.Null(store.GetBatch("non-existent"));
+    }
+
+    [Fact]
+    public void GetItemsForManifest_Whitespace_ThrowsArgumentException()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        Assert.Throws<ArgumentException>(() => store.GetItemsForManifest(""));
+        Assert.Throws<ArgumentException>(() => store.GetItemsForManifest("   "));
+    }
+
+    [Fact]
+    public void SaveState_CreatesDirectory_IfMissing()
+    {
+        var subDir = Path.Combine(_tempDirectory, "subdir_" + Guid.NewGuid().ToString("N"));
+        var fileInSubDir = Path.Combine(subDir, "jobs.json");
+        var store = new GenerationJobStore(fileInSubDir);
+
+        var item = new GenerationItemRecord("fp", "rk", "a", "a.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        store.UpsertItem(item);
+
+        Assert.True(File.Exists(fileInSubDir));
+    }
+
+    [Fact]
+    public void DefaultConstructor_SetsDefaultStatePathInAppData()
+    {
+        var store = new GenerationJobStore();
+        Assert.NotNull(store.StatePath);
+        Assert.Contains("Ceegore", store.StatePath, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AssetProvenanceHelper", store.StatePath, StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith("generation-jobs.json", store.StatePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Load_CorruptedJson_ThrowsInvalidDataException()
+    {
+        File.WriteAllText(_stateFilePath, "{ this is not valid json");
+        var store = new GenerationJobStore(_stateFilePath);
+        var ex = Assert.Throws<InvalidDataException>(() => store.Load());
+        Assert.Contains("Failed to deserialize generation jobs", ex.Message);
+        Assert.NotNull(ex.InnerException);
+    }
+
+    [Fact]
+    public void Load_CaseInsensitiveProperties_ParsesSuccessfully()
+    {
+        var json = """
+        {
+            "BATCHES": [],
+            "ITEMS": [
+                {
+                    "MANIFESTFINGERPRINT": "fp_case",
+                    "REQUESTKEY": "rk_case",
+                    "ASSETNAME": "a",
+                    "OUTPUTFILENAME": "a.png",
+                    "MODE": 0,
+                    "PROMPT": "p",
+                    "MODEL": "m",
+                    "QUALITY": "q",
+                    "TARGETWIDTH": 512,
+                    "TARGETHEIGHT": 512,
+                    "GENERATIONWIDTH": 816,
+                    "GENERATIONHEIGHT": 816,
+                    "CUSTOMID": "c",
+                    "STATUS": 0,
+                    "SUBMITTEDATUTC": "2026-01-01T00:00:00Z",
+                    "UPDATEDATUTC": "2026-01-01T00:00:00Z"
+                }
+            ]
+        }
+        """;
+        File.WriteAllText(_stateFilePath, json);
+        var store = new GenerationJobStore(_stateFilePath);
+        var loaded = store.Load();
+        Assert.Single(loaded.Items);
+        Assert.Equal("fp_case", loaded.Items[0].ManifestFingerprint);
+    }
+
+    [Fact]
+    public void NullArgumentChecks_ThrowArgumentNullException()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        Assert.Throws<ArgumentNullException>("state", () => store.Save(null!));
+        Assert.Throws<ArgumentNullException>("item", () => store.UpsertItem(null!));
+        Assert.Throws<ArgumentNullException>("items", () => store.UpsertItems(null!));
+        Assert.Throws<ArgumentNullException>("batch", () => store.UpsertBatch(null!));
+    }
+
+    [Fact]
+    public void UpsertItems_EmptyList_DoesNotSave()
+    {
+        var nonExistentPath = Path.Combine(_tempDirectory, "no_save.json");
+        var store = new GenerationJobStore(nonExistentPath);
+        var saveCalled = false;
+        GenerationJobStore.OnBeforeSaveCoreForTests = _ => saveCalled = true;
+        try
+        {
+            store.UpsertItems(Array.Empty<GenerationItemRecord>());
+            Assert.False(saveCalled);
+            Assert.False(File.Exists(nonExistentPath));
+        }
+        finally
+        {
+            GenerationJobStore.OnBeforeSaveCoreForTests = null;
+        }
+    }
+
+
+    [Fact]
+    public void UpsertItem_SameManifestDifferentRequestKey_AppendsInsteadOfReplacing()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        var item1 = new GenerationItemRecord("fpSame", "rk1", "a1", "a1.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c1", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var item2 = new GenerationItemRecord("fpSame", "rk2", "a2", "a2.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c2", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        store.UpsertItem(item1);
+        store.UpsertItem(item2);
+
+        var loaded = store.Load();
+        Assert.Equal(2, loaded.Items.Count);
+        Assert.Contains(loaded.Items, i => i.RequestKey == "rk1");
+        Assert.Contains(loaded.Items, i => i.RequestKey == "rk2");
+    }
+
+    [Fact]
+    public void Save_FailureDuringMove_CleansUpTempFileAndRethrows()
+    {
+        // Make statePath an existing directory so File.Move fails
+        var dirStatePath = Path.Combine(_tempDirectory, "directoryAsStatePath");
+        Directory.CreateDirectory(dirStatePath);
+        var store = new GenerationJobStore(dirStatePath);
+
+        var item = new GenerationItemRecord("fp", "rk", "a", "a.png", GenerationMode.Direct, "p", "m", "q", 512, 512, 816, 816, "c", GenerationItemStatus.Pending, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        Assert.ThrowsAny<Exception>(() => store.UpsertItem(item));
+
+        var tempFiles = Directory.GetFiles(_tempDirectory, "*.tmp");
+        Assert.Empty(tempFiles);
+    }
+
+    [Fact]
+    public void GetActiveBatches_ExcludesFailedExpiredCancelled()
+    {
+        var store = new GenerationJobStore(_stateFilePath);
+        var now = DateTimeOffset.UtcNow;
+        var bActive = new GenerationBatchRecord("bActive", "fp", "p", "m", "q", ["rk1"], "in_progress", now, now, ProviderBatchId: "pb1");
+        var bFailed = new GenerationBatchRecord("bFailed", "fp", "p", "m", "q", ["rk2"], "failed", now, now, ProviderBatchId: "pb2");
+        var bExpired = new GenerationBatchRecord("bExpired", "fp", "p", "m", "q", ["rk3"], "expired", now, now, ProviderBatchId: "pb3");
+        var bCancelled = new GenerationBatchRecord("bCancelled", "fp", "p", "m", "q", ["rk4"], "cancelled", now, now, ProviderBatchId: "pb4");
+
+        store.UpsertBatch(bActive);
+        store.UpsertBatch(bFailed);
+        store.UpsertBatch(bExpired);
+        store.UpsertBatch(bCancelled);
+
+        var active = store.GetActiveBatches();
+        Assert.Single(active);
+        Assert.Equal("bActive", active[0].LocalBatchId);
+    }
 }

@@ -41,13 +41,7 @@ public interface IImageGenerationProvider
         string apiKey,
         CancellationToken cancellationToken = default);
 
-    [Obsolete(
-        "UI/controller code must use UploadBatchInputFileAsync + CreateBatchAsync so ProviderInputFileId is durable before remote Batch creation.",
-        error: true)]
-    Task<BatchSubmissionResult> SubmitBatchAsync(
-        IReadOnlyList<ImageGenerationSpec> specs,
-        string apiKey,
-        CancellationToken cancellationToken = default);
+
 
     Task<string> UploadBatchInputFileAsync(
         IReadOnlyList<ImageGenerationSpec> specs,

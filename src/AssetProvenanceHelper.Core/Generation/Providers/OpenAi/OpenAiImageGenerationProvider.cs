@@ -128,18 +128,7 @@ public sealed class OpenAiImageGenerationProvider : IImageGenerationProvider
             CreatedAtUtc: DateTimeOffset.UtcNow);
     }
 
-    [Obsolete(
-        "UI/controller code must use UploadBatchInputFileAsync + CreateBatchAsync so ProviderInputFileId is durable before remote Batch creation.",
-        error: true)]
-    public async Task<BatchSubmissionResult> SubmitBatchAsync(
-        IReadOnlyList<ImageGenerationSpec> specs,
-        string apiKey,
-        CancellationToken cancellationToken = default)
-    {
-        var inputFileId = await UploadBatchInputFileAsync(specs, apiKey, cancellationToken).ConfigureAwait(false);
-        var result = await CreateBatchAsync(inputFileId, apiKey, cancellationToken).ConfigureAwait(false);
-        return result with { SubmittedCount = specs.Count };
-    }
+
 
     public async Task<BatchStatusResult> GetBatchStatusAsync(
         string providerBatchId,

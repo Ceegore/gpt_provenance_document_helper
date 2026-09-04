@@ -67,10 +67,26 @@ public sealed class OpenAiErrorParserTests
     [Fact]
     public void Parse_NonJsonLongBody_TrimsTo300Chars()
     {
-        var longBody = new string('A', 400);
-        var ex = OpenAiErrorParser.Parse(HttpStatusCode.InternalServerError, longBody, "req-6");
+        var body300 = new string('A', 300);
+        var ex300 = OpenAiErrorParser.Parse(HttpStatusCode.InternalServerError, body300, "req-6a");
+        Assert.Contains(body300, ex300.Message);
+        Assert.DoesNotContain("...", ex300.Message);
 
-        Assert.Equal(HttpStatusCode.InternalServerError, ex.StatusCode);
-        Assert.Contains("...", ex.Message);
+        var body301 = new string('A', 301);
+        var ex301 = OpenAiErrorParser.Parse(HttpStatusCode.InternalServerError, body301, "req-6b");
+        Assert.Contains("...", ex301.Message);
+    }
+
+    [Fact]
+    public void Parse_CaseInsensitiveKeys_ParsesSuccessfully()
+    {
+        var json = "{\"ERROR\":{\"MESSAGE\":\"Case insensitive message\",\"TYPE\":\"case_type\",\"CODE\":\"case_code\"}}";
+        var ex = OpenAiErrorParser.Parse(HttpStatusCode.BadRequest, json, "req-case");
+
+        Assert.Equal(HttpStatusCode.BadRequest, ex.StatusCode);
+        Assert.Equal("case_code", ex.ErrorCode);
+        Assert.Equal("case_type", ex.ErrorType);
+        Assert.Equal("Case insensitive message", ex.Message);
+        Assert.Equal("req-case", ex.RequestId);
     }
 }

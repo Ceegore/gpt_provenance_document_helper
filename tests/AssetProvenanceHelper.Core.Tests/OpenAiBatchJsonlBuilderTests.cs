@@ -55,11 +55,15 @@ public sealed class OpenAiBatchJsonlBuilderTests
         Assert.Equal("POST", doc1.RootElement.GetProperty("method").GetString());
         Assert.Equal("/v1/images/generations", doc1.RootElement.GetProperty("url").GetString());
         Assert.Equal("816x816", doc1.RootElement.GetProperty("body").GetProperty("size").GetString());
-        Assert.Equal(1, doc1.RootElement.GetProperty("body").GetProperty("n").GetInt32());
+        Assert.Equal("png", doc1.RootElement.GetProperty("body").GetProperty("output_format").GetString());
+        Assert.Equal("opaque", doc1.RootElement.GetProperty("body").GetProperty("background").GetString());
+        Assert.False(bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF);
 
         var doc2 = JsonDocument.Parse(lines[1]);
         Assert.Equal("aph-fp1234567890-rk0987654321", doc2.RootElement.GetProperty("custom_id").GetString());
         Assert.Equal("1920x1088", doc2.RootElement.GetProperty("body").GetProperty("size").GetString());
+        Assert.Equal("png", doc2.RootElement.GetProperty("body").GetProperty("output_format").GetString());
+        Assert.Equal("opaque", doc2.RootElement.GetProperty("body").GetProperty("background").GetString());
     }
 
     [Fact]
@@ -88,6 +92,27 @@ public sealed class OpenAiBatchJsonlBuilderTests
     }
 
     [Fact]
+    public void Build_NullSpecs_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => OpenAiBatchJsonlBuilder.Build(null!));
+    }
+
+    [Fact]
+    public void Build_EmptySpecs_ThrowsArgumentException()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(Array.Empty<ImageGenerationSpec>()));
+        Assert.Contains("Cannot build batch JSONL with zero specifications", ex.Message);
+    }
+
+    [Fact]
+    public void Build_EmptyCustomId_ThrowsArgumentException()
+    {
+        var spec = new ImageGenerationSpec("fp", "rk", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "");
+        var ex = Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec }));
+        Assert.Contains("Every specification must have a valid CustomId", ex.Message);
+    }
+
+    [Fact]
     public void Build_DuplicateCustomId_ThrowsArgumentException()
     {
         var spec1 = new ImageGenerationSpec(
@@ -108,20 +133,8 @@ public sealed class OpenAiBatchJsonlBuilderTests
 
         var spec2 = spec1 with { RequestKey = "rk2", AssetName = "b", FileName = "b.png" };
 
-        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec1, spec2 }));
-    }
-
-    [Fact]
-    public void Build_EmptySpecs_ThrowsArgumentException()
-    {
-        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(Array.Empty<ImageGenerationSpec>()));
-    }
-
-    [Fact]
-    public void Build_EmptyCustomId_ThrowsArgumentException()
-    {
-        var spec = new ImageGenerationSpec("fp", "rk", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "");
-        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec }));
+        var ex = Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec1, spec2 }));
+        Assert.Contains("Duplicate CustomId detected", ex.Message);
     }
 
     [Fact]
@@ -130,6 +143,7 @@ public sealed class OpenAiBatchJsonlBuilderTests
         var spec1 = new ImageGenerationSpec("fp", "rk1", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "c1");
         var spec2 = new ImageGenerationSpec("fp", "rk2", "b", "b.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "other-model", "medium", 816, 816, "c2");
 
-        Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec1, spec2 }));
+        var ex = Assert.Throws<ArgumentException>(() => OpenAiBatchJsonlBuilder.Build(new[] { spec1, spec2 }));
+        Assert.Contains("All batch items must use the same model", ex.Message);
     }
 }

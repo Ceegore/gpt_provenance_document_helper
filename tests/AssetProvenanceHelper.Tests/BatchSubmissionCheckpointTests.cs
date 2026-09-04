@@ -106,10 +106,7 @@ public sealed class BatchSubmissionCheckpointTests : IDisposable
             return Task.FromResult(new BatchSubmissionResult(inputFileId, CreatedBatchId, 1, DateTimeOffset.UtcNow));
         }
 
-#pragma warning disable CS0618
-        public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-#pragma warning restore CS0618
+
 
         public Task<ImageGenerationCandidate> GenerateAsync(ImageGenerationSpec spec, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();

@@ -35,8 +35,10 @@ public sealed class GenerationCustomIdTests
     [InlineData("aph-xyz-123")]
     public void TryParse_InvalidCustomId_ReturnsFalse(string invalidId)
     {
-        var success = GenerationCustomId.TryParse(invalidId, out _, out _);
+        var success = GenerationCustomId.TryParse(invalidId, out var fp, out var rk);
         Assert.False(success);
+        Assert.Equal(string.Empty, fp);
+        Assert.Equal(string.Empty, rk);
     }
 
     [Fact]
@@ -56,5 +58,19 @@ public sealed class GenerationCustomIdTests
     public void Create_NullOrWhitespace_ThrowsArgumentException(string? fp, string? rk)
     {
         Assert.ThrowsAny<ArgumentException>(() => GenerationCustomId.Create(fp!, rk!));
+    }
+
+    [Fact]
+    public void Create_ExactBoundaryLengths_UsesFullStrings()
+    {
+        var fp12 = "123456789012";
+        var rk16 = "1234567890123456";
+        var id = GenerationCustomId.Create(fp12, rk16);
+        Assert.Equal("aph-123456789012-1234567890123456", id);
+
+        var fp13 = "1234567890123";
+        var rk17 = "12345678901234567";
+        var idTrunc = GenerationCustomId.Create(fp13, rk17);
+        Assert.Equal("aph-123456789012-1234567890123456", idTrunc);
     }
 }

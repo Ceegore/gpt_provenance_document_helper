@@ -24,6 +24,16 @@ public sealed class RetryPolicyTests
         Assert.Equal(expectedRetryable, result);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_InvalidMaxAttempts_ThrowsArgumentOutOfRangeException(int maxAttempts)
+    {
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => new RetryPolicy(maxAttempts));
+        Assert.Equal("maxAttempts", ex.ParamName);
+        Assert.Contains("Max attempts must be at least 1", ex.Message);
+    }
+
     [Fact]
     public void GetDelay_WithRetryAfterDelta_RespectsDelta()
     {
@@ -103,5 +113,64 @@ public sealed class RetryPolicyTests
         Assert.False(RetryPolicy.IsRetryableException(new TaskCanceledException("user cancelled")));
         Assert.False(RetryPolicy.IsRetryableException(new OperationCanceledException("user cancelled")));
         Assert.False(RetryPolicy.IsRetryableException(new InvalidOperationException("bad state")));
+    }
+
+    [Fact]
+    public void GetDelay_RetryAfterDelta_BoundaryConditions()
+    {
+        var policy = new RetryPolicy(3);
+
+        // Zero delta -> falls back to exponential backoff
+        using var respZero = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        respZero.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.Zero);
+        var zeroDelay = policy.GetDelay(1, respZero.Headers);
+        Assert.True(zeroDelay >= TimeSpan.FromSeconds(2));
+
+        // Exactly MaxRetryAfterDelay
+        using var respMax = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        respMax.Headers.RetryAfter = new RetryConditionHeaderValue(RetryPolicy.MaxRetryAfterDelay);
+        Assert.Equal(RetryPolicy.MaxRetryAfterDelay, policy.GetDelay(1, respMax.Headers));
+
+        // Negative delta -> falls back to exponential backoff
+        using var respNeg = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        respNeg.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(-5));
+        var negDelay = policy.GetDelay(1, respNeg.Headers);
+        Assert.True(negDelay > TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void GetDelay_RetryAfterDate_BoundaryConditions()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var policy = new RetryPolicy(3, timeProvider: () => now);
+
+        // Past date -> falls back to exponential backoff
+        using var respPast = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        respPast.Headers.RetryAfter = new RetryConditionHeaderValue(now.AddSeconds(-5));
+        var pastDelay = policy.GetDelay(1, respPast.Headers);
+        Assert.True(pastDelay > TimeSpan.Zero);
+
+        // Exactly now (delta 0) -> falls back to exponential backoff
+        using var respNow = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        respNow.Headers.RetryAfter = new RetryConditionHeaderValue(now);
+        var nowDelay = policy.GetDelay(1, respNow.Headers);
+        Assert.True(nowDelay >= TimeSpan.FromSeconds(2));
+
+        // Exactly MaxRetryAfterDelay in future
+        using var respExactMax = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        respExactMax.Headers.RetryAfter = new RetryConditionHeaderValue(now + RetryPolicy.MaxRetryAfterDelay);
+        Assert.Equal(RetryPolicy.MaxRetryAfterDelay, policy.GetDelay(1, respExactMax.Headers));
+    }
+
+    [Fact]
+    public void GetDelay_WithCustomRandom_UsesCustomRandom()
+    {
+        var random = new Random(12345);
+        var policy = new RetryPolicy(3, random);
+        var delay = policy.GetDelay(1);
+
+        var expectedJitter = 2.0 * 0.25 * new Random(12345).NextDouble();
+        var expectedDelay = TimeSpan.FromSeconds(2.0 + expectedJitter);
+        Assert.Equal(expectedDelay, delay);
     }
 }

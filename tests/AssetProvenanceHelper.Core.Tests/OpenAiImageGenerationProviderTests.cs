@@ -21,10 +21,7 @@ public sealed class OpenAiImageGenerationProviderTests
         public Task<ImageGenerationCandidate> GenerateAsync(ImageGenerationSpec spec, string apiKey, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ImageGenerationCandidate("cand-1", "custom-1", new byte[1], "sha", 1, 1));
 
-#pragma warning disable CS0618
-        public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
-#pragma warning restore CS0618
+
 
         public Task<BatchStatusResult> GetBatchStatusAsync(string providerBatchId, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
@@ -235,5 +232,41 @@ public sealed class OpenAiImageGenerationProviderTests
         Assert.Equal(2, downloadResult.Items.Count);
         Assert.Contains(downloadResult.Items, i => i.CustomId == "aph-k1" && i.IsSuccess);
         Assert.Contains(downloadResult.Items, i => i.CustomId == "aph-k2" && !i.IsSuccess);
+    }
+
+    [Fact]
+    public async Task ProviderArgumentValidation_ThrowsAppropriateExceptions()
+    {
+        var provider = new OpenAiImageGenerationProvider();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => provider.GenerateAsync(null!, "key"));
+        await Assert.ThrowsAsync<ArgumentException>(() => provider.GenerateAsync(new ImageGenerationSpec("f", "r", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "c"), ""));
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => provider.UploadBatchInputFileAsync(null!, "key"));
+
+        var exEmpty = await Assert.ThrowsAsync<ArgumentException>(() => provider.UploadBatchInputFileAsync([], "valid-key"));
+        Assert.Equal("specs", exEmpty.ParamName);
+        Assert.Contains("Cannot submit empty batch", exEmpty.Message);
+
+        var specAlpha = new ImageGenerationSpec("f", "r", "a", "a.png", "p", 512, 512, AlphaRequirement.Required, "OpenAI", "gpt-image-2", "medium", 816, 816, "c");
+        var exAlpha = await Assert.ThrowsAsync<InvalidOperationException>(() => provider.UploadBatchInputFileAsync([specAlpha], "valid-key"));
+        Assert.Contains("does not support transparent backgrounds", exAlpha.Message);
+
+        var specValid = new ImageGenerationSpec("f", "r", "a", "a.png", "p", 512, 512, AlphaRequirement.NotRequired, "OpenAI", "gpt-image-2", "medium", 816, 816, "c");
+        var exEmptyKey = await Assert.ThrowsAsync<ArgumentException>(() => provider.UploadBatchInputFileAsync([specValid], ""));
+        Assert.Equal("apiKey", exEmptyKey.ParamName);
+
+        var exInput = await Assert.ThrowsAsync<ArgumentException>(() => provider.CreateBatchAsync("", "key"));
+        Assert.Equal("inputFileId", exInput.ParamName);
+        var exKey = await Assert.ThrowsAsync<ArgumentException>(() => provider.CreateBatchAsync("file", ""));
+        Assert.Equal("apiKey", exKey.ParamName);
+
+        var exBatchId = await Assert.ThrowsAsync<ArgumentException>(() => provider.GetBatchStatusAsync("", "key"));
+        Assert.Equal("providerBatchId", exBatchId.ParamName);
+        var exBatchKey = await Assert.ThrowsAsync<ArgumentException>(() => provider.GetBatchStatusAsync("b", ""));
+        Assert.Equal("apiKey", exBatchKey.ParamName);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => provider.DownloadBatchResultsAsync(null!, "key"));
+        await Assert.ThrowsAsync<ArgumentException>(() => provider.DownloadBatchResultsAsync(new BatchStatusResult("b", "completed", null, null, 0, 0, 0), ""));
     }
 }

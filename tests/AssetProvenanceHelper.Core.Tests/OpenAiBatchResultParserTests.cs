@@ -129,4 +129,15 @@ public sealed class OpenAiBatchResultParserTests
 
         Assert.Contains("duplicate custom_id", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void ParseResults_CaseInsensitivePropertyNames_ParsesSuccessfully()
+    {
+        var rawBase64 = Convert.ToBase64String(new byte[] { 9, 9 });
+        var upperJsonl = "{\"ID\":\"req_upper\",\"CUSTOM_ID\":\"aph-item-upper\",\"RESPONSE\":{\"STATUS_CODE\":200,\"BODY\":{\"DATA\":[{\"B64_JSON\":\"" + rawBase64 + "\"}]}}}\n";
+        var results = OpenAiBatchResultParser.ParseResults(upperJsonl, null);
+        Assert.Single(results);
+        Assert.Equal("aph-item-upper", results[0].CustomId);
+        Assert.True(results[0].IsSuccess);
+    }
 }

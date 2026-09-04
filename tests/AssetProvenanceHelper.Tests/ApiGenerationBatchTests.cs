@@ -116,17 +116,7 @@ public sealed class ApiGenerationBatchTests : IDisposable
                 CreatedAtUtc: DateTimeOffset.UtcNow));
         }
 
-#pragma warning disable CS0618
-        public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default)
-        {
-            SubmittedBatches.Add(specs);
-            return Task.FromResult(new BatchSubmissionResult(
-                ProviderInputFileId: "file-input-123",
-                ProviderBatchId: "batch-prov-123",
-                SubmittedCount: specs.Count,
-                CreatedAtUtc: DateTimeOffset.UtcNow));
-        }
-#pragma warning restore CS0618
+
 
         public Task<BatchStatusResult> GetBatchStatusAsync(string providerBatchId, string apiKey, CancellationToken cancellationToken = default)
         {
