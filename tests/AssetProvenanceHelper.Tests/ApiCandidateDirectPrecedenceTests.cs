@@ -89,6 +89,13 @@ public sealed class ApiCandidateDirectPrecedenceTests : IDisposable
             settings.DownloadFolder = downloadFolder;
             settings.AssetRootFolder = assetRoot;
 
+            var src = Path.Combine(AppContext.BaseDirectory, "provider_templates", "OpenAI API.md");
+            if (!File.Exists(src))
+            {
+                src = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "src", "AssetProvenanceHelper", "provider_templates", "OpenAI API.md"));
+            }
+            File.Copy(src, Path.Combine(workspace.ProviderTemplates, "OpenAI API.md"), overwrite: true);
+
             using var form = new MainForm(
                 settings,
                 workspace.CreateSettingsService(),
@@ -96,7 +103,8 @@ public sealed class ApiCandidateDirectPrecedenceTests : IDisposable
                 workspace.CreateTemplateService(),
                 workspace.CreateValidationService(),
                 workspace.CreateAssetProcessor(),
-                workspace.CreateSessionService());
+                workspace.CreateSessionService(),
+                workspace.CreateProviderTemplateCatalogService());
 
             try
             {
