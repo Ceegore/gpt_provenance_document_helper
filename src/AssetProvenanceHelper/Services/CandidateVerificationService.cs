@@ -83,6 +83,82 @@ public sealed class CandidateVerificationService
             return new CandidateVerificationResult(false, null, "metadata_sha_invalid", "Metadata NormalizedSha256 is missing or not a valid 64-character hexadecimal SHA-256.");
         }
 
+        if (!string.Equals(metadata.Provider, job.ProviderId, StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "provider_mismatch", "Candidate metadata Provider does not match the generation job.");
+        }
+
+        if (!string.Equals(metadata.Model, job.Model, StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "model_mismatch", "Candidate metadata Model does not match the generation job.");
+        }
+
+        var expectedMode = job.Mode == GenerationMode.Batch ? "batch" : "direct";
+        if (!string.Equals(metadata.Mode, expectedMode, StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "mode_mismatch", "Candidate metadata Mode does not match the generation job.");
+        }
+
+        if (!string.Equals(metadata.CustomId, job.CustomId, StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "custom_id_mismatch", "Candidate metadata CustomId does not match the generation job.");
+        }
+
+        if (!string.Equals(metadata.TargetResolution, $"{job.TargetWidth}x{job.TargetHeight}", StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "target_resolution_mismatch", "Candidate metadata target resolution is inconsistent.");
+        }
+
+        if (!string.Equals(metadata.ProviderResolution, $"{job.GenerationWidth}x{job.GenerationHeight}", StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "provider_resolution_mismatch", "Candidate metadata provider resolution is inconsistent.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(job.ProviderRequestId)
+            && !string.Equals(metadata.ProviderRequestId, job.ProviderRequestId, StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "provider_request_id_mismatch", "Candidate Provider Request ID is inconsistent.");
+        }
+
+        if (job.Mode == GenerationMode.Batch
+            && !string.IsNullOrWhiteSpace(job.ProviderBatchId)
+            && !string.Equals(metadata.BatchId, job.ProviderBatchId, StringComparison.Ordinal))
+        {
+            return new CandidateVerificationResult(false, null, "provider_batch_id_mismatch", "Candidate Batch ID is inconsistent.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(job.ProviderRawPath))
+        {
+            var expectedRawPath = Path.GetFullPath(_stagingService.GetRawCandidatePath(job.ManifestFingerprint, job.RequestKey, job.CandidateId));
+            var actualRawPath = Path.GetFullPath(job.ProviderRawPath);
+
+            if (!string.Equals(expectedRawPath, actualRawPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return new CandidateVerificationResult(false, null, "raw_path_invalid", "Provider raw path does not match the candidate's expected raw path.");
+            }
+
+            if (!File.Exists(actualRawPath))
+            {
+                return new CandidateVerificationResult(false, null, "raw_file_missing", "Provider raw candidate is missing.");
+            }
+
+            string actualRawSha;
+            try
+            {
+                actualRawSha = ComputeSha256File(actualRawPath);
+            }
+            catch (Exception ex)
+            {
+                return new CandidateVerificationResult(false, null, "raw_file_read_error", $"Failed to read provider raw candidate file: {ex.Message}");
+            }
+
+            if (!string.Equals(actualRawSha, job.RawSha256, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(actualRawSha, metadata.RawSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return new CandidateVerificationResult(false, null, "raw_hash_mismatch", "Provider raw candidate hash does not match job/metadata authority.");
+            }
+        }
+
         // 4. Job SHA matches metadata
         if (string.IsNullOrWhiteSpace(job.NormalizedSha256))
         {
@@ -145,7 +221,7 @@ public sealed class CandidateVerificationService
         return new CandidateVerificationResult(true, new VerifiedApiCandidate(fullStagedPath, metadata), null, null);
     }
 
-    private static string ComputeSha256File(string path)
+    internal static string ComputeSha256File(string path)
     {
         using var stream = new FileStream(
             path,

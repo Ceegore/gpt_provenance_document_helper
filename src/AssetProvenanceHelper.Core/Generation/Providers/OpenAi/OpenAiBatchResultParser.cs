@@ -15,34 +15,15 @@ public static class OpenAiBatchResultParser
     {
         var results = new List<BatchItemOutput>();
         var seenCustomIds = new HashSet<string>(StringComparer.Ordinal);
-        var duplicateCustomIds = new HashSet<string>(StringComparer.Ordinal);
 
         if (!string.IsNullOrWhiteSpace(outputJsonlContent))
         {
-            ParseLines(outputJsonlContent, results, seenCustomIds, duplicateCustomIds);
+            ParseLines(outputJsonlContent, results, seenCustomIds);
         }
 
         if (!string.IsNullOrWhiteSpace(errorJsonlContent))
         {
-            ParseLines(errorJsonlContent, results, seenCustomIds, duplicateCustomIds);
-        }
-
-        if (duplicateCustomIds.Count > 0)
-        {
-            for (var i = 0; i < results.Count; i++)
-            {
-                if (duplicateCustomIds.Contains(results[i].CustomId))
-                {
-                    results[i] = new BatchItemOutput(
-                        CustomId: results[i].CustomId,
-                        IsSuccess: false,
-                        ImageBytes: null,
-                        StatusCode: 409,
-                        ErrorCode: "duplicate_custom_id",
-                        ErrorMessage: "Duplicate custom_id detected in batch output files. Rejected for safety.",
-                        ProviderRequestId: null);
-                }
-            }
+            ParseLines(errorJsonlContent, results, seenCustomIds);
         }
 
         return results;
@@ -51,8 +32,7 @@ public static class OpenAiBatchResultParser
     private static void ParseLines(
         string jsonl,
         List<BatchItemOutput> results,
-        HashSet<string> seenCustomIds,
-        HashSet<string> duplicateCustomIds)
+        HashSet<string> seenCustomIds)
     {
         using var reader = new StringReader(jsonl);
         string? line;
@@ -80,9 +60,7 @@ public static class OpenAiBatchResultParser
 
             if (!seenCustomIds.Add(item.CustomId))
             {
-                // Duplicate custom_id in output/error files: fail closed for duplicate
-                duplicateCustomIds.Add(item.CustomId);
-                continue;
+                throw new InvalidDataException($"Batch result contains duplicate custom_id '{item.CustomId}'.");
             }
 
             if (item.Error != null)

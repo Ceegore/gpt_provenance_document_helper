@@ -113,8 +113,10 @@ public sealed class ApiRunSnapshotTests : IDisposable
                 ProviderRequestId: "req-block-123");
         }
 
+#pragma warning disable CS0618
         public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
+#pragma warning restore CS0618
 
         public Task<BatchStatusResult> GetBatchStatusAsync(string providerBatchId, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();

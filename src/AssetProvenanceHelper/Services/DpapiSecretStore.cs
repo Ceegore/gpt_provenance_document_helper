@@ -72,6 +72,17 @@ public sealed class DpapiSecretStore : ISecretStore
         }
     }
 
+    public void ResetCorruptStore()
+    {
+        lock (_lock)
+        {
+            if (File.Exists(_storagePath))
+            {
+                File.Delete(_storagePath);
+            }
+        }
+    }
+
     private Dictionary<string, string> LoadEncryptedDictionary()
     {
         if (!File.Exists(_storagePath))

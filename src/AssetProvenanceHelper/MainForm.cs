@@ -104,6 +104,8 @@ private readonly SettingsService _settingsService;
         LoadRecentDocumentsIntoUi();
         ApplyState();
         _generationJobStore.RecoverInterruptedJobsOnStartup();
+        var candidateRecovery = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+        candidateRecovery.RecoverAllCandidates();
         InitializeBatchMonitoring();
 
         Shown += (_, _) =>
@@ -115,17 +117,53 @@ private readonly SettingsService _settingsService;
 
     private void OpenSettingsDialog()
     {
-        using var dialog = new Dialogs.SettingsDialog(_settings, _secretStore);
-        if (dialog.ShowDialog(this) == DialogResult.OK)
+        try
         {
-            try
+            using var dialog = new Dialogs.SettingsDialog(_settings, _secretStore);
+            if (dialog.ShowDialog(this) == DialogResult.OK)
             {
-                _settingsService.Save(_settings);
-                AddStatus("Settings updated.");
+                try
+                {
+                    _settingsService.Save(_settings);
+                    AddStatus("Settings updated.");
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Could not save settings.", ex);
+                }
             }
-            catch (Exception ex)
+        }
+        catch (InvalidDataException ex)
+        {
+            ShowMessageBox(
+                "The encrypted API secret store is corrupt or cannot be decrypted "
+                + "for the current Windows user."
+                + Environment.NewLine
+                + Environment.NewLine
+                + "The stored key was NOT overwritten."
+                + Environment.NewLine
+                + Environment.NewLine
+                + ex.Message,
+                "API Secret Store Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+
+            if (_secretStore is DpapiSecretStore dpapiStore)
             {
-                ShowError("Could not save settings.", ex);
+                var confirmReset = ShowConfirmDialog(
+                    "Do you want to delete the corrupted secret store file?"
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + "If deleted, you will need to re-enter your OpenAI API key in Settings.",
+                    "Reset Corrupted Secret Store",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (confirmReset == DialogResult.Yes)
+                {
+                    dpapiStore.ResetCorruptStore();
+                    AddStatus("Corrupted API secret store was deleted.");
+                }
             }
         }
 
@@ -232,6 +270,8 @@ private readonly SettingsService _settingsService;
         btnImportRequest.Click += (_, _) => HandleImportRequest();
         btnGenerateNow.Click += (_, _) => HandleGenerateNow();
         btnQueueProductionBatch.Click += (_, _) => HandleQueueProductionBatch();
+        btnRetrySelectedApi.Click += (_, _) => HandleRetrySelectedApi();
+        lvRequestQueue.SelectedIndexChanged += (_, _) => ApplyRequestQueueState();
         lvRequestQueue.MouseUp += (_, e) => HandleRequestQueueMouseUp(e);
         lvRequestQueue.KeyDown += (_, e) =>
         {

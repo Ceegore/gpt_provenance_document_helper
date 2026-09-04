@@ -106,8 +106,10 @@ public sealed class BatchSubmissionCheckpointTests : IDisposable
             return Task.FromResult(new BatchSubmissionResult(inputFileId, CreatedBatchId, 1, DateTimeOffset.UtcNow));
         }
 
+#pragma warning disable CS0618
         public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
+#pragma warning restore CS0618
 
         public Task<ImageGenerationCandidate> GenerateAsync(ImageGenerationSpec spec, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
@@ -557,6 +559,276 @@ public sealed class BatchSubmissionCheckpointTests : IDisposable
             finally
             {
                 GenerationJobStore.OnBeforeSaveCoreForTests = null;
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    private static bool GetPrivateBool(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new ArgumentException($"Field '{fieldName}' not found on {target.GetType().Name}.");
+        return (bool)field.GetValue(target)!;
+    }
+
+    [Fact]
+    public void Batch_UploadFails_SubmittingFlagCleared()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var (form, provider, _) = CreateTestForm(workspace);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+                var manifestPath = CreateTestManifest();
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnQueue = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnQueue);
+
+                btnImport.PerformClick();
+                provider.ThrowOnUpload = true;
+
+                btnQueue.PerformClick();
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                Assert.False(GetPrivateBool(form, "_isSubmittingBatch"));
+                Assert.True(btnImport.Enabled);
+                Assert.True(btnQueue.Enabled);
+                form.Close();
+            }
+            finally
+            {
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void Batch_InputIdPersistFails_SubmittingFlagCleared()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var (form, provider, _) = CreateTestForm(workspace);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+                var manifestPath = CreateTestManifest();
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnQueue = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnQueue);
+
+                btnImport.PerformClick();
+
+                GenerationJobStore.OnBeforeSaveCoreForTests = state =>
+                {
+                    if (state.Batches.Any(b => b.ProviderInputFileId == provider.UploadedFileId && string.IsNullOrEmpty(b.ProviderBatchId)))
+                    {
+                        throw new IOException("Simulated persistence failure when saving ProviderInputFileId");
+                    }
+                };
+
+                btnQueue.PerformClick();
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                Assert.False(GetPrivateBool(form, "_isSubmittingBatch"));
+                Assert.True(btnImport.Enabled);
+                Assert.True(btnQueue.Enabled);
+                form.Close();
+            }
+            finally
+            {
+                GenerationJobStore.OnBeforeSaveCoreForTests = null;
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void Batch_CreateFails_SubmittingFlagCleared()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var (form, provider, _) = CreateTestForm(workspace);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+                var manifestPath = CreateTestManifest();
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnQueue = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnQueue);
+
+                btnImport.PerformClick();
+                provider.ThrowOnCreateBatch = true;
+
+                btnQueue.PerformClick();
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                Assert.False(GetPrivateBool(form, "_isSubmittingBatch"));
+                Assert.True(btnImport.Enabled);
+                Assert.True(btnQueue.Enabled);
+                form.Close();
+            }
+            finally
+            {
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void Batch_BatchIdPersistFails_SubmittingFlagCleared()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var (form, provider, _) = CreateTestForm(workspace);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+                var manifestPath = CreateTestManifest();
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnQueue = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnQueue);
+
+                btnImport.PerformClick();
+
+                GenerationJobStore.OnBeforeSaveCoreForTests = state =>
+                {
+                    if (state.Batches.Any(b => b.ProviderBatchId == provider.CreatedBatchId))
+                    {
+                        throw new IOException("Simulated persistence failure when saving ProviderBatchId");
+                    }
+                };
+
+                btnQueue.PerformClick();
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                Assert.False(GetPrivateBool(form, "_isSubmittingBatch"));
+                Assert.True(btnImport.Enabled);
+                Assert.True(btnQueue.Enabled);
+                form.Close();
+            }
+            finally
+            {
+                GenerationJobStore.OnBeforeSaveCoreForTests = null;
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void Batch_Success_SubmittingFlagCleared()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var (form, _, _) = CreateTestForm(workspace);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+                var manifestPath = CreateTestManifest();
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnQueue = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnQueue);
+
+                btnImport.PerformClick();
+
+                btnQueue.PerformClick();
+                for (var i = 0; i < 50; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(20);
+                }
+
+                Assert.False(GetPrivateBool(form, "_isSubmittingBatch"));
+                form.Close();
+            }
+            finally
+            {
                 MainForm.OpenFolderProvider = null;
                 MainForm.MessageBoxProvider = null;
                 MainForm.ConfirmBoxProvider = null;

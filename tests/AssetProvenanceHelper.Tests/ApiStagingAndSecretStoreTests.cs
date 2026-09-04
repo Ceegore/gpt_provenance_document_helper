@@ -1,3 +1,4 @@
+using System.Windows.Forms;
 using AssetProvenanceHelper.Dialogs;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
@@ -26,6 +27,29 @@ public sealed class ApiStagingAndSecretStoreTests : IDisposable
         catch
         {
             // Ignore
+        }
+    }
+
+    private static void RunOnSta(Action action)
+    {
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)));
+        if (error != null)
+        {
+            throw new AggregateException(error);
         }
     }
 
@@ -86,6 +110,189 @@ public sealed class ApiStagingAndSecretStoreTests : IDisposable
         btnOk.PerformClick();
 
         Assert.Equal("gpt-image-2", settings.OpenAiModel);
+    }
+
+    [Fact]
+    public void CorruptSecretStore_OpenSettings_ShowsErrorNoCrash()
+    {
+        RunOnSta(() =>
+        {
+            var storePath = Path.Combine(_tempDir, "corrupt_secrets_nocrash.dat");
+            File.WriteAllBytes(storePath, [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03]);
+            var secretStore = new DpapiSecretStore(storePath);
+
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secretStore);
+
+            string? errorShown = null;
+            MainForm.MessageBoxProvider = (_, msg, title, _, _) => { errorShown = msg; };
+            MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.No;
+
+            try
+            {
+                form.Show();
+                var btnSettings = form.Controls.Find("btnSettings", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnSettings);
+
+                btnSettings.PerformClick();
+
+                Assert.NotNull(errorShown);
+                Assert.Contains("The encrypted API secret store is corrupt or cannot be decrypted", errorShown);
+
+                form.Close();
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void CorruptSecretStore_IsNotOverwritten()
+    {
+        RunOnSta(() =>
+        {
+            var storePath = Path.Combine(_tempDir, "corrupt_secrets_not_overwritten.dat");
+            byte[] corruptBytes = [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
+            File.WriteAllBytes(storePath, corruptBytes);
+            var secretStore = new DpapiSecretStore(storePath);
+
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secretStore);
+
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.No;
+
+            try
+            {
+                form.Show();
+                var btnSettings = form.Controls.Find("btnSettings", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnSettings);
+                btnSettings.PerformClick();
+
+                var currentBytes = File.ReadAllBytes(storePath);
+                Assert.Equal(corruptBytes, currentBytes);
+
+                form.Close();
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void CorruptSecretStore_UserCancelsReset_FilePreserved()
+    {
+        RunOnSta(() =>
+        {
+            var storePath = Path.Combine(_tempDir, "corrupt_secrets_cancel.dat");
+            byte[] corruptBytes = [0xAA, 0xBB, 0xCC, 0xDD];
+            File.WriteAllBytes(storePath, corruptBytes);
+            var secretStore = new DpapiSecretStore(storePath);
+
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secretStore);
+
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.No;
+
+            try
+            {
+                form.Show();
+                var btnSettings = form.Controls.Find("btnSettings", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnSettings);
+                btnSettings.PerformClick();
+
+                Assert.True(File.Exists(storePath));
+                Assert.Equal(corruptBytes, File.ReadAllBytes(storePath));
+
+                form.Close();
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void CorruptSecretStore_UserConfirmsReset_FileDeleted()
+    {
+        RunOnSta(() =>
+        {
+            var storePath = Path.Combine(_tempDir, "corrupt_secrets_confirm.dat");
+            File.WriteAllBytes(storePath, [0xAA, 0xBB, 0xCC, 0xDD]);
+            var secretStore = new DpapiSecretStore(storePath);
+
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secretStore);
+
+            MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+            MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.Yes;
+
+            try
+            {
+                form.Show();
+                var btnSettings = form.Controls.Find("btnSettings", true).FirstOrDefault() as Button;
+                Assert.NotNull(btnSettings);
+                btnSettings.PerformClick();
+
+                Assert.False(File.Exists(storePath));
+
+                form.Close();
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+            }
+        });
     }
 
     private sealed class InMemorySecretStore : ISecretStore

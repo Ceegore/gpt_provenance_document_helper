@@ -98,7 +98,7 @@ partial class MainForm
         }
     }
 
-    private void SelectProviderByFileName(string fileName)
+    internal void SelectProviderByFileName(string fileName)
     {
         _selectedProvider = null;
 

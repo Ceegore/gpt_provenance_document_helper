@@ -27,4 +27,6 @@ public sealed record GenerationItemRecord(
     string? ErrorCode = null,
     string? ErrorMessage = null,
     string? CandidateId = null,
-    string? ProviderRawPath = null);
+    string? ProviderRawPath = null,
+    DateTimeOffset? ProviderOutputReceivedAtUtc = null,
+    bool ProviderOutputReceived = false);

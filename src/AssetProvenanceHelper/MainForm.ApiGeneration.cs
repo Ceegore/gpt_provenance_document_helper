@@ -138,6 +138,23 @@ partial class MainForm
             "This mode uses normal API pricing and normal model rate limits." + Environment.NewLine +
             "Requests will be rate-limited locally.";
 
+        var alphaUnknownCount =
+            preflight.Warnings.Count(
+                warning =>
+                    string.Equals(
+                        warning.Code,
+                        "alpha_requirement_unknown",
+                        StringComparison.Ordinal));
+
+        if (alphaUnknownCount > 0)
+        {
+            confirmMsg +=
+                Environment.NewLine
+                + Environment.NewLine
+                + $"Warning: {alphaUnknownCount} request(s) have alpha=unknown. "
+                + "This GPT-Image-2 MVP will generate opaque PNG output for them.";
+        }
+
         if (eligible.Count > 100)
         {
             confirmMsg += Environment.NewLine + Environment.NewLine +
@@ -284,12 +301,26 @@ partial class MainForm
                         throw new InvalidDataException("Provider candidate raw SHA-256 does not match the received bytes.");
                     }
 
-                    // 1. Raw atomic write + Flush(true) before normalization
-                    var rawPath = _stagingService.SaveRawCandidate(
+                    // Record provider output receipt and persist BEFORE raw disk write
+                    var providerOutputReceivedAtUtc = DateTimeOffset.UtcNow;
+                    currentRecord = currentRecord with
+                    {
+                        ProviderOutputReceived = true,
+                        ProviderOutputReceivedAtUtc = providerOutputReceivedAtUtc,
+                        CandidateId = candidate.CandidateId,
+                        ProviderRequestId = candidate.ProviderRequestId,
+                        UpdatedAtUtc = providerOutputReceivedAtUtc
+                    };
+                    _generationJobStore.UpsertItem(currentRecord);
+
+                    // 1. Raw atomic write with local retry + Flush(true) before normalization
+                    var rawPath = await SaveRawCandidateWithLocalRetryAsync(
+                        _stagingService,
                         run.ManifestFingerprint,
                         item.RequestKey,
                         candidate.CandidateId,
-                        candidate.RawBytes);
+                        candidate.RawBytes,
+                        _apiGenerationCts.Token).ConfigureAwait(false);
 
                     // 2. Persist job Normalizing + raw path
                     currentRecord = currentRecord with
@@ -319,7 +350,7 @@ partial class MainForm
                         RawSha256: rawSha,
                         NormalizedSha256: normResult.NormalizedSha256,
                         NormalizedImagePath: string.Empty,
-                        CreatedAtUtc: DateTimeOffset.UtcNow,
+                        CreatedAtUtc: providerOutputReceivedAtUtc,
                         ProviderRequestId: candidate.ProviderRequestId);
 
                     var normalizedPath = _stagingService.CompleteCandidate(
@@ -345,7 +376,18 @@ partial class MainForm
                 }
                 catch (OperationCanceledException)
                 {
-                    if (acquiredPermit)
+                    if (currentRecord.ProviderOutputReceived
+                        && string.IsNullOrWhiteSpace(currentRecord.ProviderRawPath))
+                    {
+                        _generationJobStore.UpsertItem(currentRecord with
+                        {
+                            Status = GenerationItemStatus.UncertainAfterInterruption,
+                            ErrorCode = "provider_output_received_local_persist_failed",
+                            ErrorMessage = "OpenAI returned an image, but local persisting was cancelled. A new remote generation may duplicate cost.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow
+                        });
+                    }
+                    else if (acquiredPermit)
                     {
                         var hasRaw = !string.IsNullOrWhiteSpace(currentRecord.ProviderRawPath);
                         _generationJobStore.UpsertItem(currentRecord with
@@ -369,6 +411,19 @@ partial class MainForm
                 }
                 catch (Exception ex)
                 {
+                    if (currentRecord.ProviderOutputReceived
+                        && string.IsNullOrWhiteSpace(currentRecord.ProviderRawPath))
+                    {
+                        _generationJobStore.UpsertItem(currentRecord with
+                        {
+                            Status = GenerationItemStatus.UncertainAfterInterruption,
+                            ErrorCode = "provider_output_received_local_persist_failed",
+                            ErrorMessage = "OpenAI returned an image, but the helper could not persist the provider output locally. A new remote generation may duplicate cost.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow
+                        });
+                        return;
+                    }
+
                     var isGlobal = IsGlobalDirectError(ex, out var globalReason);
                     var providerOutputWasPersisted = !string.IsNullOrWhiteSpace(currentRecord.ProviderRawPath);
 
@@ -444,6 +499,47 @@ partial class MainForm
             SafeInvoke(ApplyRequestQueueState);
             SafeInvoke(RefreshRequestQueueVisuals);
         }
+    }
+
+    internal static async Task<string> SaveRawCandidateWithLocalRetryAsync(
+        GeneratedImageStagingService staging,
+        string manifestFingerprint,
+        string requestKey,
+        string candidateId,
+        byte[] rawBytes,
+        CancellationToken cancellationToken)
+    {
+        Exception? last = null;
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                return staging.SaveRawCandidate(
+                    manifestFingerprint,
+                    requestKey,
+                    candidateId,
+                    rawBytes);
+            }
+            catch (IOException ex)
+            {
+                last = ex;
+
+                if (attempt < 3)
+                {
+                    await Task.Delay(
+                        TimeSpan.FromMilliseconds(100 * attempt),
+                        cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+        }
+
+        throw new IOException(
+            "Provider output was received, but local raw staging failed.",
+            last);
     }
 
     internal static bool IsGlobalDirectError(Exception ex, out string reason)
@@ -674,6 +770,23 @@ partial class MainForm
             "- Batches process asynchronously with up to a 24-hour turnaround window." + Environment.NewLine +
             "- The application will monitor the batch and automatically stage results when ready.";
 
+        var alphaUnknownCount =
+            preflight.Warnings.Count(
+                warning =>
+                    string.Equals(
+                        warning.Code,
+                        "alpha_requirement_unknown",
+                        StringComparison.Ordinal));
+
+        if (alphaUnknownCount > 0)
+        {
+            confirmMsg +=
+                Environment.NewLine
+                + Environment.NewLine
+                + $"Warning: {alphaUnknownCount} request(s) have alpha=unknown. "
+                + "This GPT-Image-2 MVP will generate opaque PNG output for them.";
+        }
+
         if (totalEligibleCount > _settings.MaxBatchRequestsPerSubmission)
         {
             confirmMsg += Environment.NewLine + Environment.NewLine +
@@ -698,8 +811,25 @@ partial class MainForm
     private async Task SubmitBatchAsync(IReadOnlyList<AssetRequestItem> eligible, string apiKey)
     {
         _isSubmittingBatch = true;
-        ApplyRequestQueueState();
+        SafeInvoke(ApplyRequestQueueState);
 
+        try
+        {
+            await SubmitBatchCoreAsync(eligible, apiKey).ConfigureAwait(false);
+        }
+        finally
+        {
+            _isSubmittingBatch = false;
+            SafeInvoke(() =>
+            {
+                ApplyRequestQueueState();
+                RefreshRequestQueueVisuals();
+            });
+        }
+    }
+
+    private async Task SubmitBatchCoreAsync(IReadOnlyList<AssetRequestItem> eligible, string apiKey)
+    {
         var localBatchId = "batch-" + Guid.NewGuid().ToString("N")[..12];
         var batchRecord = new GenerationBatchRecord(
             LocalBatchId: localBatchId,
@@ -957,11 +1087,6 @@ partial class MainForm
                     MessageBoxIcon.Error);
                 RefreshRequestQueueVisuals();
             });
-        }
-        finally
-        {
-            _isSubmittingBatch = false;
-            SafeInvoke(ApplyRequestQueueState);
         }
     }
 

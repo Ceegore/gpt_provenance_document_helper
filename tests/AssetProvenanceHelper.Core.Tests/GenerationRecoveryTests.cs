@@ -147,4 +147,102 @@ public sealed class GenerationRecoveryTests : IDisposable
         Assert.Equal("failed", loaded.Batches[0].Status);
         Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, loaded.Items[0].Status);
     }
+
+    [Fact]
+    public void Restart_QueuedDirect_BecomesPending()
+    {
+        var store1 = new GenerationJobStore(_stateFilePath);
+        var item = new GenerationItemRecord(
+            ManifestFingerprint: "fp",
+            RequestKey: "rk",
+            AssetName: "enemy",
+            FileName: "enemy.png",
+            Mode: GenerationMode.Direct,
+            ProviderId: "OpenAI",
+            Model: "gpt-image-2",
+            Quality: "medium",
+            TargetWidth: 512,
+            TargetHeight: 512,
+            GenerationWidth: 816,
+            GenerationHeight: 816,
+            CustomId: "aph-fp-rk",
+            Status: GenerationItemStatus.QueuedDirect,
+            SubmittedAtUtc: DateTimeOffset.UtcNow,
+            UpdatedAtUtc: DateTimeOffset.UtcNow);
+
+        store1.Save(new GenerationState { Items = [item] });
+
+        var store2 = new GenerationJobStore(_stateFilePath);
+        store2.RecoverInterruptedJobsOnStartup();
+        var loaded = store2.Load();
+
+        Assert.Single(loaded.Items);
+        Assert.Equal(GenerationItemStatus.Pending, loaded.Items[0].Status);
+        Assert.Null(loaded.Items[0].ErrorCode);
+    }
+
+    [Fact]
+    public void Restart_DirectRateLimited_BecomesPending()
+    {
+        var store1 = new GenerationJobStore(_stateFilePath);
+        var item = new GenerationItemRecord(
+            ManifestFingerprint: "fp",
+            RequestKey: "rk",
+            AssetName: "enemy",
+            FileName: "enemy.png",
+            Mode: GenerationMode.Direct,
+            ProviderId: "OpenAI",
+            Model: "gpt-image-2",
+            Quality: "medium",
+            TargetWidth: 512,
+            TargetHeight: 512,
+            GenerationWidth: 816,
+            GenerationHeight: 816,
+            CustomId: "aph-fp-rk",
+            Status: GenerationItemStatus.DirectRateLimited,
+            SubmittedAtUtc: DateTimeOffset.UtcNow,
+            UpdatedAtUtc: DateTimeOffset.UtcNow);
+
+        store1.Save(new GenerationState { Items = [item] });
+
+        var store2 = new GenerationJobStore(_stateFilePath);
+        store2.RecoverInterruptedJobsOnStartup();
+        var loaded = store2.Load();
+
+        Assert.Single(loaded.Items);
+        Assert.Equal(GenerationItemStatus.Pending, loaded.Items[0].Status);
+        Assert.Null(loaded.Items[0].ErrorCode);
+    }
+
+    [Fact]
+    public void Restart_DirectInFlight_RemainsUncertain()
+    {
+        var store1 = new GenerationJobStore(_stateFilePath);
+        var item = new GenerationItemRecord(
+            ManifestFingerprint: "fp",
+            RequestKey: "rk",
+            AssetName: "enemy",
+            FileName: "enemy.png",
+            Mode: GenerationMode.Direct,
+            ProviderId: "OpenAI",
+            Model: "gpt-image-2",
+            Quality: "medium",
+            TargetWidth: 512,
+            TargetHeight: 512,
+            GenerationWidth: 816,
+            GenerationHeight: 816,
+            CustomId: "aph-fp-rk",
+            Status: GenerationItemStatus.DirectInFlight,
+            SubmittedAtUtc: DateTimeOffset.UtcNow,
+            UpdatedAtUtc: DateTimeOffset.UtcNow);
+
+        store1.Save(new GenerationState { Items = [item] });
+
+        var store2 = new GenerationJobStore(_stateFilePath);
+        store2.RecoverInterruptedJobsOnStartup();
+        var loaded = store2.Load();
+
+        Assert.Single(loaded.Items);
+        Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, loaded.Items[0].Status);
+    }
 }

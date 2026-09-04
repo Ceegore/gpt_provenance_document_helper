@@ -27,6 +27,45 @@ public sealed class LocalCandidateRecoveryService
                && File.Exists(job.ProviderRawPath);
     }
 
+    public int RecoverAllCandidates()
+    {
+        var state = _jobStore.Load();
+        var recoverable = state.Items
+            .Where(CanRecoverLocally)
+            .ToList();
+
+        var count = 0;
+        foreach (var item in recoverable)
+        {
+            if (TryRecoverCandidate(item))
+            {
+                count++;
+            }
+        }
+
+        var missingRawItems = state.Items
+            .Where(item => (item.Status == GenerationItemStatus.Normalizing
+                            || (item.Status == GenerationItemStatus.FailedRetryable
+                                && string.Equals(item.ErrorCode, "local_candidate_processing_failed", StringComparison.Ordinal)))
+                           && (string.IsNullOrWhiteSpace(item.ProviderRawPath) || !File.Exists(item.ProviderRawPath)))
+            .ToList();
+
+        foreach (var item in missingRawItems)
+        {
+            _jobStore.UpsertItem(item with
+            {
+                Status = GenerationItemStatus.UncertainAfterInterruption,
+                ErrorCode = item.Status == GenerationItemStatus.Normalizing ? "normalizing_raw_missing" : "recovery_raw_missing",
+                ErrorMessage = item.Status == GenerationItemStatus.Normalizing
+                    ? "Process was normalizing candidate but raw provider output file was not found on disk."
+                    : "Candidate was pending local recovery retry but raw provider output file was not found on disk.",
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+        }
+
+        return count;
+    }
+
     public int RecoverAllForManifest(string manifestFingerprint)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(manifestFingerprint);
@@ -94,6 +133,13 @@ public sealed class LocalCandidateRecoveryService
             }
 
             var plan = ImageSizePlanner.Plan(job.TargetWidth, job.TargetHeight);
+            if (job.GenerationWidth > 0 && job.GenerationHeight > 0
+                && (plan.GenerationWidth != job.GenerationWidth || plan.GenerationHeight != job.GenerationHeight))
+            {
+                throw new InvalidDataException(
+                    "Stored provider resolution does not match the current size planner. "
+                    + "Automatic local recovery was stopped to avoid reinterpreting the original provider output.");
+            }
 
             _stagingService.DeleteIncompleteFinalArtifacts(
                 job.ManifestFingerprint,
@@ -113,9 +159,9 @@ public sealed class LocalCandidateRecoveryService
                 RawSha256: actualRawSha,
                 NormalizedSha256: normResult.NormalizedSha256,
                 NormalizedImagePath: string.Empty,
-                CreatedAtUtc: DateTimeOffset.UtcNow,
+                CreatedAtUtc: job.ProviderOutputReceivedAtUtc ?? job.UpdatedAtUtc,
                 ProviderRequestId: job.ProviderRequestId,
-                BatchId: job.BatchId);
+                BatchId: job.Mode == GenerationMode.Batch ? job.ProviderBatchId : null);
 
             var normalizedPath = _stagingService.CompleteCandidate(
                 job.ManifestFingerprint,
@@ -130,6 +176,8 @@ public sealed class LocalCandidateRecoveryService
                 StagedOutputPath = normalizedPath,
                 RawSha256 = actualRawSha,
                 NormalizedSha256 = normResult.NormalizedSha256,
+                GenerationWidth = plan.GenerationWidth,
+                GenerationHeight = plan.GenerationHeight,
                 ErrorCode = null,
                 ErrorMessage = null,
                 UpdatedAtUtc = DateTimeOffset.UtcNow

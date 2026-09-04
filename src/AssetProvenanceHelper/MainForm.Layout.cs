@@ -756,14 +756,15 @@ partial class MainForm
         var actionsLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 4)
         };
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f));
+        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
+        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
+        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
+        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
 
         btnImportRequest = CreateButton("Import Request...");
         btnImportRequest.Name = "btnImportRequest";
@@ -777,9 +778,14 @@ partial class MainForm
         btnQueueProductionBatch.Name = "btnQueueProductionBatch";
         btnQueueProductionBatch.Dock = DockStyle.Fill;
 
+        btnRetrySelectedApi = CreateButton("Retry / Resolve...");
+        btnRetrySelectedApi.Name = "btnRetrySelectedApi";
+        btnRetrySelectedApi.Dock = DockStyle.Fill;
+
         actionsLayout.Controls.Add(btnImportRequest, 0, 0);
         actionsLayout.Controls.Add(btnGenerateNow, 1, 0);
         actionsLayout.Controls.Add(btnQueueProductionBatch, 2, 0);
+        actionsLayout.Controls.Add(btnRetrySelectedApi, 3, 0);
 
         lblRequestSource = new Label
         {

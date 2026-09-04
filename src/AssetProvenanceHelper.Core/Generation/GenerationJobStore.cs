@@ -102,7 +102,18 @@ public sealed class GenerationJobStore
             for (var i = 0; i < state.Items.Count; i++)
             {
                 var item = state.Items[i];
-                if (item.Status == GenerationItemStatus.DirectInFlight)
+                if (item.Status is GenerationItemStatus.QueuedDirect or GenerationItemStatus.DirectRateLimited)
+                {
+                    state.Items[i] = item with
+                    {
+                        Status = GenerationItemStatus.Pending,
+                        ErrorCode = null,
+                        ErrorMessage = "Queued Direct request was not in-flight when the previous process ended. It was returned to Pending.",
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    };
+                    mutated = true;
+                }
+                else if (item.Status == GenerationItemStatus.DirectInFlight)
                 {
                     state.Items[i] = item with
                     {

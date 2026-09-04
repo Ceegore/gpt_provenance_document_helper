@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using AssetProvenanceHelper.Core.Generation;
 using AssetProvenanceHelper.Core.Generation.Providers;
+using AssetProvenanceHelper.Core.Generation.Providers.OpenAi;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
 
@@ -25,6 +26,7 @@ public sealed class BatchIngestionTests : IDisposable
 
     public void Dispose()
     {
+        GeneratedImageStagingService.OnBeforeSaveRawForTests = null;
         try
         {
             if (Directory.Exists(_tempDir))
@@ -476,5 +478,236 @@ public sealed class BatchIngestionTests : IDisposable
             Assert.Equal(GenerationItemStatus.UncertainAfterInterruption, item.Status);
             Assert.Equal("batch_result_mapping_invalid", item.ErrorCode);
         });
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Batch_ResultRawWriteFails_BatchRemainsLocallyActiveAndRetryable()
+    {
+        var (batch, item1, item2) = SetupBatchWithTwoItems();
+        var img1 = CreateTestPng(816, 816, Color.Cyan);
+        var img2 = CreateTestPng(816, 816, Color.Magenta);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-out-123",
+            ErrorFileId: null,
+            TotalCount: 2,
+            CompletedCount: 2,
+            FailedCount: 0);
+
+        var downloadResult = new BatchDownloadResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Items:
+            [
+                new BatchItemOutput(item1.CustomId, IsSuccess: true, ImageBytes: img1, StatusCode: 200, ErrorCode: null, ErrorMessage: null, ProviderRequestId: "req-1"),
+                new BatchItemOutput(item2.CustomId, IsSuccess: true, ImageBytes: img2, StatusCode: 200, ErrorCode: null, ErrorMessage: null, ProviderRequestId: "req-2")
+            ]);
+
+        // Fail raw write only for item2
+        GeneratedImageStagingService.OnBeforeSaveRawForTests = rawPath =>
+        {
+            if (rawPath.Contains(item2.RequestKey))
+            {
+                throw new IOException("Simulated disk error on item2 raw write");
+            }
+        };
+
+        try
+        {
+            var summary = _ingestionService.IngestResults(batch, status, downloadResult);
+
+            // Ingestion summary assertions
+            Assert.True(summary.NeedsRemoteResultRedownload);
+            Assert.Equal(1, summary.SuccessCount);
+            Assert.Equal(1, summary.FailureCount);
+
+            // Item1 should be Ready
+            var updatedItem1 = _jobStore.GetItem(item1.ManifestFingerprint, item1.RequestKey)!;
+            Assert.Equal(GenerationItemStatus.Ready, updatedItem1.Status);
+            Assert.True(File.Exists(updatedItem1.ProviderRawPath));
+            Assert.True(File.Exists(updatedItem1.StagedOutputPath));
+
+            // Item2 should be FailedRetryable, NOT FailedPermanent
+            var updatedItem2 = _jobStore.GetItem(item2.ManifestFingerprint, item2.RequestKey)!;
+            Assert.Equal(GenerationItemStatus.FailedRetryable, updatedItem2.Status);
+            Assert.Equal("batch_result_raw_persist_failed", updatedItem2.ErrorCode);
+            Assert.Equal("req-2", updatedItem2.ProviderRequestId);
+
+            // Batch record assertions
+            var updatedBatch = _jobStore.GetBatch(batch.LocalBatchId)!;
+            Assert.Equal("IngestionFailed", updatedBatch.Status);
+            Assert.Null(updatedBatch.CompletedAtUtc); // Must remain null so it's not marked terminal
+            Assert.Equal("file-out-123", updatedBatch.ProviderOutputFileId);
+
+            // Verify GetActiveBatches still includes this batch
+            var activeBatches = _jobStore.GetActiveBatches();
+            Assert.Contains(activeBatches, b => b.LocalBatchId == batch.LocalBatchId);
+        }
+        finally
+        {
+            GeneratedImageStagingService.OnBeforeSaveRawForTests = null;
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "RecoveryCritical")]
+    public void Batch_Reingestion_AlreadyReadyItemIsIdempotentlySkipped_AndDiskRecoverySucceeds()
+    {
+        var (batch, item1, item2) = SetupBatchWithTwoItems();
+        var img1 = CreateTestPng(816, 816, Color.Cyan);
+        var img2 = CreateTestPng(816, 816, Color.Magenta);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-out-123",
+            ErrorFileId: null,
+            TotalCount: 2,
+            CompletedCount: 2,
+            FailedCount: 0);
+
+        var downloadResult = new BatchDownloadResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Items:
+            [
+                new BatchItemOutput(item1.CustomId, IsSuccess: true, ImageBytes: img1, StatusCode: 200, ErrorCode: null, ErrorMessage: null, ProviderRequestId: "req-1"),
+                new BatchItemOutput(item2.CustomId, IsSuccess: true, ImageBytes: img2, StatusCode: 200, ErrorCode: null, ErrorMessage: null, ProviderRequestId: "req-2")
+            ]);
+
+        // Attempt 1: fail item2 raw write
+        GeneratedImageStagingService.OnBeforeSaveRawForTests = rawPath =>
+        {
+            if (rawPath.Contains(item2.RequestKey))
+            {
+                throw new IOException("Simulated disk error");
+            }
+        };
+
+        try
+        {
+            var summary1 = _ingestionService.IngestResults(batch, status, downloadResult);
+            Assert.True(summary1.NeedsRemoteResultRedownload);
+
+            var ready1Before = _jobStore.GetItem(item1.ManifestFingerprint, item1.RequestKey)!;
+            var updatedUtcBefore = ready1Before.UpdatedAtUtc;
+            var stagedPathBefore = ready1Before.StagedOutputPath;
+
+            // Attempt 2: disk recovered (clear hook)
+            GeneratedImageStagingService.OnBeforeSaveRawForTests = null;
+
+            var batchBeforeSecondPoll = _jobStore.GetBatch(batch.LocalBatchId)!;
+            var summary2 = _ingestionService.IngestResults(batchBeforeSecondPoll, status, downloadResult);
+
+            Assert.False(summary2.NeedsRemoteResultRedownload);
+            Assert.Equal(2, summary2.SuccessCount);
+            Assert.Equal(0, summary2.FailureCount);
+
+            // Item1 was idempotently skipped: UpdatedAtUtc and StagedOutputPath unchanged
+            var ready1After = _jobStore.GetItem(item1.ManifestFingerprint, item1.RequestKey)!;
+            Assert.Equal(GenerationItemStatus.Ready, ready1After.Status);
+            Assert.Equal(stagedPathBefore, ready1After.StagedOutputPath);
+            Assert.Equal(updatedUtcBefore, ready1After.UpdatedAtUtc);
+
+            // Item2 is now Ready
+            var ready2After = _jobStore.GetItem(item2.ManifestFingerprint, item2.RequestKey)!;
+            Assert.Equal(GenerationItemStatus.Ready, ready2After.Status);
+            Assert.True(File.Exists(ready2After.ProviderRawPath));
+            Assert.True(File.Exists(ready2After.StagedOutputPath));
+
+            // Batch is now completed and has CompletedAtUtc set
+            var finalBatch = _jobStore.GetBatch(batch.LocalBatchId)!;
+            Assert.Equal("completed", finalBatch.Status);
+            Assert.NotNull(finalBatch.CompletedAtUtc);
+
+            // Active batches no longer includes this batch
+            var activeBatches = _jobStore.GetActiveBatches();
+            Assert.DoesNotContain(activeBatches, b => b.LocalBatchId == batch.LocalBatchId);
+        }
+        finally
+        {
+            GeneratedImageStagingService.OnBeforeSaveRawForTests = null;
+        }
+    }
+
+    private sealed class DuplicateJsonlHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly string _outputJsonl;
+
+        public DuplicateJsonlHttpMessageHandler(string outputJsonl)
+        {
+            _outputJsonl = outputJsonl;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var uri = request.RequestUri?.ToString() ?? string.Empty;
+            if (uri.Contains("files/") && uri.EndsWith("/content"))
+            {
+                var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(_outputJsonl, System.Text.Encoding.UTF8, "application/jsonl")
+                };
+                return Task.FromResult(response);
+            }
+
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
+    [Fact]
+    public async Task BatchProvider_DuplicateRawJsonl_IngestionCreatesZeroReadyCandidates()
+    {
+        var (batch, item1, item2) = SetupBatchWithTwoItems();
+        var rawB64 = Convert.ToBase64String(CreateTestPng(816, 816, Color.Red));
+
+        // Duplicate custom_id pointing to item1.CustomId
+        var duplicateJsonl =
+            $"{{\"id\":\"req_1\",\"custom_id\":\"{item1.CustomId}\",\"response\":{{\"status_code\":200,\"request_id\":\"req-1\",\"body\":{{\"data\":[{{\"b64_json\":\"{rawB64}\"}}]}}}},\"error\":null}}\n" +
+            $"{{\"id\":\"req_2\",\"custom_id\":\"{item1.CustomId}\",\"response\":{{\"status_code\":200,\"request_id\":\"req-2\",\"body\":{{\"data\":[{{\"b64_json\":\"{rawB64}\"}}]}}}},\"error\":null}}";
+
+        var handler = new DuplicateJsonlHttpMessageHandler(duplicateJsonl);
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.openai.com/v1/") };
+        var apiClient = new OpenAiApiClient(httpClient);
+        var provider = new OpenAiImageGenerationProvider(apiClient);
+
+        var status = new BatchStatusResult(
+            ProviderBatchId: batch.ProviderBatchId!,
+            Status: "completed",
+            OutputFileId: "file-dup-output",
+            ErrorFileId: null,
+            TotalCount: 2,
+            CompletedCount: 2,
+            FailedCount: 0);
+
+        // Act & Assert: DownloadBatchResultsAsync throws InvalidDataException due to duplicate custom_id in raw JSONL
+        var ex = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            provider.DownloadBatchResultsAsync(status, "test-api-key"));
+
+        Assert.Contains("duplicate custom_id", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Prove zero candidates were staged on disk
+        var stagingDir = _stagingService.BaseStagingPath;
+        if (Directory.Exists(stagingDir))
+        {
+            var stagedFiles = Directory.GetFiles(stagingDir, "*.*", SearchOption.AllDirectories);
+            Assert.Empty(stagedFiles);
+        }
+
+        // Prove zero jobs are Ready, and jobs/batch state remained unchanged
+        var currentItem1 = _jobStore.GetItem(item1.ManifestFingerprint, item1.RequestKey)!;
+        var currentItem2 = _jobStore.GetItem(item2.ManifestFingerprint, item2.RequestKey)!;
+
+        Assert.Equal(GenerationItemStatus.BatchSubmitted, currentItem1.Status);
+        Assert.Equal(GenerationItemStatus.BatchSubmitted, currentItem2.Status);
+        Assert.Null(currentItem1.StagedOutputPath);
+        Assert.Null(currentItem2.StagedOutputPath);
+        Assert.Null(currentItem1.ProviderRawPath);
+        Assert.Null(currentItem2.ProviderRawPath);
+
+        var currentBatch = _jobStore.GetBatch(batch.LocalBatchId)!;
+        Assert.Equal(batch.Status, currentBatch.Status);
+        Assert.Null(currentBatch.CompletedAtUtc);
     }
 }

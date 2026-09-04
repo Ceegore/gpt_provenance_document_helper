@@ -77,6 +77,7 @@ partial class MainForm
     private Button btnImportRequest = null!;
     private Button btnGenerateNow = null!;
     private Button btnQueueProductionBatch = null!;
+    private Button btnRetrySelectedApi = null!;
     private Label lblRequestSource = null!;
     private ListView lvRequestQueue = null!;
     private Label lblRequestProgress = null!;

@@ -12,7 +12,8 @@ public sealed record BatchIngestionSummary(
     int HandledCount,
     IReadOnlyList<string> UnknownCustomIds,
     IReadOnlyList<string> DuplicateCustomIds,
-    IReadOnlyList<string> MissingCustomIds);
+    IReadOnlyList<string> MissingCustomIds,
+    bool NeedsRemoteResultRedownload = false);
 
 public sealed class BatchIngestionService
 {
@@ -113,17 +114,34 @@ public sealed class BatchIngestionService
 
         var successCount = 0;
         var failCount = 0;
+        var needsRemoteResultRedownload = false;
 
         foreach (var output in downloadResult.Items)
         {
             var currentRecord = expected[output.CustomId];
             handledCustomIds.Add(output.CustomId);
 
+            if (currentRecord.Status is GenerationItemStatus.Ready or GenerationItemStatus.Committed)
+            {
+                successCount++;
+                continue;
+            }
+
             // Rule 1: Successful item with image bytes
             if (output.IsSuccess && output.ImageBytes != null && output.ImageBytes.Length > 0)
             {
                 var candidateId = Guid.NewGuid().ToString("N");
                 var rawSha = Convert.ToHexString(SHA256.HashData(output.ImageBytes)).ToLowerInvariant();
+                var receivedAtUtc = DateTimeOffset.UtcNow;
+
+                currentRecord = currentRecord with
+                {
+                    ProviderOutputReceived = true,
+                    ProviderOutputReceivedAtUtc = receivedAtUtc,
+                    ProviderRequestId = output.ProviderRequestId,
+                    UpdatedAtUtc = receivedAtUtc
+                };
+                _jobStore.UpsertItem(currentRecord);
 
                 string rawPath;
                 try
@@ -146,11 +164,14 @@ public sealed class BatchIngestionService
                 }
                 catch (Exception rawEx)
                 {
+                    needsRemoteResultRedownload = true;
+
                     _jobStore.UpsertItem(currentRecord with
                     {
-                        Status = GenerationItemStatus.FailedPermanent,
-                        ErrorCode = "raw_save_error",
-                        ErrorMessage = rawEx.Message,
+                        Status = GenerationItemStatus.FailedRetryable,
+                        ErrorCode = "batch_result_raw_persist_failed",
+                        ErrorMessage = $"Provider Batch result was received, but local raw persistence failed: {rawEx.Message}",
+                        ProviderRequestId = output.ProviderRequestId,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
                     });
                     failCount++;
@@ -173,9 +194,9 @@ public sealed class BatchIngestionService
                         RawSha256: rawSha,
                         NormalizedSha256: normResult.NormalizedSha256,
                         NormalizedImagePath: string.Empty,
-                        CreatedAtUtc: DateTimeOffset.UtcNow,
+                        CreatedAtUtc: receivedAtUtc,
                         ProviderRequestId: output.ProviderRequestId,
-                        BatchId: !string.IsNullOrEmpty(batch.ProviderBatchId) ? batch.ProviderBatchId : batch.LocalBatchId);
+                        BatchId: !string.IsNullOrWhiteSpace(batch.ProviderBatchId) ? batch.ProviderBatchId : null);
 
                     var normalizedPath = _stagingService.CompleteCandidate(
                         batch.ManifestFingerprint,
@@ -192,6 +213,8 @@ public sealed class BatchIngestionService
                         StagedOutputPath = normalizedPath,
                         RawSha256 = rawSha,
                         NormalizedSha256 = normResult.NormalizedSha256,
+                        GenerationWidth = plan.GenerationWidth,
+                        GenerationHeight = plan.GenerationHeight,
                         ProviderRequestId = output.ProviderRequestId,
                         UpdatedAtUtc = DateTimeOffset.UtcNow
                     };
@@ -242,16 +265,24 @@ public sealed class BatchIngestionService
             }
         }
 
+        var localStatus = needsRemoteResultRedownload
+            ? "IngestionFailed"
+            : status.Status;
+
         _jobStore.UpsertBatch(batch with
         {
-            Status = status.Status,
+            Status = localStatus,
             ProviderOutputFileId = status.OutputFileId,
             ProviderErrorFileId = status.ErrorFileId,
             CompletedCount = status.CompletedCount,
             FailedCount = status.FailedCount,
-            CompletedAtUtc = DateTimeOffset.UtcNow,
+            CompletedAtUtc = needsRemoteResultRedownload
+                ? null
+                : DateTimeOffset.UtcNow,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
-            ErrorMessage = batch.ErrorMessage
+            ErrorMessage = needsRemoteResultRedownload
+                ? "Remote Batch finished, but one or more result files could not be persisted locally. Result ingestion will retry."
+                : batch.ErrorMessage
         });
 
         return new BatchIngestionSummary(
@@ -260,7 +291,8 @@ public sealed class BatchIngestionService
             HandledCount: handledCustomIds.Count,
             UnknownCustomIds: [],
             DuplicateCustomIds: [],
-            MissingCustomIds: missingCustomIds);
+            MissingCustomIds: missingCustomIds,
+            NeedsRemoteResultRedownload: needsRemoteResultRedownload);
     }
 
     public void HandleDownloadInterruption(GenerationBatchRecord batch, Exception exception)

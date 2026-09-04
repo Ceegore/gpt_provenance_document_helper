@@ -21,8 +21,10 @@ public sealed class OpenAiImageGenerationProviderTests
         public Task<ImageGenerationCandidate> GenerateAsync(ImageGenerationSpec spec, string apiKey, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ImageGenerationCandidate("cand-1", "custom-1", new byte[1], "sha", 1, 1));
 
+#pragma warning disable CS0618
         public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
+#pragma warning restore CS0618
 
         public Task<BatchStatusResult> GetBatchStatusAsync(string providerBatchId, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();

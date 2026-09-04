@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Core.Generation;
 using AssetProvenanceHelper.Core.Generation.Providers;
@@ -80,8 +81,10 @@ public sealed class ApiPreflightTests : IDisposable
                 ProviderHeight: spec.GenerationHeight));
         }
 
+#pragma warning disable CS0618
         public Task<BatchSubmissionResult> SubmitBatchAsync(IReadOnlyList<ImageGenerationSpec> specs, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
+#pragma warning restore CS0618
 
         public Task<BatchStatusResult> GetBatchStatusAsync(string providerBatchId, string apiKey, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
@@ -296,7 +299,7 @@ public sealed class ApiPreflightTests : IDisposable
     }
 
     [Fact]
-    public void Preflight_UnknownAlpha_Eligible()
+    public void Preflight_UnknownAlpha_EligibleAndWarningRecorded()
     {
         var jobStore = new GenerationJobStore(Path.Combine(_tempDir, "jobs.json"));
         var service = new ApiPreflightService(jobStore);
@@ -307,6 +310,8 @@ public sealed class ApiPreflightTests : IDisposable
         Assert.Empty(result.Errors);
         Assert.Empty(result.BlockedAlpha);
         Assert.Single(result.Eligible);
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal("alpha_requirement_unknown", warning.Code);
     }
 
     [Fact]
@@ -397,6 +402,264 @@ public sealed class ApiPreflightTests : IDisposable
                 TwoChoiceDialog.CustomChoiceProvider = null;
                 MainForm.OpenFileDialogProvider = null;
             }
+        });
+    }
+
+    [Fact]
+    public void GenerateConfirmation_UnknownAlpha_ShowsOpaqueWarning()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var secrets = new FakeSecretStore();
+            var provider = new CountingFakeProvider();
+            var jobStore = new GenerationJobStore(Path.Combine(_tempDir, "jobs_gen_warn.json"));
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secrets,
+                imageGenerationProvider: provider,
+                generationJobStore: jobStore);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                string? confirmMsg = null;
+                MainForm.ConfirmBoxProvider = (_, msg, _, _, _) =>
+                {
+                    confirmMsg = msg;
+                    return DialogResult.Cancel;
+                };
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+
+                var manifestPath = Path.Combine(_tempDir, "manifest_unknown_alpha.json");
+                File.WriteAllText(manifestPath, """
+                {
+                  "manifestVersion": 2,
+                  "assets": [
+                    {
+                      "filename": "alpha_unk.png",
+                      "resolution": "512x512",
+                      "alpha": "unknown",
+                      "prompt": "Test unknown alpha"
+                    }
+                  ]
+                }
+                """);
+
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnGenerate = form.Controls.Find("btnGenerateNow", true).FirstOrDefault() as Button;
+
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnGenerate);
+
+                btnImport.PerformClick();
+                btnGenerate.PerformClick();
+
+                Assert.NotNull(confirmMsg);
+                Assert.Contains("Warning: 1 request(s) have alpha=unknown. This GPT-Image-2 MVP will generate opaque PNG output for them.", confirmMsg);
+                Assert.Equal(0, provider.GenerateCount);
+
+                form.Close();
+            }
+            finally
+            {
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void BatchConfirmation_UnknownAlpha_ShowsOpaqueWarning()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var secrets = new FakeSecretStore();
+            var provider = new CountingFakeProvider();
+            var jobStore = new GenerationJobStore(Path.Combine(_tempDir, "jobs_batch_warn.json"));
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                secretStore: secrets,
+                imageGenerationProvider: provider,
+                generationJobStore: jobStore);
+
+            try
+            {
+                MainForm.OpenFolderProvider = _ => { };
+                string? confirmMsg = null;
+                MainForm.ConfirmBoxProvider = (_, msg, _, _, _) =>
+                {
+                    confirmMsg = msg;
+                    return DialogResult.Cancel;
+                };
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
+
+                form.Show();
+
+                var manifestPath = Path.Combine(_tempDir, "manifest_batch_unknown_alpha.json");
+                File.WriteAllText(manifestPath, """
+                {
+                  "manifestVersion": 2,
+                  "assets": [
+                    {
+                      "filename": "alpha_unk_batch.png",
+                      "resolution": "512x512",
+                      "alpha": "unknown",
+                      "prompt": "Test unknown alpha batch"
+                    }
+                  ]
+                }
+                """);
+
+                MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+                var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault() as Button;
+                var btnBatch = form.Controls.Find("btnQueueProductionBatch", true).FirstOrDefault() as Button;
+
+                Assert.NotNull(btnImport);
+                Assert.NotNull(btnBatch);
+
+                btnImport.PerformClick();
+                btnBatch.PerformClick();
+
+                Assert.NotNull(confirmMsg);
+                Assert.Contains("Warning: 1 request(s) have alpha=unknown. This GPT-Image-2 MVP will generate opaque PNG output for them.", confirmMsg);
+
+                form.Close();
+            }
+            finally
+            {
+                MainForm.OpenFolderProvider = null;
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+            }
+        });
+    }
+
+    [Fact]
+    public void GetRequestItemVisualStatus_ReadyFileExists_ReturnsReady()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var jobStore = new GenerationJobStore(Path.Combine(_tempDir, "jobs_ready.json"));
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                generationJobStore: jobStore);
+
+            var item = CreateItem("k1", "asset1.png", 512, 512, AlphaRequirement.NotRequired, "Prompt");
+
+            var stagedFile = Path.Combine(_tempDir, "asset1_staged.png");
+            File.WriteAllBytes(stagedFile, [1, 2, 3]);
+
+            var job = new GenerationItemRecord(
+                ManifestFingerprint: "fp1",
+                RequestKey: "k1",
+                AssetName: "asset1",
+                FileName: "asset1.png",
+                Mode: GenerationMode.Direct,
+                ProviderId: "OpenAI",
+                Model: "gpt-image-2",
+                Quality: "medium",
+                TargetWidth: 512,
+                TargetHeight: 512,
+                GenerationWidth: 816,
+                GenerationHeight: 816,
+                CustomId: "custom-k1",
+                Status: GenerationItemStatus.Ready,
+                SubmittedAtUtc: DateTimeOffset.UtcNow,
+                UpdatedAtUtc: DateTimeOffset.UtcNow,
+                CandidateId: "cand1",
+                StagedOutputPath: stagedFile);
+
+            var (statusText, backColor) = form.GetRequestItemVisualStatus(item, job);
+
+            Assert.Equal("Ready", statusText);
+            Assert.Equal(Color.FromArgb(220, 235, 252), backColor);
+        });
+    }
+
+    [Fact]
+    public void GetRequestItemVisualStatus_ReadyFileMissing_ReturnsCandidateMissing()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var settings = workspace.CreateSettings();
+            var jobStore = new GenerationJobStore(Path.Combine(_tempDir, "jobs_missing.json"));
+
+            using var form = new MainForm(
+                settings,
+                workspace.CreateSettingsService(),
+                workspace.CreateImageFinder(),
+                workspace.CreateTemplateService(),
+                workspace.CreateValidationService(),
+                workspace.CreateAssetProcessor(),
+                workspace.CreateSessionService(),
+                generationJobStore: jobStore);
+
+            var item = CreateItem("k2", "asset2.png", 512, 512, AlphaRequirement.NotRequired, "Prompt");
+
+            var nonExistentFile = Path.Combine(_tempDir, "does_not_exist.png");
+
+            var job = new GenerationItemRecord(
+                ManifestFingerprint: "fp1",
+                RequestKey: "k2",
+                AssetName: "asset2",
+                FileName: "asset2.png",
+                Mode: GenerationMode.Direct,
+                ProviderId: "OpenAI",
+                Model: "gpt-image-2",
+                Quality: "medium",
+                TargetWidth: 512,
+                TargetHeight: 512,
+                GenerationWidth: 816,
+                GenerationHeight: 816,
+                CustomId: "custom-k2",
+                Status: GenerationItemStatus.Ready,
+                SubmittedAtUtc: DateTimeOffset.UtcNow,
+                UpdatedAtUtc: DateTimeOffset.UtcNow,
+                CandidateId: "cand2",
+                StagedOutputPath: nonExistentFile);
+
+            var (statusText, backColor) = form.GetRequestItemVisualStatus(item, job);
+
+            Assert.Equal("Candidate missing", statusText);
+            Assert.Equal(Color.FromArgb(254, 226, 226), backColor);
         });
     }
 }

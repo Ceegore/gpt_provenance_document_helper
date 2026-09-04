@@ -40,6 +40,12 @@ public sealed class GeneratedImageStagingService
         return Path.Combine(GetItemDirectory(manifestFingerprint, requestKey), $"{safeCandidateId}.png");
     }
 
+    public string GetRawCandidatePath(string manifestFingerprint, string requestKey, string candidateId)
+    {
+        var safeCandidateId = SanitizePathSegment(candidateId);
+        return Path.Combine(GetItemDirectory(manifestFingerprint, requestKey), $"{safeCandidateId}.raw.png");
+    }
+
     public void DeleteIncompleteFinalArtifacts(string manifestFingerprint, string requestKey, string candidateId)
     {
         var itemDir = GetItemDirectory(manifestFingerprint, requestKey);
@@ -52,6 +58,7 @@ public sealed class GeneratedImageStagingService
     }
 
     internal static Action<string>? OnBeforeCandidatePromoteForTests;
+    internal static Action<string>? OnBeforeSaveRawForTests;
 
     public string SaveRawCandidate(
         string manifestFingerprint,
@@ -69,6 +76,7 @@ public sealed class GeneratedImageStagingService
         Directory.CreateDirectory(itemDir);
 
         var rawPath = Path.Combine(itemDir, $"{safeCandidateId}.raw.png");
+        OnBeforeSaveRawForTests?.Invoke(rawPath);
         WriteBytesAtomicNoOverwrite(rawPath, rawBytes);
         return rawPath;
     }

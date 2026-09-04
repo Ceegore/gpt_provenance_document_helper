@@ -47,19 +47,29 @@ public sealed class OpenAiBatchResultParserTests
     }
 
     [Fact]
-    public void ParseResults_DuplicateCustomId_FailsClosed()
+    public void ParseResults_DuplicateWithinOutput_Throws()
     {
         var rawBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3 });
         var outputJsonl =
             "{\"id\":\"req_1\",\"custom_id\":\"aph-dup-1\",\"response\":{\"status_code\":200,\"body\":{\"data\":[{\"b64_json\":\"" + rawBase64 + "\"}]}}}\n" +
             "{\"id\":\"req_2\",\"custom_id\":\"aph-dup-1\",\"response\":{\"status_code\":200,\"body\":{\"data\":[{\"b64_json\":\"" + rawBase64 + "\"}]}}}";
 
-        var results = OpenAiBatchResultParser.ParseResults(outputJsonl, null);
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            OpenAiBatchResultParser.ParseResults(outputJsonl, null));
 
-        Assert.Single(results);
-        var item = results[0];
-        Assert.False(item.IsSuccess);
-        Assert.Equal("duplicate_custom_id", item.ErrorCode);
+        Assert.Contains("duplicate custom_id", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParseResults_CaseChangedId_IsDistinctOrdinal()
+    {
+        var rawBase64 = Convert.ToBase64String(new byte[] { 1, 2, 3 });
+        var outputJsonl =
+            "{\"id\":\"req_1\",\"custom_id\":\"aph-item-a\",\"response\":{\"status_code\":200,\"body\":{\"data\":[{\"b64_json\":\"" + rawBase64 + "\"}]}}}\n" +
+            "{\"id\":\"req_2\",\"custom_id\":\"APH-ITEM-A\",\"response\":{\"status_code\":200,\"body\":{\"data\":[{\"b64_json\":\"" + rawBase64 + "\"}]}}}";
+
+        var results = OpenAiBatchResultParser.ParseResults(outputJsonl, null);
+        Assert.Equal(2, results.Count);
     }
 
     [Fact]
@@ -109,14 +119,14 @@ public sealed class OpenAiBatchResultParserTests
     }
 
     [Fact]
-    public void ParseResults_DuplicatesAcrossOutputAndErrorFiles_MarksAllDuplicates()
+    public void ParseResults_DuplicateAcrossOutputAndError_Throws()
     {
         var outputJsonl = "{\"id\":\"req_1\",\"custom_id\":\"aph-dup\",\"response\":{\"status_code\":200,\"body\":{\"data\":[{\"b64_json\":\"AQID\"}]}}}";
         var errorJsonl = "{\"id\":\"req_2\",\"custom_id\":\"aph-dup\",\"response\":{\"status_code\":400}}";
 
-        var results = OpenAiBatchResultParser.ParseResults(outputJsonl, errorJsonl);
-        Assert.Single(results);
-        Assert.False(results[0].IsSuccess);
-        Assert.Equal("duplicate_custom_id", results[0].ErrorCode);
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            OpenAiBatchResultParser.ParseResults(outputJsonl, errorJsonl));
+
+        Assert.Contains("duplicate custom_id", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 }

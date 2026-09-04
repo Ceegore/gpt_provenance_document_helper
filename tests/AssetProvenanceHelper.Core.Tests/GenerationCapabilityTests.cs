@@ -161,7 +161,7 @@ public sealed class GenerationCapabilityTests
             CustomId: "aph-fp-rk");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            provider.SubmitBatchAsync(new[] { spec }, "fake-key"));
+            provider.UploadBatchInputFileAsync(new[] { spec }, "fake-key"));
 
         Assert.Contains("transparent", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, handler.CallCount);

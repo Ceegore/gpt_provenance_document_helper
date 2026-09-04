@@ -53,13 +53,26 @@ partial class MainForm
             {
                 _activeApiCandidateMetadata = null;
                 SetSelectedImage(ImageSlot.Main, null);
-                _generationJobStore.UpsertItem(job with
+
+                var hasRecoverableRaw = HasRecoverableRawAuthority(job);
+                var updatedJob = job with
                 {
-                    Status = Core.Generation.GenerationItemStatus.FailedPermanent,
-                    ErrorCode = verification.ErrorCode ?? "candidate_corrupt",
+                    Status = hasRecoverableRaw
+                        ? Core.Generation.GenerationItemStatus.FailedRetryable
+                        : Core.Generation.GenerationItemStatus.UncertainAfterInterruption,
+                    ErrorCode = hasRecoverableRaw
+                        ? "local_candidate_processing_failed"
+                        : "candidate_verification_failed_no_raw_authority",
                     ErrorMessage = verification.ErrorMessage ?? "Candidate verification failed before commit.",
                     UpdatedAtUtc = DateTimeOffset.UtcNow
-                });
+                };
+                _generationJobStore.UpsertItem(updatedJob);
+
+                if (hasRecoverableRaw)
+                {
+                    new LocalCandidateRecoveryService(_generationJobStore, _stagingService).TryRecoverCandidate(updatedJob);
+                }
+
                 RefreshRequestQueueVisuals();
                 ShowMessageBox(
                     $"Candidate verification failed before commit:" + Environment.NewLine + Environment.NewLine +
@@ -675,17 +688,26 @@ partial class MainForm
         session.ApiCreatedAtUtc = _activeApiCandidateMetadata.CreatedAtUtc.ToString("O");
     }
 
-    private ProviderTemplateSnapshot? GetOpenAiApiProviderSnapshot()
+    private ProviderTemplateSnapshot GetOpenAiApiProviderSnapshot()
     {
         if (_providerTemplateCatalogService is null)
         {
-            return _selectedProvider?.CreateSnapshot();
+            throw new InvalidOperationException(
+                "Provider template catalog is unavailable. "
+                + "API Candidate commit cannot continue.");
         }
 
         var catalog = _providerTemplateCatalogService.Load();
         var definition = catalog.Templates.SingleOrDefault(template =>
             string.Equals(template.FileName, "OpenAI API.md", StringComparison.OrdinalIgnoreCase));
 
-        return definition?.CreateSnapshot() ?? _selectedProvider?.CreateSnapshot();
+        if (definition is null)
+        {
+            throw new InvalidOperationException(
+                "OpenAI API provider template is missing or invalid. "
+                + "API Candidate commit was blocked to prevent incorrect provenance.");
+        }
+
+        return definition.CreateSnapshot();
     }
 }

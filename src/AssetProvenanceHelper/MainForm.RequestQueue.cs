@@ -1,6 +1,7 @@
 #nullable enable
 using System.Drawing;
 using System.Windows.Forms;
+using AssetProvenanceHelper.Core.Generation;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
 
@@ -364,13 +365,42 @@ partial class MainForm
                     _activeApiCandidateMetadata = null;
                     SetSelectedImage(ImageSlot.Main, null);
 
-                    _generationJobStore.UpsertItem(job with
+                    var hasRecoverableRaw = HasRecoverableRawAuthority(job);
+                    var updatedJob = job with
                     {
-                        Status = Core.Generation.GenerationItemStatus.FailedPermanent,
-                        ErrorCode = verification.ErrorCode ?? "candidate_corrupt",
+                        Status = hasRecoverableRaw
+                            ? Core.Generation.GenerationItemStatus.FailedRetryable
+                            : Core.Generation.GenerationItemStatus.UncertainAfterInterruption,
+                        ErrorCode = hasRecoverableRaw
+                            ? "local_candidate_processing_failed"
+                            : "candidate_verification_failed_no_raw_authority",
                         ErrorMessage = verification.ErrorMessage ?? "Candidate verification failed.",
                         UpdatedAtUtc = DateTimeOffset.UtcNow
-                    });
+                    };
+                    _generationJobStore.UpsertItem(updatedJob);
+
+                    if (hasRecoverableRaw)
+                    {
+                        var recoveryService = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+                        if (recoveryService.TryRecoverCandidate(updatedJob))
+                        {
+                            var refreshedJob = _generationJobStore.GetItem(job.ManifestFingerprint, job.RequestKey);
+                            if (refreshedJob?.Status == Core.Generation.GenerationItemStatus.Ready)
+                            {
+                                var reverified = verifier.VerifyCandidate(refreshedJob, item.Width, item.Height);
+                                if (reverified.IsValid && reverified.Candidate != null)
+                                {
+                                    ResetVariantSelectionToNone();
+                                    _activeApiCandidateMetadata = reverified.Candidate.Metadata;
+                                    SelectProviderByFileName("OpenAI API.md");
+                                    SetSelectedImage(ImageSlot.Main, reverified.Candidate.ImagePath);
+                                    AddStatus($"Staged candidate for '{item.AssetName}' was automatically rebuilt and loaded into Main.");
+                                    RefreshRequestQueueVisuals();
+                                    return;
+                                }
+                            }
+                        }
+                    }
 
                     ShowMessageBox(
                         $"Staged candidate for '{item.AssetName}' failed verification:" + Environment.NewLine + Environment.NewLine +
@@ -487,6 +517,7 @@ partial class MainForm
 
             btnGenerateNow.Enabled = false;
             btnQueueProductionBatch.Enabled = false;
+            btnRetrySelectedApi.Enabled = false;
             _toolTip.SetToolTip(btnGenerateNow, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
             _toolTip.SetToolTip(btnQueueProductionBatch, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
         }
@@ -517,7 +548,84 @@ partial class MainForm
                 _toolTip.SetToolTip(btnGenerateNow, null);
                 _toolTip.SetToolTip(btnQueueProductionBatch, null);
             }
+
+            var selectedItem = lvRequestQueue.SelectedItems.Count > 0 ? lvRequestQueue.SelectedItems[0].Tag as AssetRequestItem : null;
+            GenerationItemRecord? selectedJob = null;
+            if (_currentManifest is not null && selectedItem is not null)
+            {
+                selectedJob = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, selectedItem.RequestKey);
+            }
+
+            var canRetrySelected = _currentManifest is not null
+                && selectedJob is not null
+                && selectedJob.Status == GenerationItemStatus.UncertainAfterInterruption
+                && !apiMutationActive;
+
+            btnRetrySelectedApi.Enabled = canRetrySelected;
         }
+    }
+
+    private void HandleRetrySelectedApi()
+    {
+        if (_currentManifest is null) return;
+        if (_isGeneratingDirect || _isSubmittingBatch) return;
+        if (lvRequestQueue.SelectedItems.Count == 0) return;
+
+        var selectedItem = lvRequestQueue.SelectedItems[0].Tag as AssetRequestItem;
+        if (selectedItem is null) return;
+
+        var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, selectedItem.RequestKey);
+        if (job is null || job.Status != GenerationItemStatus.UncertainAfterInterruption) return;
+
+        if (job.Mode == GenerationMode.Batch)
+        {
+            if (!string.IsNullOrWhiteSpace(job.ProviderBatchId))
+            {
+                ShowMessageBox(
+                    $"This request belongs to a remote Batch that was submitted to OpenAI (Batch ID: {job.ProviderBatchId}). Resetting this request to retry is not permitted while the remote Batch exists. Please monitor the existing batch instead.",
+                    "Retry Not Permitted",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            var confirmBatch = ShowConfirmDialog(
+                $"A remote Batch may already exist on OpenAI. Before retrying, check the OpenAI dashboard for the recorded input file or custom ID '{job.CustomId}'. Continue only if you verified that retrying is safe and you accept the risk of duplicate charges.{Environment.NewLine}{Environment.NewLine}Do you want to resolve and reset this item to Pending?",
+                "Confirm Batch Item Retry / Resolve",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+
+            if (confirmBatch != DialogResult.OK)
+            {
+                return;
+            }
+        }
+        else
+        {
+            var confirmDirect = ShowConfirmDialog(
+                $"OpenAI may already have processed and billed this request.{Environment.NewLine}{Environment.NewLine}Retrying may create a second image and a second charge.{Environment.NewLine}{Environment.NewLine}Only continue if you understand this risk.{Environment.NewLine}{Environment.NewLine}Do you want to reset this item to Pending so it can be generated again?",
+                "Confirm Direct Generation Retry",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+
+            if (confirmDirect != DialogResult.OK)
+            {
+                return;
+            }
+        }
+
+        job = job with
+        {
+            Status = GenerationItemStatus.Pending,
+            ErrorCode = null,
+            ErrorMessage = null,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+
+        _generationJobStore.UpsertItem(job);
+        AddStatus($"Reset request '{selectedItem.RequestKey}' to Pending.");
+        ApplyRequestQueueState();
+        RefreshRequestQueueVisuals();
     }
 
     private bool HasOpenAiApiKeyConfigured()
@@ -679,5 +787,26 @@ partial class MainForm
 
         UpdatePromptPreview();
         RefreshRequestQueueVisuals();
+    }
+
+    private static bool HasRecoverableRawAuthority(GenerationItemRecord job)
+    {
+        if (string.IsNullOrWhiteSpace(job.CandidateId)
+            || string.IsNullOrWhiteSpace(job.ProviderRawPath)
+            || string.IsNullOrWhiteSpace(job.RawSha256)
+            || !File.Exists(job.ProviderRawPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var actual = CandidateVerificationService.ComputeSha256File(job.ProviderRawPath);
+            return string.Equals(actual, job.RawSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
