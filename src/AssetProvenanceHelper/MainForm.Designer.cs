@@ -124,18 +124,26 @@ partial class MainForm
 
         Text = AppInfo.ProductName;
         StartPosition = FormStartPosition.CenterScreen;
-        // Sized so the whole workflow - settings, cards, prompt and actions - is
-        // fully visible without resizing. Below this the prompt box collapses.
-        MinimumSize = new Size(1240, 780);
-        Size = new Size(1500, 880);
+        // Below the preferred desktop size, scroll rather than clipping the
+        // lower workflow controls.
+        MinimumSize = new Size(1040, 600);
+        // Keep the cards as the primary workspace at the preferred size while
+        // retaining the now-useful history area below them.
+        Size = new Size(1500, 940);
         KeyPreview = true;
-        AutoScroll = false;
+        AutoScroll = true;
 
         pnlWorkspace = new TableLayoutPanel
         {
             Name = "pnlWorkspace",
-            Dock = DockStyle.Fill,
-            AutoScroll = false,
+            Dock = DockStyle.Top,
+            AutoScroll = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            // Match the form's supported minimum width. Keeping a wider
+            // workspace here pushed the right-side queue partly off-screen at
+            // the smallest allowed window size.
+            MinimumSize = new Size(1040, 880),
             Padding = new Padding(12),
             ColumnCount = 2,
             RowCount = 1
@@ -178,6 +186,5 @@ partial class MainForm
         Controls.Add(helpOverlay);
         helpOverlay.BringToFront();
 
-        BuildPromptOverlay();
     }
 }

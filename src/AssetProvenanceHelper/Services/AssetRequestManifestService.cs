@@ -24,6 +24,18 @@ public sealed class AssetRequestManifestService
             RegexOptions.Compiled
             | RegexOptions.CultureInvariant);
 
+    // Asset-request source documents use this token for a numbered animation
+    // sequence. It cannot be used literally as a Windows filename because of
+    // the colon, so imported queue entries represent the sequence by a safe,
+    // stable leaf name instead (walk_{frame:03d}.png becomes walk_frames.png).
+    // Do not broaden this into general sanitisation: an arbitrary invalid
+    // filename must still fail validation rather than silently changing assets.
+    private static readonly Regex FrameSequenceTokenRegex =
+        new(
+            @"\{frame:(?:0?[1-9][0-9]*)d\}",
+            RegexOptions.Compiled
+            | RegexOptions.CultureInvariant);
+
     private readonly ValidationService _validationService;
 
     private readonly JsonSerializerOptions _jsonOptions =
@@ -299,8 +311,13 @@ public sealed class AssetRequestManifestService
                 "filename contains control characters.");
         }
 
+        var normalizedValue =
+            FrameSequenceTokenRegex.Replace(
+                value,
+                "frames");
+
         var extension =
-            Path.GetExtension(value);
+            Path.GetExtension(normalizedValue);
 
         if (string.IsNullOrWhiteSpace(extension)
             || !acceptedExtensions.Contains(
@@ -311,7 +328,7 @@ public sealed class AssetRequestManifestService
                 $"filename uses unsupported image extension '{extension}'.");
         }
 
-        return value;
+        return normalizedValue;
     }
 
     private static (

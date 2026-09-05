@@ -812,4 +812,52 @@ public class UpgradeV13RequestManifestTests
 
         Assert.Equal("asset.version2", manifest.Items[0].AssetName);
     }
+
+    [Fact]
+    public void AnimationFrameTemplate_IsImportedAsWindowsSafeSequenceName()
+    {
+        using var workspace = new TestWorkspace();
+
+        var manifest = Load(
+            workspace,
+            """
+            {
+              "manifestVersion": 1,
+              "assets": [
+                {
+                  "filename": "anim_117_cine_checkpoint_{frame:03d}.png",
+                  "resolution": "512x288",
+                  "prompt": "Generate the complete ordered frame sequence."
+                }
+              ]
+            }
+            """);
+
+        var item = Assert.Single(manifest.Items);
+        Assert.Equal("anim_117_cine_checkpoint_frames.png", item.FileName);
+        Assert.Equal("anim_117_cine_checkpoint_frames", item.AssetName);
+        Assert.True(workspace.CreateValidationService().ValidateAssetName(
+            item.AssetName,
+            workspace.CreateSettings().AcceptedExtensions).IsValid);
+    }
+
+    [Fact]
+    public void OtherInvalidFilenameCharacters_AreStillRejected()
+    {
+        using var workspace = new TestWorkspace();
+
+        var exception = Assert.Throws<InvalidDataException>(
+            () => Load(
+                workspace,
+                """
+                {
+                  "manifestVersion": 1,
+                  "assets": [
+                    { "filename": "not:an-animation.png", "resolution": "10x10", "prompt": "p" }
+                  ]
+                }
+                """));
+
+        Assert.Contains("invalid Windows filename characters", exception.Message);
+    }
 }

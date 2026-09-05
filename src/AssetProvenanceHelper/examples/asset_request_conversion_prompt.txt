@@ -28,6 +28,10 @@ OUTPUT RULES
      assets/ui118/backdrops/loc_gas_station/day.webp
    - Required output:
      day.webp
+   - Animation source documents may use the exact sequence token `{frame:03d}`.
+     Keep that token in the manifest; on import the helper safely represents it
+     as `_frames` in its Windows folder name while preserving the complete
+     sequence instruction in the prompt.
 
 8. "resolution":
    - Normalize to WIDTHxHEIGHT.
