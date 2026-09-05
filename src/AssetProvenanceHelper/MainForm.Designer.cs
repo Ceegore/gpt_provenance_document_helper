@@ -75,6 +75,7 @@ partial class MainForm
 
     private GroupBox grpRequestQueue = null!;
     private Button btnImportRequest = null!;
+    private Button btnClearRequestQueue = null!;
     private Button btnGenerateNow = null!;
     private Button btnQueueProductionBatch = null!;
     private Button btnRetrySelectedApi = null!;

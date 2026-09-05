@@ -124,7 +124,7 @@ public sealed class OpenAiImageGenerationProvider : IImageGenerationProvider
         return new BatchSubmissionResult(
             ProviderInputFileId: inputFileId,
             ProviderBatchId: batchResponse.Id,
-            SubmittedCount: 0,
+            SubmittedCount: batchResponse.RequestCounts?.Total ?? 0,
             CreatedAtUtc: DateTimeOffset.UtcNow);
     }
 

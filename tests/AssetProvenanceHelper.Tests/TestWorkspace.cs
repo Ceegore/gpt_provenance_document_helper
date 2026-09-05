@@ -29,6 +29,11 @@ public sealed class TestWorkspace : IDisposable
             Root,
             AppConstants.RequestProgressFileName);
 
+    public string RequestQueueStatePath =>
+        Path.Combine(
+            Root,
+            AppConstants.RequestQueueStateFileName);
+
     public string ChatGptProviderTemplatePath =>
         Path.Combine(
             ProviderTemplates,
@@ -319,6 +324,12 @@ public sealed class TestWorkspace : IDisposable
         CreateRequestProgressService() =>
         new(
             RequestProgressPath);
+
+    public RequestQueueStateService
+        CreateRequestQueueStateService() =>
+        new(
+            RequestQueueStatePath,
+            CreateValidationService());
 
     public void Dispose()
     {

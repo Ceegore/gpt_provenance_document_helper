@@ -147,6 +147,17 @@ public sealed class CandidateVerificationTests : IDisposable
     }
 
     [Fact]
+    public void Ready_WithoutRawAuthority_FailsClosed()
+    {
+        var (job, _, _) = StageTestCandidate("fp1", "k1", "cand-no-raw-authority", 512, 512, Color.Green, setRawPathOnJob: false);
+
+        var result = _verifier.VerifyCandidate(job, 512, 512);
+
+        Assert.False(result.IsValid);
+        Assert.Equal("raw_authority_missing", result.ErrorCode);
+    }
+
+    [Fact]
     public void Ready_FileMissing_FailsClosed()
     {
         var (job, path, _) = StageTestCandidate("fp1", "k1", "cand-nofile", 512, 512, Color.Green);

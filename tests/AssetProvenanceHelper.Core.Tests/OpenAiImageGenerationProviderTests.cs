@@ -81,7 +81,7 @@ public sealed class OpenAiImageGenerationProviderTests
             {
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("{\"id\":\"batch-remote-456\",\"status\":\"validating\"}", Encoding.UTF8, "application/json")
+                    Content = new StringContent("{\"id\":\"batch-remote-456\",\"status\":\"validating\",\"request_counts\":{\"total\":1,\"completed\":0,\"failed\":0}}", Encoding.UTF8, "application/json")
                 };
             }
             return new HttpResponseMessage(HttpStatusCode.NotFound);
@@ -99,6 +99,7 @@ public sealed class OpenAiImageGenerationProviderTests
         var batchResult = await provider.CreateBatchAsync(fileId, "sk-test");
         Assert.Equal("batch-remote-456", batchResult.ProviderBatchId);
         Assert.Equal("file-upload-123", batchResult.ProviderInputFileId);
+        Assert.Equal(1, batchResult.SubmittedCount);
     }
 
     [Fact]

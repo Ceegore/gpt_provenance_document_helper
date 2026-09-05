@@ -756,19 +756,23 @@ partial class MainForm
         var actionsLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 4)
         };
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
-        actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25f));
+        for (var column = 0; column < 5; column++)
+        {
+            actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f));
+        }
 
         btnImportRequest = CreateButton("Import Request...");
         btnImportRequest.Name = "btnImportRequest";
         btnImportRequest.Dock = DockStyle.Fill;
+
+        btnClearRequestQueue = CreateButton("Clear Queue");
+        btnClearRequestQueue.Name = "btnClearRequestQueue";
+        btnClearRequestQueue.Dock = DockStyle.Fill;
 
         btnGenerateNow = CreateButton("Generate Now (API)");
         btnGenerateNow.Name = "btnGenerateNow";
@@ -783,9 +787,10 @@ partial class MainForm
         btnRetrySelectedApi.Dock = DockStyle.Fill;
 
         actionsLayout.Controls.Add(btnImportRequest, 0, 0);
-        actionsLayout.Controls.Add(btnGenerateNow, 1, 0);
-        actionsLayout.Controls.Add(btnQueueProductionBatch, 2, 0);
-        actionsLayout.Controls.Add(btnRetrySelectedApi, 3, 0);
+        actionsLayout.Controls.Add(btnClearRequestQueue, 1, 0);
+        actionsLayout.Controls.Add(btnGenerateNow, 2, 0);
+        actionsLayout.Controls.Add(btnQueueProductionBatch, 3, 0);
+        actionsLayout.Controls.Add(btnRetrySelectedApi, 4, 0);
 
         lblRequestSource = new Label
         {

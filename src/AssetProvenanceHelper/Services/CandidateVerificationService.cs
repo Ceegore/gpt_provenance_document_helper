@@ -127,7 +127,12 @@ public sealed class CandidateVerificationService
             return new CandidateVerificationResult(false, null, "provider_batch_id_mismatch", "Candidate Batch ID is inconsistent.");
         }
 
-        if (!string.IsNullOrWhiteSpace(job.ProviderRawPath))
+        if (string.IsNullOrWhiteSpace(job.ProviderRawPath)
+            || string.IsNullOrWhiteSpace(job.RawSha256))
+        {
+            return new CandidateVerificationResult(false, null, "raw_authority_missing", "Provider raw candidate authority is missing.");
+        }
+
         {
             var expectedRawPath = Path.GetFullPath(_stagingService.GetRawCandidatePath(job.ManifestFingerprint, job.RequestKey, job.CandidateId));
             var actualRawPath = Path.GetFullPath(job.ProviderRawPath);

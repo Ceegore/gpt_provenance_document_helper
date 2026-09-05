@@ -115,6 +115,20 @@ partial class MainForm
         _activeRequest = null;
         _completedRequestKeys.Clear();
 
+        try
+        {
+            _requestQueueStateService?.Save(manifest);
+        }
+        catch (Exception ex)
+        {
+            ShowMessageBox(
+                "The Request Manifest was validated, but its restart-safe queue snapshot could not be saved."
+                + Environment.NewLine + Environment.NewLine + ex.Message,
+                "Queue persistence failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+
         txtAssetFolderName.Clear();
         txtPrompt.Clear();
         UpdatePromptPreview();
@@ -524,6 +538,10 @@ partial class MainForm
         var apiMutationActive =
             _isGeneratingDirect || _isSubmittingBatch;
 
+        btnClearRequestQueue.Enabled = !apiMutationActive
+            && _state != UiState.ReferenceReady
+            && (_currentManifest is not null || _requestQueueStateService?.HasPersistedState == true);
+
         if (_state != UiState.ReferenceReady)
         {
             btnImportRequest.Enabled = !apiMutationActive;
@@ -721,6 +739,62 @@ partial class MainForm
         _activeApiCandidateMetadata = null;
         RefreshRequestQueueVisuals();
         UpdateRequestProgressLabel();
+    }
+
+    private void RestoreRequestQueueOnStartup()
+    {
+        if (_requestQueueStateService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var manifest = _requestQueueStateService.Load(_settings.AcceptedExtensions);
+            if (manifest is null)
+            {
+                return;
+            }
+
+            _currentManifest = manifest;
+            var restored = _requestProgressService?.LoadForManifest(manifest.ManifestFingerprint)
+                ?? new HashSet<string>(StringComparer.Ordinal);
+            _completedRequestKeys.UnionWith(restored);
+            foreach (var item in manifest.Items)
+            {
+                item.IsCompleted = _completedRequestKeys.Contains(item.RequestKey);
+            }
+
+            lblRequestSource.Text = Path.GetFileName(manifest.SourcePath) + " (restored)";
+            RefreshRequestQueueVisuals();
+            UpdateRequestProgressLabel();
+            AddStatus("Request Queue restored from local state.");
+        }
+        catch (Exception ex)
+        {
+            AddStatus($"Saved Request Queue could not be restored: {ex.Message}");
+        }
+    }
+
+    private void HandleClearRequestQueue()
+    {
+        if (_isGeneratingDirect || _isSubmittingBatch || _state == UiState.ReferenceReady)
+        {
+            return;
+        }
+
+        _requestQueueStateService?.Clear();
+        _requestProgressService?.Clear();
+        _currentManifest = null;
+        _activeRequest = null;
+        _activeApiCandidateMetadata = null;
+        _completedRequestKeys.Clear();
+        SetSelectedImage(ImageSlot.Main, null);
+        lblRequestSource.Text = "No Request Manifest imported.";
+        RefreshRequestQueueVisuals();
+        UpdateRequestProgressLabel();
+        ApplyRequestQueueState();
+        AddStatus("Request Queue cleared.");
     }
 
     private void UpdateRequestProgressLabel()

@@ -28,6 +28,7 @@ private readonly SettingsService _settingsService;
     private readonly ProviderTemplateCatalogService? _providerTemplateCatalogService;
     private readonly RecentDocumentHistoryService? _recentDocumentHistoryService;
     private readonly RequestProgressService? _requestProgressService;
+    private readonly RequestQueueStateService? _requestQueueStateService;
     private readonly IImageGenerationProvider _imageGenerationProvider;
     private readonly ISecretStore _secretStore;
     private readonly GenerationJobStore _generationJobStore;
@@ -78,7 +79,8 @@ private readonly SettingsService _settingsService;
         IImageGenerationProvider? imageGenerationProvider = null,
         ISecretStore? secretStore = null,
         GenerationJobStore? generationJobStore = null,
-        GeneratedImageStagingService? stagingService = null)
+        GeneratedImageStagingService? stagingService = null,
+        RequestQueueStateService? requestQueueStateService = null)
     {
         _settings = settings;
         _settingsService = settingsService;
@@ -90,6 +92,7 @@ private readonly SettingsService _settingsService;
         _providerTemplateCatalogService = providerTemplateCatalogService;
         _recentDocumentHistoryService = recentDocumentHistoryService;
         _requestProgressService = requestProgressService;
+        _requestQueueStateService = requestQueueStateService;
         _imageGenerationProvider = imageGenerationProvider ?? new OpenAiImageGenerationProvider();
         _secretStore = secretStore ?? new DpapiSecretStore();
         _generationJobStore = generationJobStore ?? new GenerationJobStore(Path.Combine(AppBootstrap.GetStateDirectory(), "generation-jobs.json"));
@@ -102,6 +105,7 @@ private readonly SettingsService _settingsService;
         ValidateTemplatesAtStartup();
         LoadProviderCatalogAtStartup();
         LoadRecentDocumentsIntoUi();
+        RestoreRequestQueueOnStartup();
         ApplyState();
         _generationJobStore.RecoverInterruptedJobsOnStartup();
         var candidateRecovery = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
@@ -268,6 +272,7 @@ private readonly SettingsService _settingsService;
 
         cmbProvider.SelectedIndexChanged += (_, _) => OnProviderSelectionChanged();
         btnImportRequest.Click += (_, _) => HandleImportRequest();
+        btnClearRequestQueue.Click += (_, _) => HandleClearRequestQueue();
         btnGenerateNow.Click += (_, _) => HandleGenerateNow();
         btnQueueProductionBatch.Click += (_, _) => HandleQueueProductionBatch();
         btnRetrySelectedApi.Click += (_, _) => HandleRetrySelectedApi();

@@ -114,7 +114,9 @@ internal static class Program
                 context.RequestProgressService,
                 context.ImageGenerationProvider,
                 context.SecretStore,
-                context.GenerationJobStore);
+                context.GenerationJobStore,
+                null,
+                context.RequestQueueStateService);
 
         if (ApplicationRunProvider is not null)
         {

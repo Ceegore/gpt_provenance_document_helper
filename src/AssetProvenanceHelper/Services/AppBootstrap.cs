@@ -30,6 +30,8 @@ public sealed class AppBootstrapContext
 
     public required string RequestProgressPath { get; init; }
 
+    public required string RequestQueueStatePath { get; init; }
+
     public required AppSettings Settings { get; set; }
 
     public required SettingsService SettingsService { get; init; }
@@ -49,6 +51,8 @@ public sealed class AppBootstrapContext
     public required RecentDocumentHistoryService RecentDocumentHistoryService { get; init; }
 
     public required RequestProgressService RequestProgressService { get; init; }
+
+    public required RequestQueueStateService RequestQueueStateService { get; init; }
 
     public required ISecretStore SecretStore { get; init; }
 
@@ -255,6 +259,12 @@ public static class AppBootstrap
             stateDirectory,
             AppConstants.RequestProgressFileName);
 
+    public static string GetRequestQueueStatePath(
+        string stateDirectory) =>
+        Path.Combine(
+            stateDirectory,
+            AppConstants.RequestQueueStateFileName);
+
     public static AppSettings LoadSettingsOrDefaults(
         SettingsService settingsService,
         Action<string, string>? showWarning = null)
@@ -353,6 +363,11 @@ public static class AppBootstrap
                 GetRequestProgressPath(
                     stateDirectory));
 
+        var requestQueueStateService =
+            new RequestQueueStateService(
+                GetRequestQueueStatePath(stateDirectory),
+                validationService);
+
         var secretStore =
             new DpapiSecretStore(
                 Path.Combine(
@@ -403,6 +418,9 @@ public static class AppBootstrap
                 GetRequestProgressPath(
                     stateDirectory),
 
+            RequestQueueStatePath =
+                GetRequestQueueStatePath(stateDirectory),
+
             Settings =
                 settings,
 
@@ -432,6 +450,9 @@ public static class AppBootstrap
 
             RequestProgressService =
                 requestProgressService,
+
+            RequestQueueStateService =
+                requestQueueStateService,
 
             SecretStore =
                 secretStore,
