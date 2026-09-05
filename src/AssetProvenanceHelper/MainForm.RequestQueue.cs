@@ -1,6 +1,7 @@
 #nullable enable
 using System.Drawing;
 using System.Windows.Forms;
+using AssetProvenanceHelper.Core.Generation;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
 
@@ -13,6 +14,17 @@ partial class MainForm
 
     private void HandleImportRequest()
     {
+        if (_isGeneratingDirect || _isSubmittingBatch)
+        {
+            ShowMessageBox(
+                "A generation or batch submission is currently being prepared. "
+                + "Wait until the local operation has finished before importing another manifest.",
+                "Import blocked",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         string? path = null;
 
         if (OpenFileDialogProvider is not null)
@@ -103,6 +115,20 @@ partial class MainForm
         _activeRequest = null;
         _completedRequestKeys.Clear();
 
+        try
+        {
+            _requestQueueStateService?.Save(manifest);
+        }
+        catch (Exception ex)
+        {
+            ShowMessageBox(
+                "The Request Manifest was validated, but its restart-safe queue snapshot could not be saved."
+                + Environment.NewLine + Environment.NewLine + ex.Message,
+                "Queue persistence failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+
         txtAssetFolderName.Clear();
         txtPrompt.Clear();
         UpdatePromptPreview();
@@ -137,6 +163,16 @@ partial class MainForm
 
         lblRequestSource.Text =
             Path.GetFileName(manifest.SourcePath);
+
+        try
+        {
+            var recoveryService = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+            recoveryService.RecoverAllForManifest(manifest.ManifestFingerprint);
+        }
+        catch
+        {
+            // Best effort candidate recovery on import
+        }
 
         RefreshRequestQueueVisuals();
         UpdateRequestProgressLabel();
@@ -189,18 +225,20 @@ partial class MainForm
                 return;
             }
 
+            var preloadedJobs = _generationJobStore
+                .GetItemsForManifest(_currentManifest.ManifestFingerprint)
+                .ToDictionary(j => j.RequestKey, StringComparer.Ordinal);
+
             foreach (var request in _currentManifest.Items)
             {
-                var completed =
-                    request.IsCompleted
-                    || _completedRequestKeys.Contains(
-                        request.RequestKey);
+                preloadedJobs.TryGetValue(request.RequestKey, out var preloadedJob);
+                var (statusText, backColor) = GetRequestItemVisualStatus(request, preloadedJob);
 
                 var lvi =
                     new ListViewItem(
                         new[]
                         {
-                            completed ? "Done" : "Pending",
+                            statusText,
                             request.AssetName,
                             request.Resolution
                         })
@@ -208,9 +246,9 @@ partial class MainForm
                         Tag = request
                     };
 
-                if (completed)
+                if (backColor != Color.White)
                 {
-                    lvi.BackColor = DoneRowBackColor;
+                    lvi.BackColor = backColor;
                 }
 
                 if (_activeRequest is not null
@@ -219,9 +257,7 @@ partial class MainForm
                         request.RequestKey,
                         StringComparison.Ordinal))
                 {
-                    lvi.Font = new Font(
-                        lvRequestQueue.Font,
-                        FontStyle.Bold);
+                    lvi.Font = GetQueueBoldFont();
                 }
 
                 lvRequestQueue.Items.Add(lvi);
@@ -233,8 +269,25 @@ partial class MainForm
         }
     }
 
+    private Font? _queueBoldFont;
+
+    private Font GetQueueBoldFont()
+    {
+        if (_queueBoldFont is null || Math.Abs(_queueBoldFont.SizeInPoints - lvRequestQueue.Font.SizeInPoints) > 0.001f)
+        {
+            _queueBoldFont?.Dispose();
+            _queueBoldFont = new Font(lvRequestQueue.Font, FontStyle.Bold);
+        }
+        return _queueBoldFont;
+    }
+
     private void HandleRequestQueueMouseUp(MouseEventArgs e)
     {
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
         var hit =
             lvRequestQueue.HitTest(
                 e.Location);
@@ -247,7 +300,7 @@ partial class MainForm
         HandleRequestQueueItemActivate(hit.Item);
     }
 
-    private void HandleRequestQueueItemActivate(
+    internal void HandleRequestQueueItemActivate(
         ListViewItem? lvi)
     {
         if (lvi?.Tag is not AssetRequestItem item)
@@ -284,6 +337,8 @@ partial class MainForm
         }
 
         _activeRequest = item;
+        var hadActiveStagedCandidate = _activeApiCandidateMetadata is not null;
+        _activeApiCandidateMetadata = null;
 
         _settingRequestBoundFields = true;
 
@@ -302,6 +357,84 @@ partial class MainForm
 
         UpdatePromptPreview();
         TryCopyPromptToClipboard(item.Prompt);
+
+        if (_currentManifest != null)
+        {
+            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, item.RequestKey);
+            if (job?.Status == Core.Generation.GenerationItemStatus.Ready)
+            {
+                var verifier = new CandidateVerificationService(_stagingService);
+                var verification = verifier.VerifyCandidate(job, item.Width, item.Height);
+
+                if (verification.IsValid && verification.Candidate != null)
+                {
+                    ResetVariantSelectionToNone();
+                    _activeApiCandidateMetadata = verification.Candidate.Metadata;
+                    SelectProviderByFileName("OpenAI API.md");
+                    SetSelectedImage(ImageSlot.Main, verification.Candidate.ImagePath);
+                    AddStatus($"Staged candidate loaded for '{item.AssetName}'. Review and commit when ready.");
+                }
+                else
+                {
+                    _activeApiCandidateMetadata = null;
+                    SetSelectedImage(ImageSlot.Main, null);
+
+                    var hasRecoverableRaw = HasRecoverableRawAuthority(job);
+                    var updatedJob = job with
+                    {
+                        Status = hasRecoverableRaw
+                            ? Core.Generation.GenerationItemStatus.FailedRetryable
+                            : Core.Generation.GenerationItemStatus.UncertainAfterInterruption,
+                        ErrorCode = hasRecoverableRaw
+                            ? "local_candidate_processing_failed"
+                            : "candidate_verification_failed_no_raw_authority",
+                        ErrorMessage = verification.ErrorMessage ?? "Candidate verification failed.",
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    };
+                    _generationJobStore.UpsertItem(updatedJob);
+
+                    if (hasRecoverableRaw)
+                    {
+                        var recoveryService = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+                        if (recoveryService.TryRecoverCandidate(updatedJob))
+                        {
+                            var refreshedJob = _generationJobStore.GetItem(job.ManifestFingerprint, job.RequestKey);
+                            if (refreshedJob?.Status == Core.Generation.GenerationItemStatus.Ready)
+                            {
+                                var reverified = verifier.VerifyCandidate(refreshedJob, item.Width, item.Height);
+                                if (reverified.IsValid && reverified.Candidate != null)
+                                {
+                                    ResetVariantSelectionToNone();
+                                    _activeApiCandidateMetadata = reverified.Candidate.Metadata;
+                                    SelectProviderByFileName("OpenAI API.md");
+                                    SetSelectedImage(ImageSlot.Main, reverified.Candidate.ImagePath);
+                                    AddStatus($"Staged candidate for '{item.AssetName}' was automatically rebuilt and loaded into Main.");
+                                    RefreshRequestQueueVisuals();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
+                    ShowMessageBox(
+                        $"Staged candidate for '{item.AssetName}' failed verification:" + Environment.NewLine + Environment.NewLine +
+                        $"{verification.ErrorMessage}" + Environment.NewLine + Environment.NewLine +
+                        "The candidate was not loaded into Main.",
+                        "Candidate Verification Failed",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+            }
+            else if (hadActiveStagedCandidate)
+            {
+                SetSelectedImage(ImageSlot.Main, null);
+            }
+        }
+        else if (hadActiveStagedCandidate)
+        {
+            SetSelectedImage(ImageSlot.Main, null);
+        }
+
         RefreshRequestQueueVisuals();
     }
 
@@ -328,8 +461,15 @@ partial class MainForm
             return;
         }
 
-        _activeRequest =
-            null;
+        var hadApiCandidate = _activeApiCandidateMetadata is not null;
+        _activeRequest = null;
+        _activeApiCandidateMetadata = null;
+
+        if (hadApiCandidate)
+        {
+            SetSelectedImage(ImageSlot.Main, null);
+            AddStatus("Active API candidate unloaded because asset name or prompt was modified.");
+        }
 
         RefreshRequestQueueVisuals();
     }
@@ -388,10 +528,133 @@ partial class MainForm
                 // import is allowed so the queue association can be restored.
                 btnImportRequest.Enabled = true;
             }
+
+            btnGenerateNow.Enabled = false;
+            btnQueueProductionBatch.Enabled = false;
+            btnRetrySelectedApi.Enabled = false;
+            _toolTip.SetToolTip(btnGenerateNow, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
+            _toolTip.SetToolTip(btnQueueProductionBatch, "Automated Reference-Assisted Generation is not supported in this version. Finish or cancel current reference asset first.");
+        }
+        var apiMutationActive =
+            _isGeneratingDirect || _isSubmittingBatch;
+
+        btnClearRequestQueue.Enabled = !apiMutationActive
+            && _state != UiState.ReferenceReady
+            && (_currentManifest is not null || _requestQueueStateService?.HasPersistedState == true);
+
+        if (_state != UiState.ReferenceReady)
+        {
+            btnImportRequest.Enabled = !apiMutationActive;
+
+            var hasApiKey = HasOpenAiApiKeyConfigured();
+            var canRunApi =
+                _currentManifest is not null
+                && !apiMutationActive
+                && hasApiKey;
+
+            btnGenerateNow.Enabled = canRunApi;
+            btnQueueProductionBatch.Enabled = canRunApi;
+
+            if (_currentManifest is not null && !hasApiKey)
+            {
+                var noKeyTooltip = "Configure an OpenAI API key in Settings first.";
+                _toolTip.SetToolTip(btnGenerateNow, noKeyTooltip);
+                _toolTip.SetToolTip(btnQueueProductionBatch, noKeyTooltip);
+            }
+            else
+            {
+                _toolTip.SetToolTip(btnGenerateNow, null);
+                _toolTip.SetToolTip(btnQueueProductionBatch, null);
+            }
+
+            var selectedItem = lvRequestQueue.SelectedItems.Count > 0 ? lvRequestQueue.SelectedItems[0].Tag as AssetRequestItem : null;
+            GenerationItemRecord? selectedJob = null;
+            if (_currentManifest is not null && selectedItem is not null)
+            {
+                selectedJob = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, selectedItem.RequestKey);
+            }
+
+            var canRetrySelected = _currentManifest is not null
+                && selectedJob is not null
+                && selectedJob.Status == GenerationItemStatus.UncertainAfterInterruption
+                && !apiMutationActive;
+
+            btnRetrySelectedApi.Enabled = canRetrySelected;
+        }
+    }
+
+    private void HandleRetrySelectedApi()
+    {
+        if (_currentManifest is null) return;
+        if (_isGeneratingDirect || _isSubmittingBatch) return;
+        if (lvRequestQueue.SelectedItems.Count == 0) return;
+
+        var selectedItem = lvRequestQueue.SelectedItems[0].Tag as AssetRequestItem;
+        if (selectedItem is null) return;
+
+        var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, selectedItem.RequestKey);
+        if (job is null || job.Status != GenerationItemStatus.UncertainAfterInterruption) return;
+
+        if (job.Mode == GenerationMode.Batch)
+        {
+            if (!string.IsNullOrWhiteSpace(job.ProviderBatchId))
+            {
+                ShowMessageBox(
+                    $"This request belongs to a remote Batch that was submitted to OpenAI (Batch ID: {job.ProviderBatchId}). Resetting this request to retry is not permitted while the remote Batch exists. Please monitor the existing batch instead.",
+                    "Retry Not Permitted",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            var confirmBatch = ShowConfirmDialog(
+                $"A remote Batch may already exist on OpenAI. Before retrying, check the OpenAI dashboard for the recorded input file or custom ID '{job.CustomId}'. Continue only if you verified that retrying is safe and you accept the risk of duplicate charges.{Environment.NewLine}{Environment.NewLine}Do you want to resolve and reset this item to Pending?",
+                "Confirm Batch Item Retry / Resolve",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+
+            if (confirmBatch != DialogResult.OK)
+            {
+                return;
+            }
         }
         else
         {
-            btnImportRequest.Enabled = true;
+            var confirmDirect = ShowConfirmDialog(
+                $"OpenAI may already have processed and billed this request.{Environment.NewLine}{Environment.NewLine}Retrying may create a second image and a second charge.{Environment.NewLine}{Environment.NewLine}Only continue if you understand this risk.{Environment.NewLine}{Environment.NewLine}Do you want to reset this item to Pending so it can be generated again?",
+                "Confirm Direct Generation Retry",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning);
+
+            if (confirmDirect != DialogResult.OK)
+            {
+                return;
+            }
+        }
+
+        job = job with
+        {
+            Status = GenerationItemStatus.Pending,
+            ErrorCode = null,
+            ErrorMessage = null,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+
+        _generationJobStore.UpsertItem(job);
+        AddStatus($"Reset request '{selectedItem.RequestKey}' to Pending.");
+        ApplyRequestQueueState();
+        RefreshRequestQueueVisuals();
+    }
+
+    private bool HasOpenAiApiKeyConfigured()
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(_secretStore.LoadSecret(Dialogs.SettingsDialog.OpenAiApiKeySecretName));
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -407,11 +670,29 @@ partial class MainForm
             ?? session.SourceRequestKey;
 
         _activeRequest = null;
+        _activeApiCandidateMetadata = null;
 
         if (string.IsNullOrWhiteSpace(completedRequestKey)
             || _currentManifest is null)
         {
             return;
+        }
+
+        var existingJob =
+            _generationJobStore.GetItem(
+                _currentManifest.ManifestFingerprint,
+                completedRequestKey);
+
+        if (existingJob is not null)
+        {
+            _generationJobStore.UpsertItem(
+                existingJob with
+                {
+                    Status =
+                        Core.Generation.GenerationItemStatus.Committed,
+                    UpdatedAtUtc =
+                        DateTimeOffset.UtcNow
+                });
         }
 
         var item =
@@ -429,6 +710,13 @@ partial class MainForm
 
         item.IsCompleted = true;
         _completedRequestKeys.Add(completedRequestKey);
+
+        if (_activeRequest is not null
+            && string.Equals(_activeRequest.RequestKey, completedRequestKey, StringComparison.Ordinal))
+        {
+            _activeRequest = null;
+            _activeApiCandidateMetadata = null;
+        }
 
         try
         {
@@ -448,8 +736,65 @@ partial class MainForm
     private void HandleRequestCancellation()
     {
         _activeRequest = null;
+        _activeApiCandidateMetadata = null;
         RefreshRequestQueueVisuals();
         UpdateRequestProgressLabel();
+    }
+
+    private void RestoreRequestQueueOnStartup()
+    {
+        if (_requestQueueStateService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var manifest = _requestQueueStateService.Load(_settings.AcceptedExtensions);
+            if (manifest is null)
+            {
+                return;
+            }
+
+            _currentManifest = manifest;
+            var restored = _requestProgressService?.LoadForManifest(manifest.ManifestFingerprint)
+                ?? new HashSet<string>(StringComparer.Ordinal);
+            _completedRequestKeys.UnionWith(restored);
+            foreach (var item in manifest.Items)
+            {
+                item.IsCompleted = _completedRequestKeys.Contains(item.RequestKey);
+            }
+
+            lblRequestSource.Text = Path.GetFileName(manifest.SourcePath) + " (restored)";
+            RefreshRequestQueueVisuals();
+            UpdateRequestProgressLabel();
+            AddStatus("Request Queue restored from local state.");
+        }
+        catch (Exception ex)
+        {
+            AddStatus($"Saved Request Queue could not be restored: {ex.Message}");
+        }
+    }
+
+    private void HandleClearRequestQueue()
+    {
+        if (_isGeneratingDirect || _isSubmittingBatch || _state == UiState.ReferenceReady)
+        {
+            return;
+        }
+
+        _requestQueueStateService?.Clear();
+        _requestProgressService?.Clear();
+        _currentManifest = null;
+        _activeRequest = null;
+        _activeApiCandidateMetadata = null;
+        _completedRequestKeys.Clear();
+        SetSelectedImage(ImageSlot.Main, null);
+        lblRequestSource.Text = "No Request Manifest imported.";
+        RefreshRequestQueueVisuals();
+        UpdateRequestProgressLabel();
+        ApplyRequestQueueState();
+        AddStatus("Request Queue cleared.");
     }
 
     private void UpdateRequestProgressLabel()
@@ -516,5 +861,26 @@ partial class MainForm
 
         UpdatePromptPreview();
         RefreshRequestQueueVisuals();
+    }
+
+    private static bool HasRecoverableRawAuthority(GenerationItemRecord job)
+    {
+        if (string.IsNullOrWhiteSpace(job.CandidateId)
+            || string.IsNullOrWhiteSpace(job.ProviderRawPath)
+            || string.IsNullOrWhiteSpace(job.RawSha256)
+            || !File.Exists(job.ProviderRawPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var actual = CandidateVerificationService.ComputeSha256File(job.ProviderRawPath);
+            return string.Equals(actual, job.RawSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

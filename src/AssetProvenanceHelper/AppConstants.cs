@@ -27,6 +27,9 @@ public static class AppConstants
     public const string RequestProgressFileName =
         "request-progress.json";
 
+    public const string RequestQueueStateFileName =
+        "request-queue-state.json";
+
     public const string ReferenceRoleLabel =
         "Intermediate reference image";
 

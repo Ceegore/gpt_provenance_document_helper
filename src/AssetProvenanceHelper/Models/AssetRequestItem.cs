@@ -16,5 +16,8 @@ public sealed class AssetRequestItem
 
     public required string RequestKey { get; init; }
 
+    public Core.Generation.AlphaRequirement Alpha { get; init; } =
+        Core.Generation.AlphaRequirement.Unknown;
+
     public bool IsCompleted { get; set; }
 }

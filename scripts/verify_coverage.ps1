@@ -63,7 +63,9 @@ try {
     # source generator's output under obj/) is not part of the checked-in
     # production denominator.
     $productionClasses = $allClasses | Where-Object {
-        $_.filename -notmatch '^obj[\\/]' -and $_.filename -notmatch '[\\/]obj[\\/]'
+        $_.filename -notmatch '^obj[\\/]' -and
+        $_.filename -notmatch '[\\/]obj[\\/]' -and
+        $_.filename -notmatch '^AssetProvenanceHelper\.Core[\\/]'
     }
 
     # ---------------------------------------------------------------
@@ -71,6 +73,8 @@ try {
     # ---------------------------------------------------------------
     $linesTotal = 0
     $linesCovered = 0
+    $branchesTotal = 0
+    $branchesCovered = 0
     $methodsTotal = 0
     $methodsCovered = 0
     $uncoveredMethods = New-Object System.Collections.Generic.List[string]
@@ -80,6 +84,13 @@ try {
         foreach ($line in $linesNode) {
             $linesTotal++
             if ([int]$line.hits -gt 0) { $linesCovered++ }
+            if ($line.branch -eq 'true') {
+                $cc = $line.'condition-coverage'
+                if ($cc -match '\((\d+)/(\d+)\)') {
+                    $branchesCovered += [int]$Matches[1]
+                    $branchesTotal += [int]$Matches[2]
+                }
+            }
         }
 
         $methodNodes = $cls.SelectNodes("methods/method")
@@ -94,9 +105,6 @@ try {
             }
         }
     }
-
-    $branchesTotal = [int]$covXml.coverage.'branches-valid'
-    $branchesCovered = [int]$covXml.coverage.'branches-covered'
 
     Write-Host ""
     Write-Host "== Coverage counters (production only, generated code excluded) ==" -ForegroundColor Cyan
@@ -119,7 +127,13 @@ try {
         Sort-Object
 
     $reportedFiles = $productionClasses |
-        ForEach-Object { $_.filename.Replace('\', '/') } |
+        ForEach-Object {
+            $fn = $_.filename.Replace('\', '/')
+            if ($fn.StartsWith("AssetProvenanceHelper/")) {
+                $fn = $fn.Substring("AssetProvenanceHelper/".Length)
+            }
+            $fn
+        } |
         Select-Object -Unique
 
     $noExecList = @()

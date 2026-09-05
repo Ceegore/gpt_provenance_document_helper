@@ -5,13 +5,40 @@ namespace AssetProvenanceHelper.Services;
 public sealed partial class ValidationService
 {
     public static bool PathsEqual(
-        string left,
-        string right)
+        string? left,
+        string? right)
     {
-        return string.Equals(
-            NormalizePath(left),
-            NormalizePath(right),
-            StringComparison.OrdinalIgnoreCase);
+        if (left is null && right is null)
+        {
+            return true;
+        }
+
+        if (left is null || right is null)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(left) && string.IsNullOrWhiteSpace(right))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(
+                NormalizePath(left),
+                NormalizePath(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

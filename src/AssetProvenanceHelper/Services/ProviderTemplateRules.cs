@@ -24,9 +24,26 @@ public static class ProviderTemplateRules
             "<<<PROMPT>>>"
         };
 
+    public static readonly IReadOnlyList<string> OptionalApiTags =
+        new[]
+        {
+            "<<<API_CANDIDATE_ID>>>",
+            "<<<API_PROVIDER>>>",
+            "<<<API_MODEL>>>",
+            "<<<API_MODE>>>",
+            "<<<API_CUSTOM_ID>>>",
+            "<<<API_TARGET_RESOLUTION>>>",
+            "<<<API_PROVIDER_RESOLUTION>>>",
+            "<<<API_RAW_SHA256>>>",
+            "<<<API_NORMALIZED_SHA256>>>",
+            "<<<API_PROVIDER_REQUEST_ID>>>",
+            "<<<API_BATCH_ID>>>",
+            "<<<API_CREATED_AT_UTC>>>"
+        };
+
     private static readonly HashSet<string> SupportedTags =
         new(
-            RequiredTags,
+            RequiredTags.Concat(OptionalApiTags),
             StringComparer.Ordinal);
 
     private static readonly Regex AnyTagRegex =

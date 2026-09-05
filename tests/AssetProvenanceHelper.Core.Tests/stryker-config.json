@@ -1,0 +1,19 @@
+{
+  "stryker-config": {
+    "project": "AssetProvenanceHelper.Core.csproj",
+    "solution": "../../AssetProvenanceHelper.sln",
+    "reporters": [
+      "progress",
+      "html",
+      "json"
+    ],
+    "thresholds": {
+      "high": 90,
+      "low": 80,
+      "break": 80
+    },
+    "mutate": [
+      "**/*.cs"
+    ]
+  }
+}

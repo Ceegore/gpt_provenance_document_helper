@@ -11,6 +11,11 @@ hobby project and is **unsigned** — that fact drives the most important rule b
 
 ## Repo layout for docs and coverage tooling
 
+- `src/AssetProvenanceHelper.Core/` — Headless class library (`OutputType=Library`)
+  containing all non-GUI generation domain logic: image size planning, rate limiting,
+  retry policies, OpenAI client & batch builders, DPAPI secrets, and job stores.
+  Its tests in `tests/AssetProvenanceHelper.Core.Tests/` run fully in-process without
+  loading the WinForms GUI subsystem image.
 - `docs/audits/` — every bug-bash / QA audit report (`bugs1.md`–`bugs15.md`,
   `_bugRun1.md`, `gaa1.md`, `vv1.md`), oldest first by number/date. Read the
   most recent ones before starting new work; they carry context (known
@@ -182,6 +187,16 @@ Two different artifacts can trip SAC. Keep them straight:
    - **Avoid `--collect:"XPlat Code Coverage"` in tight loops** — the coverage collector
      roughly triples run time and was the most block-prone path observed. Run coverage
      once, at the end.
+7. **Always seam external process and dialog hooks in tests.**
+   When tests exercise MainForm commit workflows (e.g. `HandleMainImage`, `ExecuteMainCommit`),
+   they must seam:
+   - `MainForm.OpenFolderProvider = _ => { };`
+   - `MainForm.MessageBoxProvider = (_, _, _, _, _) => { };`
+   - `MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;`
+   - `TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;`
+   If `OpenFolderProvider` is left unassigned (`null`), committing an asset triggers a real
+   `Process.Start("explorer.exe", ...)`, which can cause Windows Security / Smart App Control /
+   Defender alerts and hang the test host.
 
 ## SAC-safe smoke test
 

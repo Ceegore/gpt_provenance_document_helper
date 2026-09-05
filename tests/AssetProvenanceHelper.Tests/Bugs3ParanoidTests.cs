@@ -537,7 +537,7 @@ public sealed class Bugs3ParanoidTests
         var result = validationService.ValidatePreparedReferenceSession(session);
 
         Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("invalid") || e.Contains("unusable") || e.Contains("path"));
+        Assert.Contains(result.Errors, e => e.Contains("invalid", StringComparison.OrdinalIgnoreCase) || e.Contains("unusable", StringComparison.OrdinalIgnoreCase) || e.Contains("path", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

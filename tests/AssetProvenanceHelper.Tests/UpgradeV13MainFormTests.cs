@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System.Drawing;
 using System.Reflection;
 using System.Windows.Forms;
@@ -1272,6 +1272,62 @@ public class UpgradeV13MainFormTests
 
             var btnImport = form.Controls.Find("btnImportRequest", true).FirstOrDefault();
             Assert.NotNull(btnImport);
+        });
+    }
+
+    [Fact]
+    public void CompleteActiveRequestAfterMainCommit_ResetsActiveRequestAndApiCandidateMetadata()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+
+            var manifestPath =
+                WriteManifest(
+                    workspace,
+                    """
+                    {
+                      "manifestVersion": 1,
+                      "assets": [
+                        { "filename": "asset_ui.webp", "resolution": "1920x1080", "prompt": "original prompt" }
+                      ]
+                    }
+                    """);
+
+            using var form = CreateProductionForm(workspace);
+            form.ClipboardWriter = _ => { };
+            MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+
+            try
+            {
+                var importMethod = typeof(MainForm).GetMethod("HandleImportRequest", BindingFlags.NonPublic | BindingFlags.Instance);
+                importMethod?.Invoke(form, null);
+
+                var lv = FindControl<ListView>(form, "lvRequestQueue");
+                var activateMethod = typeof(MainForm).GetMethod("HandleRequestQueueItemActivate", BindingFlags.NonPublic | BindingFlags.Instance);
+                activateMethod?.Invoke(form, new object[] { lv.Items[0] });
+
+                var activeRequestBefore = typeof(MainForm).GetField("_activeRequest", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form);
+                Assert.NotNull(activeRequestBefore);
+
+                var manifestField = typeof(MainForm).GetField("_currentManifest", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form) as AssetRequestManifest;
+                var item = manifestField!.Items.Single();
+
+                var completeMethod = typeof(MainForm).GetMethod("CompleteActiveRequestAfterMainCommit", BindingFlags.NonPublic | BindingFlags.Instance);
+                completeMethod?.Invoke(form, new object[] { new AssetSession { SourceRequestKey = item.RequestKey } });
+
+                Assert.True(item.IsCompleted);
+
+                var activeRequestAfter = typeof(MainForm).GetField("_activeRequest", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form);
+                Assert.Null(activeRequestAfter);
+
+                var activeApiMetadata = typeof(MainForm).GetField("_activeApiCandidateMetadata", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(form);
+                Assert.Null(activeApiMetadata);
+            }
+            finally
+            {
+                MainForm.OpenFileDialogProvider = null;
+            }
         });
     }
 }

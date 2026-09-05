@@ -12,7 +12,19 @@ partial class MainForm
 {
     private void HandleMainImage()
     {
+        var hasApiCandidate = _activeApiCandidateMetadata is not null;
         var variantCount = GetSelectedVariantCount();
+
+        if (hasApiCandidate && variantCount > 0)
+        {
+            ShowMessageBox(
+                "A staged API Candidate is active. Variants applies to the legacy download-folder workflow and cannot be combined with this API Candidate. Set Variants to 'none' or unload the API Candidate first.",
+                "Variants unavailable for API Candidate",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         if (variantCount > 0)
         {
             HandleVariantBatch(variantCount);
@@ -22,6 +34,55 @@ partial class MainForm
         if (!ValidateMainActionUi())
         {
             return;
+        }
+
+        if (_activeApiCandidateMetadata != null && _activeRequest != null && _currentManifest != null)
+        {
+            var job = _generationJobStore.GetItem(_currentManifest.ManifestFingerprint, _activeRequest.RequestKey);
+            if (job == null)
+            {
+                _activeApiCandidateMetadata = null;
+                SetSelectedImage(ImageSlot.Main, null);
+                ShowMessageBox("Candidate job record could not be found. Commit cancelled.", "Commit blocked", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var verifier = new CandidateVerificationService(_stagingService);
+            var verification = verifier.VerifyCandidate(job, _activeRequest.Width, _activeRequest.Height);
+            if (!verification.IsValid)
+            {
+                _activeApiCandidateMetadata = null;
+                SetSelectedImage(ImageSlot.Main, null);
+
+                var hasRecoverableRaw = HasRecoverableRawAuthority(job);
+                var updatedJob = job with
+                {
+                    Status = hasRecoverableRaw
+                        ? Core.Generation.GenerationItemStatus.FailedRetryable
+                        : Core.Generation.GenerationItemStatus.UncertainAfterInterruption,
+                    ErrorCode = hasRecoverableRaw
+                        ? "local_candidate_processing_failed"
+                        : "candidate_verification_failed_no_raw_authority",
+                    ErrorMessage = verification.ErrorMessage ?? "Candidate verification failed before commit.",
+                    UpdatedAtUtc = DateTimeOffset.UtcNow
+                };
+                _generationJobStore.UpsertItem(updatedJob);
+
+                if (hasRecoverableRaw)
+                {
+                    new LocalCandidateRecoveryService(_generationJobStore, _stagingService).TryRecoverCandidate(updatedJob);
+                }
+
+                RefreshRequestQueueVisuals();
+                ShowMessageBox(
+                    $"Candidate verification failed before commit:" + Environment.NewLine + Environment.NewLine +
+                    $"{verification.ErrorMessage}" + Environment.NewLine + Environment.NewLine +
+                    "The commit was cancelled and the candidate was unloaded.",
+                    "Commit blocked",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
         }
 
         var isNoReference = chkNoReference.Checked || (_currentSession?.WorkflowMode == AssetWorkflowMode.NoReference);
@@ -97,14 +158,34 @@ partial class MainForm
         AssetSession session;
         try
         {
+            var providerSnapshot = _activeApiCandidateMetadata is not null
+                ? GetOpenAiApiProviderSnapshot()
+                : GetProviderSnapshotForNewAsset();
+
             session = _assetProcessorService.CreateNoReferenceMainSession(
                 settings,
                 assetName,
                 sourceImage,
                 prompt,
                 processedAt,
-                GetProviderSnapshotForNewAsset(),
+                providerSnapshot,
                 _activeRequest?.RequestKey);
+
+            if (_activeApiCandidateMetadata is not null)
+            {
+                PopulateApiCandidateMetadataIntoSession(session);
+
+                var recomputedProvenance = _templateService.RenderFinalForSession(
+                    session,
+                    session.MainFilename!,
+                    prompt,
+                    processedAt);
+
+                session.MainProvenanceHash = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(
+                        new System.Text.UTF8Encoding(false).GetBytes(recomputedProvenance)))
+                    .ToLowerInvariant();
+            }
 
             _sessionService.Save(session);
         }
@@ -168,6 +249,8 @@ partial class MainForm
 
         try
         {
+            PopulateApiCandidateMetadataIntoSession(session);
+
             _assetProcessorService.PrepareMainCommit(
                 session,
                 settings.AcceptedExtensions,
@@ -582,5 +665,49 @@ partial class MainForm
         {
             ShowError($"Could not open folder '{path}'.", ex);
         }
+    }
+
+    private void PopulateApiCandidateMetadataIntoSession(AssetSession session)
+    {
+        if (_activeApiCandidateMetadata is null)
+        {
+            return;
+        }
+
+        session.ApiCandidateId = _activeApiCandidateMetadata.CandidateId;
+        session.ApiProvider = _activeApiCandidateMetadata.Provider;
+        session.ApiModel = _activeApiCandidateMetadata.Model;
+        session.ApiMode = _activeApiCandidateMetadata.Mode;
+        session.ApiCustomId = _activeApiCandidateMetadata.CustomId;
+        session.ApiTargetResolution = _activeApiCandidateMetadata.TargetResolution;
+        session.ApiProviderResolution = _activeApiCandidateMetadata.ProviderResolution;
+        session.ApiRawSha256 = _activeApiCandidateMetadata.RawSha256;
+        session.ApiNormalizedSha256 = _activeApiCandidateMetadata.NormalizedSha256;
+        session.ApiProviderRequestId = _activeApiCandidateMetadata.ProviderRequestId;
+        session.ApiBatchId = _activeApiCandidateMetadata.BatchId;
+        session.ApiCreatedAtUtc = _activeApiCandidateMetadata.CreatedAtUtc.ToString("O");
+    }
+
+    private ProviderTemplateSnapshot GetOpenAiApiProviderSnapshot()
+    {
+        if (_providerTemplateCatalogService is null)
+        {
+            throw new InvalidOperationException(
+                "Provider template catalog is unavailable. "
+                + "API Candidate commit cannot continue.");
+        }
+
+        var catalog = _providerTemplateCatalogService.Load();
+        var definition = catalog.Templates.SingleOrDefault(template =>
+            string.Equals(template.FileName, "OpenAI API.md", StringComparison.OrdinalIgnoreCase));
+
+        if (definition is null)
+        {
+            throw new InvalidOperationException(
+                "OpenAI API provider template is missing or invalid. "
+                + "API Candidate commit was blocked to prevent incorrect provenance.");
+        }
+
+        return definition.CreateSnapshot();
     }
 }

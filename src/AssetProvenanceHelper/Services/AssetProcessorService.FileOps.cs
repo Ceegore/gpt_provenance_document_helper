@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
 using AssetProvenanceHelper.Models;
 
@@ -127,6 +127,7 @@ public sealed partial class AssetProcessorService
         {
             if (File.Exists(path))
             {
+                File.SetAttributes(path, FileAttributes.Normal);
                 File.Delete(path);
             }
         }
@@ -188,6 +189,7 @@ public sealed partial class AssetProcessorService
                 return false;
             }
 
+            File.SetAttributes(path, FileAttributes.Normal);
             File.Delete(path);
 
             return true;

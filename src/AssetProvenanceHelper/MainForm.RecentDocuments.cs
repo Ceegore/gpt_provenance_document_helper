@@ -78,6 +78,8 @@ partial class MainForm
         }
     }
 
+    private ListViewItem? _lastHoveredRecentDocItem;
+
     private void RefreshRecentDocumentsUi(
         IReadOnlyList<RecentDocumentEntry>? entries = null)
     {
@@ -85,6 +87,9 @@ partial class MainForm
         {
             return;
         }
+
+        _lastHoveredRecentDocItem = null;
+        _toolTip.SetToolTip(lvRecentDocuments, null);
 
         lvRecentDocuments.BeginUpdate();
 
@@ -146,19 +151,27 @@ partial class MainForm
                 e.X,
                 e.Y);
 
-        if (item is null)
+        if (item == _lastHoveredRecentDocItem)
         {
             return;
         }
 
+        _lastHoveredRecentDocItem = item;
+
         var fullPath =
-            item.Tag as string;
+            item?.Tag as string;
 
         if (!string.IsNullOrWhiteSpace(fullPath))
         {
             _toolTip.SetToolTip(
                 lvRecentDocuments,
                 fullPath);
+        }
+        else
+        {
+            _toolTip.SetToolTip(
+                lvRecentDocuments,
+                null);
         }
     }
 }

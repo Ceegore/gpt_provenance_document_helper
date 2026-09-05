@@ -1,0 +1,8 @@
+{
+  "justification": "These production files contain no executable sequence points (bare enums), so coverlet never emits a <class> entry for them.",
+  "files": [
+    "Generation/AlphaRequirement.cs",
+    "Generation/GenerationItemStatus.cs",
+    "Generation/GenerationMode.cs"
+  ]
+}

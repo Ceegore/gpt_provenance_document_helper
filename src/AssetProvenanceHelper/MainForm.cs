@@ -2,6 +2,9 @@
 using System.Drawing;
 using System.ComponentModel;
 using System.Windows.Forms;
+using AssetProvenanceHelper.Core.Generation;
+using AssetProvenanceHelper.Core.Generation.Providers;
+using AssetProvenanceHelper.Core.Generation.Providers.OpenAi;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
 using AssetProvenanceHelper.Ui;
@@ -25,6 +28,10 @@ private readonly SettingsService _settingsService;
     private readonly ProviderTemplateCatalogService? _providerTemplateCatalogService;
     private readonly RecentDocumentHistoryService? _recentDocumentHistoryService;
     private readonly RequestProgressService? _requestProgressService;
+    private readonly RequestQueueStateService? _requestQueueStateService;
+    private readonly IImageGenerationProvider _imageGenerationProvider;
+    private readonly ISecretStore _secretStore;
+    private readonly GenerationJobStore _generationJobStore;
 
     private AppSettings _settings;
     private AssetSession? _currentSession;
@@ -68,7 +75,12 @@ private readonly SettingsService _settingsService;
         SessionService sessionService,
         ProviderTemplateCatalogService? providerTemplateCatalogService = null,
         RecentDocumentHistoryService? recentDocumentHistoryService = null,
-        RequestProgressService? requestProgressService = null)
+        RequestProgressService? requestProgressService = null,
+        IImageGenerationProvider? imageGenerationProvider = null,
+        ISecretStore? secretStore = null,
+        GenerationJobStore? generationJobStore = null,
+        GeneratedImageStagingService? stagingService = null,
+        RequestQueueStateService? requestQueueStateService = null)
     {
         _settings = settings;
         _settingsService = settingsService;
@@ -80,6 +92,11 @@ private readonly SettingsService _settingsService;
         _providerTemplateCatalogService = providerTemplateCatalogService;
         _recentDocumentHistoryService = recentDocumentHistoryService;
         _requestProgressService = requestProgressService;
+        _requestQueueStateService = requestQueueStateService;
+        _imageGenerationProvider = imageGenerationProvider ?? new OpenAiImageGenerationProvider();
+        _secretStore = secretStore ?? new DpapiSecretStore();
+        _generationJobStore = generationJobStore ?? new GenerationJobStore(Path.Combine(AppBootstrap.GetStateDirectory(), "generation-jobs.json"));
+        _stagingService = stagingService ?? new GeneratedImageStagingService();
 
         InitializeComponent();
 
@@ -88,9 +105,73 @@ private readonly SettingsService _settingsService;
         ValidateTemplatesAtStartup();
         LoadProviderCatalogAtStartup();
         LoadRecentDocumentsIntoUi();
+        RestoreRequestQueueOnStartup();
         ApplyState();
+        _generationJobStore.RecoverInterruptedJobsOnStartup();
+        var candidateRecovery = new LocalCandidateRecoveryService(_generationJobStore, _stagingService);
+        candidateRecovery.RecoverAllCandidates();
+        InitializeBatchMonitoring();
 
-        Shown += (_, _) => RecoverSessionOnStartup();
+        Shown += (_, _) =>
+        {
+            RecoverSessionOnStartup();
+            CheckAndStartBatchMonitoring();
+        };
+    }
+
+    private void OpenSettingsDialog()
+    {
+        try
+        {
+            using var dialog = new Dialogs.SettingsDialog(_settings, _secretStore);
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                try
+                {
+                    _settingsService.Save(_settings);
+                    AddStatus("Settings updated.");
+                }
+                catch (Exception ex)
+                {
+                    ShowError("Could not save settings.", ex);
+                }
+            }
+        }
+        catch (InvalidDataException ex)
+        {
+            ShowMessageBox(
+                "The encrypted API secret store is corrupt or cannot be decrypted "
+                + "for the current Windows user."
+                + Environment.NewLine
+                + Environment.NewLine
+                + "The stored key was NOT overwritten."
+                + Environment.NewLine
+                + Environment.NewLine
+                + ex.Message,
+                "API Secret Store Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+
+            if (_secretStore is DpapiSecretStore dpapiStore)
+            {
+                var confirmReset = ShowConfirmDialog(
+                    "Do you want to delete the corrupted secret store file?"
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + "If deleted, you will need to re-enter your OpenAI API key in Settings.",
+                    "Reset Corrupted Secret Store",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (confirmReset == DialogResult.Yes)
+                {
+                    dpapiStore.ResetCorruptStore();
+                    AddStatus("Corrupted API secret store was deleted.");
+                }
+            }
+        }
+
+        ApplyRequestQueueState();
     }
 
     private void WireEvents()
@@ -143,7 +224,37 @@ private readonly SettingsService _settingsService;
 
         txtDownloadFolder.Leave += (_, _) => SaveSettingsSafe();
         txtAssetRoot.Leave += (_, _) => SaveSettingsSafe();
-        FormClosing += (_, _) => SaveSettingsSafe();
+        FormClosing += (_, e) =>
+        {
+            if (_isGeneratingDirect || _isSubmittingBatch)
+            {
+                var message = _isGeneratingDirect
+                    ? "Direct API generation is currently in progress.\n\nClosing may lose responses to requests that OpenAI has already started and those requests may still be billable.\n\nDo you want to close anyway?"
+                    : "Batch API submission is currently in progress.\n\nClosing may interrupt batch file upload or creation, which may result in an orphaned or untracked batch on OpenAI.\n\nDo you want to close anyway?";
+
+                var choice = ShowConfirmDialog(
+                    message,
+                    "Generation in progress",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (choice != DialogResult.Yes && choice != DialogResult.OK)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+
+                try
+                {
+                    _apiGenerationCts?.Cancel();
+                }
+                catch
+                {
+                }
+            }
+
+            SaveSettingsSafe();
+        };
 
         txtPrompt.TextChanged += (_, _) =>
         {
@@ -161,7 +272,23 @@ private readonly SettingsService _settingsService;
 
         cmbProvider.SelectedIndexChanged += (_, _) => OnProviderSelectionChanged();
         btnImportRequest.Click += (_, _) => HandleImportRequest();
+        btnClearRequestQueue.Click += (_, _) => HandleClearRequestQueue();
+        btnGenerateNow.Click += (_, _) => HandleGenerateNow();
+        btnQueueProductionBatch.Click += (_, _) => HandleQueueProductionBatch();
+        btnRetrySelectedApi.Click += (_, _) => HandleRetrySelectedApi();
+        lvRequestQueue.SelectedIndexChanged += (_, _) => ApplyRequestQueueState();
         lvRequestQueue.MouseUp += (_, e) => HandleRequestQueueMouseUp(e);
+        lvRequestQueue.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode is Keys.Enter or Keys.Space)
+            {
+                if (lvRequestQueue.SelectedItems.Count > 0)
+                {
+                    HandleRequestQueueItemActivate(lvRequestQueue.SelectedItems[0]);
+                    e.Handled = true;
+                }
+            }
+        };
         lvRecentDocuments.MouseMove += (_, e) => UpdateRecentDocumentTooltip(e);
 
         helpOverlay.CloseRequested += (_, _) => pnlMainContent.Enabled = true;
@@ -584,8 +711,35 @@ private readonly SettingsService _settingsService;
         txtStatusHistory.ScrollToCaret();
     }
 
+    private DialogResult ShowConfirmDialog(
+        string message,
+        string caption,
+        MessageBoxButtons buttons,
+        MessageBoxIcon icon)
+    {
+        if (ConfirmBoxProvider is not null)
+        {
+            return ConfirmBoxProvider(
+                this,
+                message,
+                caption,
+                buttons,
+                icon);
+        }
+
+        return MessageBox.Show(
+            this,
+            message,
+            caption,
+            buttons,
+            icon);
+    }
+
     [ThreadStatic]
     internal static Action<IWin32Window, string, string, MessageBoxButtons, MessageBoxIcon>? MessageBoxProvider;
+
+    [ThreadStatic]
+    internal static Func<IWin32Window, string, string, MessageBoxButtons, MessageBoxIcon, DialogResult>? ConfirmBoxProvider;
 
     [ThreadStatic]
     internal static Func<IWin32Window?, string?, string?>? FolderBrowserDialogProvider;

@@ -9,6 +9,12 @@ A robust, fail-safe Windows desktop utility for tracking, organizing, and record
 - **Dual Workflow Modes**:
   - **Reference-Assisted Workflow**: Manage assets generated from a visual reference image (e.g. concept art, draft) with multi-stage verification.
   - **No Reference Mode**: Manage direct single-step generation assets without reference image dependencies.
+- **Automated API & Production Batch Generation**:
+  - **Generate Now (API)**: Rate-limited direct generation via official provider APIs (e.g. OpenAI `gpt-image-2`).
+  - **Production Batch Automation**: Asynchronous batch generation with a **50% API cost discount** and separate batch quotas.
+  - **Manifest V2 & Alpha Detection**: Automated request manifest processing supporting transparency requirements (`"alpha": "required" | "not_required" | "unknown"`).
+  - **Secure DPAPI Secret Storage**: Windows Data Protection API (DPAPI) ensures API keys are encrypted at rest and never saved in plaintext logs, settings, or manifests.
+  - **Full Automation Provenance**: End-to-end provenance capturing generation model, mode (direct/batch), target vs provider resolutions, raw and normalized SHA-256 hashes, provider request IDs, and batch IDs.
 - **Independent Image Slots**: Select, refresh, choose, or drag-and-drop reference and main image candidates independently with immediate previews.
 - **Canonical Ingame Copy**: Automatically creates an `ingame/<assetName>.<ext>` copy with the normalized asset name while retaining the original source filename in the root directory.
 - **Non-Destructive File Copying**: Downloaded source files are copied. They are **not** moved or deleted by a normal save operation.
@@ -65,6 +71,22 @@ When committing assets, the tool organizes files under your configured **Asset R
 5. **No Reference Mode Checkbox**:
    - Check this box if no reference image was used for the asset. When enabled, the Reference card is hidden and the Main card expands to full width.
 
+### API request queue
+
+Import a version 1 or 2 request manifest with **Import Request...**. Selecting a
+row copies its prompt and, when an API result is ready, loads the staged candidate
+into Main for normal review and commit. **Generate Now (API)** creates direct
+requests; **Queue Production Batch** submits eligible requests to OpenAI Batch.
+An API result is never marked Done by itself: it becomes Done only after the
+existing Main commit has completed durably.
+
+The queue, its original order, and completed rows are restored after restarting
+the application, even if the imported manifest was moved or deleted. Use
+**Clear Queue** to deliberately remove that local queue snapshot and its
+completion display. Clearing the queue does not delete locally staged candidates,
+generation-job records, or any remote OpenAI batch; those remain available for
+paid-output/recovery safety.
+
 ---
 
 ## Keyboard Shortcuts
@@ -108,25 +130,22 @@ and method counts against `code-coverage-baseline.json`, plus an enumerated
 allowlist for the small number of methods that cannot run unattended — see
 `code-coverage-exclusions.json`).
 
-### Publish Self-Contained Executable
+### Publish release package
 ```powershell
-$publishDirectory = Join-Path $PWD "artifacts/publish"
+$publishDirectory = Join-Path $PWD "artifacts/publish-sacsafe"
 $sourceRevisionId = (git rev-parse HEAD).Trim()
 if (Test-Path -LiteralPath $publishDirectory) {
     Remove-Item -LiteralPath $publishDirectory -Recurse -Force
 }
-dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj -c Release -r win-x64 --self-contained true -p:SourceRevisionId=$sourceRevisionId -o artifacts/publish
-powershell -File scripts/run_smoke_tests.ps1 -PublishDir artifacts/publish -LogOutputDir artifacts
+dotnet publish src/AssetProvenanceHelper/AssetProvenanceHelper.csproj -c Release --no-self-contained -p:UseAppHost=false -p:SourceRevisionId=$sourceRevisionId -o $publishDirectory
+powershell -File scripts/run_smoke_tests_sac_safe.ps1 -AppDir $publishDirectory
 ```
 
 ### Local Smoke Test (Smart App Control–safe)
 
-The smoke test above launches the **self-contained, unsigned** `AssetProvenanceHelper.exe`.
-On a machine with **Windows Smart App Control (SAC)** enabled, SAC blocks that unsigned
-native executable, so the launch step fails as an *environment* condition — not a product
-defect. For local startup verification on a SAC-enabled box, use the SAC-safe variant, which
-launches the app through the **signed `dotnet` host** (`dotnet AssetProvenanceHelper.dll`)
-instead of the native apphost:
+On a machine with **Windows Smart App Control (SAC)** enabled, never launch an
+unsigned native apphost. Use the SAC-aware test wrapper and the framework-dependent,
+apphost-free package path instead:
 
 ```powershell
 dotnet build AssetProvenanceHelper.sln -c Release --no-restore -warnaserror
@@ -135,9 +154,11 @@ powershell -File scripts/run_smoke_tests_sac_safe.ps1
 # (PowerShell 7 also works if installed: pwsh scripts/run_smoke_tests_sac_safe.ps1)
 ```
 
-> See `AGENTS.md` for the full rationale: `dotnet build`/`test`/`run` all run through
-> Microsoft-signed hosts, so the unit/UI test suite is unaffected by SAC — only the
-> self-contained published exe trips it.
+> A signed `dotnet` host does not guarantee that SAC will accept a freshly built
+> unsigned GUI DLL. If output contains `0x800711C7` or Code Integrity records a
+> 3033/3077 event, it is an environment block, not a product failure. Do not retry
+> blindly or alter SAC/Defender settings; use `scripts/run_tests_sac_safe.ps1`, which
+> reports that condition distinctly. See `AGENTS.md` and `C:\Projects\SACsolutions.md`.
 
 ---
 

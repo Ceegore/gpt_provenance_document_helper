@@ -113,10 +113,10 @@ public sealed class AssetRequestManifestService
                 "Request Manifest could not be deserialized.");
         }
 
-        if (dto.ManifestVersion != 1)
+        if (dto.ManifestVersion != 1 && dto.ManifestVersion != 2)
         {
             throw new InvalidDataException(
-                $"Unsupported manifestVersion {dto.ManifestVersion}. Expected 1.");
+                $"Unsupported manifestVersion {dto.ManifestVersion}. Expected 1 or 2.");
         }
 
         if (dto.Assets is null
@@ -198,11 +198,22 @@ public sealed class AssetRequestManifestService
                             assetValidation.Errors));
                 }
 
+                var alpha =
+                    ParseAlphaRequirement(
+                        raw.Alpha,
+                        dto.ManifestVersion);
+
                 var requestKey =
-                    ComputeRequestKey(
-                        fileName,
-                        normalizedResolution,
-                        raw.Prompt);
+                    dto.ManifestVersion == 2
+                        ? ComputeRequestKeyV2(
+                            fileName,
+                            normalizedResolution,
+                            raw.Prompt,
+                            alpha)
+                        : ComputeRequestKey(
+                            fileName,
+                            normalizedResolution,
+                            raw.Prompt);
 
                 items.Add(
                     new AssetRequestItem
@@ -226,7 +237,10 @@ public sealed class AssetRequestManifestService
                             raw.Prompt,
 
                         RequestKey =
-                            requestKey
+                            requestKey,
+
+                        Alpha =
+                            alpha
                     });
             }
             catch (Exception ex)
@@ -241,12 +255,13 @@ public sealed class AssetRequestManifestService
 
         var manifestFingerprint =
             ComputeManifestFingerprint(
-                items);
+                items,
+                dto.ManifestVersion);
 
         return new AssetRequestManifest
         {
             Version =
-                1,
+                dto.ManifestVersion,
 
             SourcePath =
                 Path.GetFullPath(path),
@@ -366,8 +381,38 @@ public sealed class AssetRequestManifestService
             material);
     }
 
+    internal static string ComputeRequestKeyV2(
+        string fileName,
+        string normalizedResolution,
+        string prompt,
+        Core.Generation.AlphaRequirement alpha)
+    {
+        var normalizedPrompt =
+            NormalizeLineEndings(prompt);
+
+        var alphaStr = alpha switch
+        {
+            Core.Generation.AlphaRequirement.Required => "required",
+            Core.Generation.AlphaRequirement.NotRequired => "not_required",
+            _ => "unknown"
+        };
+
+        var material =
+            fileName.ToLowerInvariant()
+            + "\n"
+            + normalizedResolution
+            + "\n"
+            + alphaStr
+            + "\n"
+            + normalizedPrompt;
+
+        return ComputeSha256(
+            material);
+    }
+
     internal static string ComputeManifestFingerprint(
-        IEnumerable<AssetRequestItem> items)
+        IEnumerable<AssetRequestItem> items,
+        int manifestVersion = 1)
     {
         var keys =
             items
@@ -378,13 +423,50 @@ public sealed class AssetRequestManifestService
                 .ToArray();
 
         var material =
-            "manifestVersion=1\n"
+            $"manifestVersion={manifestVersion}\n"
             + string.Join(
                 "\n",
                 keys);
 
         return ComputeSha256(
             material);
+    }
+
+    private static Core.Generation.AlphaRequirement ParseAlphaRequirement(
+        string? value,
+        int manifestVersion)
+    {
+        if (manifestVersion == 1)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                throw new InvalidDataException(
+                    "alpha property is not supported in manifestVersion 1.");
+            }
+
+            return Core.Generation.AlphaRequirement.Unknown;
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Core.Generation.AlphaRequirement.Unknown;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "required" =>
+                Core.Generation.AlphaRequirement.Required,
+
+            "not_required" =>
+                Core.Generation.AlphaRequirement.NotRequired,
+
+            "unknown" =>
+                Core.Generation.AlphaRequirement.Unknown,
+
+            _ =>
+                throw new InvalidDataException(
+                    $"Unsupported alpha value '{value}'. Expected 'required', 'not_required', or 'unknown'.")
+        };
     }
 
     private static string NormalizeLineEndings(
@@ -435,5 +517,8 @@ public sealed class AssetRequestManifestService
 
         [JsonPropertyName("prompt")]
         public string? Prompt { get; set; }
+
+        [JsonPropertyName("alpha")]
+        public string? Alpha { get; set; }
     }
 }

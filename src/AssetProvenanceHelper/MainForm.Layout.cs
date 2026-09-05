@@ -143,14 +143,27 @@ partial class MainForm
         };
         btnHelp.Click += (_, _) => ShowHelpOverlay();
 
+        btnSettings = new Button
+        {
+            Name = "btnSettings",
+            Text = "Settings",
+            Size = new Size(75, 32),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            Location = new Point(pnlHeader.Width - 119, 6),
+            UseVisualStyleBackColor = true
+        };
+        btnSettings.Click += (_, _) => OpenSettingsDialog();
+
         pnlHeader.Controls.Add(picLogo);
         pnlHeader.Controls.Add(lblHeaderTitle);
         pnlHeader.Controls.Add(lblHeaderVersion);
+        pnlHeader.Controls.Add(btnSettings);
         pnlHeader.Controls.Add(btnHelp);
 
         pnlHeader.Resize += (_, _) =>
         {
             btnHelp.Location = new Point(pnlHeader.Width - 36, 6);
+            btnSettings.Location = new Point(pnlHeader.Width - 119, 6);
         };
 
         root.Controls.Add(pnlHeader, 0, 0);
@@ -740,9 +753,44 @@ partial class MainForm
         queueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
+        var actionsLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 5,
+            RowCount = 1,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 4)
+        };
+        for (var column = 0; column < 5; column++)
+        {
+            actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f));
+        }
+
         btnImportRequest = CreateButton("Import Request...");
         btnImportRequest.Name = "btnImportRequest";
         btnImportRequest.Dock = DockStyle.Fill;
+
+        btnClearRequestQueue = CreateButton("Clear Queue");
+        btnClearRequestQueue.Name = "btnClearRequestQueue";
+        btnClearRequestQueue.Dock = DockStyle.Fill;
+
+        btnGenerateNow = CreateButton("Generate Now (API)");
+        btnGenerateNow.Name = "btnGenerateNow";
+        btnGenerateNow.Dock = DockStyle.Fill;
+
+        btnQueueProductionBatch = CreateButton("Queue Production Batch");
+        btnQueueProductionBatch.Name = "btnQueueProductionBatch";
+        btnQueueProductionBatch.Dock = DockStyle.Fill;
+
+        btnRetrySelectedApi = CreateButton("Retry / Resolve...");
+        btnRetrySelectedApi.Name = "btnRetrySelectedApi";
+        btnRetrySelectedApi.Dock = DockStyle.Fill;
+
+        actionsLayout.Controls.Add(btnImportRequest, 0, 0);
+        actionsLayout.Controls.Add(btnClearRequestQueue, 1, 0);
+        actionsLayout.Controls.Add(btnGenerateNow, 2, 0);
+        actionsLayout.Controls.Add(btnQueueProductionBatch, 3, 0);
+        actionsLayout.Controls.Add(btnRetrySelectedApi, 4, 0);
 
         lblRequestSource = new Label
         {
@@ -778,7 +826,7 @@ partial class MainForm
             Margin = new Padding(0, 6, 0, 0)
         };
 
-        queueLayout.Controls.Add(btnImportRequest, 0, 0);
+        queueLayout.Controls.Add(actionsLayout, 0, 0);
         queueLayout.Controls.Add(lblRequestSource, 0, 1);
         queueLayout.Controls.Add(lvRequestQueue, 0, 2);
         queueLayout.Controls.Add(lblRequestProgress, 0, 3);

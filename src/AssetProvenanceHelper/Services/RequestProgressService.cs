@@ -151,4 +151,12 @@ public sealed class RequestProgressService
             }
         }
     }
+
+    public void Clear()
+    {
+        if (File.Exists(_path))
+        {
+            File.Delete(_path);
+        }
+    }
 }

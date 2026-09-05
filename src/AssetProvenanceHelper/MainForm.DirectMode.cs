@@ -9,6 +9,12 @@ partial class MainForm
 {
     private void HandleMainImageEntryPoint()
     {
+        if (_activeApiCandidateMetadata is not null)
+        {
+            HandleMainImage();
+            return;
+        }
+
         if (!chkDirectMode.Checked)
         {
             HandleMainImage();

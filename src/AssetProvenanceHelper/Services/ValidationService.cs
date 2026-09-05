@@ -363,7 +363,7 @@ public sealed partial class ValidationService
                     path,
                     FileMode.Open,
                     FileAccess.Read,
-                    FileShare.Read);
+                    FileShare.ReadWrite | FileShare.Delete);
 
             if (stream.Length <= 0)
             {

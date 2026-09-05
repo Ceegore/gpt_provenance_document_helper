@@ -29,6 +29,10 @@ partial class MainForm
 
             case ImageSlot.Main:
                 _mainImagePath = path;
+                if (_activeApiCandidateMetadata != null && !string.Equals(_activeApiCandidateMetadata.NormalizedImagePath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    _activeApiCandidateMetadata = null;
+                }
                 UpdateImageSlotUi(ImageSlot.Main, path);
                 break;
 

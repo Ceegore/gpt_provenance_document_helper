@@ -111,7 +111,12 @@ internal static class Program
                 context.SessionService,
                 context.ProviderTemplateCatalogService,
                 context.RecentDocumentHistoryService,
-                context.RequestProgressService);
+                context.RequestProgressService,
+                context.ImageGenerationProvider,
+                context.SecretStore,
+                context.GenerationJobStore,
+                null,
+                context.RequestQueueStateService);
 
         if (ApplicationRunProvider is not null)
         {
