@@ -432,15 +432,6 @@ private readonly SettingsService _settingsService;
 
     private void MainForm_KeyDown(object? sender, KeyEventArgs e)
     {
-        if (_promptOverlay is not null
-            && _promptOverlay.Visible
-            && e.KeyCode == Keys.Escape)
-        {
-            e.SuppressKeyPress = true;
-            HidePromptOverlay();
-            return;
-        }
-
         if (helpOverlay != null && helpOverlay.Visible)
         {
             if (e.KeyCode == Keys.Escape)

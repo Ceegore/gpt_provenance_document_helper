@@ -1,5 +1,4 @@
 ﻿#nullable enable
-using System.Drawing;
 using System.Reflection;
 using System.Windows.Forms;
 using AssetProvenanceHelper.Dialogs;
@@ -83,240 +82,27 @@ public class UpgradeV13ParanoidUiTests
         return path;
     }
 
-    // ==================== Prompt overlay ====================
+    // ==================== Prompt preview ====================
 
     [Fact]
-    public void Overlay_MouseEnterShowsFullPromptAndEscapeCloses()
+    public void PromptPreview_DoesNotCreateHoverOverlay()
     {
         RunOnSta(() =>
         {
             using var workspace = new TestWorkspace();
             using var form = CreateProductionForm(workspace);
-
             form.Show();
 
-            var txtPrompt =
-                FindControl<TextBox>(form, "txtPrompt");
+            FindControl<TextBox>(form, "txtPrompt").Text = new string('x', 500);
+            var preview = FindControl<Label>(form, "lblPromptPreview");
 
-            var lblPreview =
-                FindControl<Label>(form, "lblPromptPreview");
+            var onMouseEnter = typeof(Label).GetMethod(
+                "OnMouseEnter", BindingFlags.NonPublic | BindingFlags.Instance);
+            onMouseEnter!.Invoke(preview, new object[] { EventArgs.Empty });
 
-            var longPrompt =
-                new string('x', 500);
-
-            txtPrompt.Text = longPrompt;
-
-            // Real MouseEnter event.
-            var onMouseEnter =
-                typeof(Label).GetMethod(
-                    "OnMouseEnter",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            onMouseEnter!.Invoke(lblPreview, new object[] { EventArgs.Empty });
-
-            var overlay =
-                form.Controls.Find("promptOverlay", true)
-                    .FirstOrDefault() as PromptPreviewOverlayControl;
-
-            Assert.NotNull(overlay);
-            Assert.True(overlay.Visible);
-
-            // Full exact prompt must be in the overlay textbox.
-            var overlayTextBox =
-                overlay!.Controls.Find("_txtFullPrompt", true)
-                    .FirstOrDefault() as TextBox;
-
-            Assert.NotNull(overlayTextBox);
-            Assert.Equal(longPrompt, overlayTextBox!.Text);
-
-            // Overlay must be inside the form bounds.
-            Assert.True(overlay.Left >= 0);
-            Assert.True(overlay.Top >= 0);
-            Assert.True(overlay.Right <= form.ClientSize.Width);
-            Assert.True(overlay.Bottom <= form.ClientSize.Height);
-
-            // Updating the prompt updates the open overlay.
-            txtPrompt.Text = "shorter";
-            Assert.Equal("shorter", overlayTextBox.Text);
-
-            // Escape closes it via the real KeyDown path.
-            var keyDown =
-                typeof(MainForm).GetMethod(
-                    "MainForm_KeyDown",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            var escape =
-                new KeyEventArgs(Keys.Escape);
-
-            keyDown!.Invoke(form, new object[] { form, escape });
-
-            Assert.False(overlay.Visible);
-        });
-    }
-
-    [Fact]
-    public void Overlay_TimerKeepsOpenWhileCursorOverPreviewAndClosesAfter()
-    {
-        RunOnSta(() =>
-        {
-            using var workspace = new TestWorkspace();
-            using var form = CreateProductionForm(workspace);
-
-            form.Show();
-
-            var txtPrompt =
-                FindControl<TextBox>(form, "txtPrompt");
-
-            txtPrompt.Text = "hover prompt";
-
-            var lblPreview =
-                FindControl<Label>(form, "lblPromptPreview");
-
-            var overlay =
-                form.Controls.Find("promptOverlay", true)
-                    .FirstOrDefault() as PromptPreviewOverlayControl;
-
-            Assert.NotNull(overlay);
-
-            var showMethod =
-                typeof(MainForm).GetMethod(
-                    "ShowPromptOverlay",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            var hideMethod =
-                typeof(MainForm).GetMethod(
-                    "HidePromptOverlay",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            var timerField =
-                typeof(MainForm).GetField(
-                    "_promptOverlayTimer",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            var timer =
-                timerField!.GetValue(form) as System.Windows.Forms.Timer;
-
-            Assert.NotNull(timer);
-
-            var onTick =
-                typeof(System.Windows.Forms.Timer).GetMethod(
-                    "OnTick",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            try
-            {
-                // Cursor over the preview label: tick keeps the overlay open.
-                showMethod!.Invoke(form, null);
-                Assert.True(overlay!.Visible);
-
-                // Stop the real timer so only the explicit OnTick invocation
-                // below can change overlay state (the real 100ms timer would
-                // otherwise race the test and close the overlay first).
-                timer!.Stop();
-
-                var previewScreen =
-                    lblPreview.RectangleToScreen(
-                        lblPreview.ClientRectangle);
-
-                MainForm.CursorPositionProvider =
-                    () => new Point(
-                        previewScreen.Left + 5,
-                        previewScreen.Top + 5);
-
-                onTick!.Invoke(timer, new object[] { EventArgs.Empty });
-
-                Assert.True(overlay.Visible);
-
-                // Cursor moved far away: tick closes it.
-                MainForm.CursorPositionProvider = () => new Point(2, 2);
-
-                onTick.Invoke(timer, new object[] { EventArgs.Empty });
-
-                Assert.False(overlay.Visible);
-            }
-            finally
-            {
-                MainForm.CursorPositionProvider = null;
-            }
-        });
-    }
-
-    [Fact]
-    public void Overlay_CloseButtonHidesAndMouseLeaveStartsTimer()
-    {
-        RunOnSta(() =>
-        {
-            using var workspace = new TestWorkspace();
-            using var form = CreateProductionForm(workspace);
-
-            form.Show();
-
-            var txtPrompt =
-                FindControl<TextBox>(form, "txtPrompt");
-
-            txtPrompt.Text = "prompt";
-
-            var overlay =
-                form.Controls.Find("promptOverlay", true)
-                    .FirstOrDefault() as PromptPreviewOverlayControl;
-
-            Assert.NotNull(overlay);
-
-            var showMethod =
-                typeof(MainForm).GetMethod(
-                    "ShowPromptOverlay",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            showMethod!.Invoke(form, null);
-            Assert.True(overlay!.Visible);
-
-            // Click the real Close button inside the overlay.
-            var closeButton =
-                overlay.Controls.Find("_btnClose", true)
-                    .FirstOrDefault() as Button;
-
-            Assert.NotNull(closeButton);
-            closeButton!.PerformClick();
-
-            Assert.False(overlay.Visible);
-
-            // MouseLeave on the preview starts the close timer.
-            var lblPreview =
-                FindControl<Label>(form, "lblPromptPreview");
-
-            var onMouseLeave =
-                typeof(Label).GetMethod(
-                    "OnMouseLeave",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            onMouseLeave!.Invoke(lblPreview, new object[] { EventArgs.Empty });
-
-            // A tick with the cursor elsewhere must hide the overlay.
-            var timerField =
-                typeof(MainForm).GetField(
-                    "_promptOverlayTimer",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            var timer =
-                timerField!.GetValue(form) as System.Windows.Forms.Timer;
-
-            var onTick =
-                typeof(System.Windows.Forms.Timer).GetMethod(
-                    "OnTick",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-            try
-            {
-                timer!.Stop();
-                MainForm.CursorPositionProvider = () => new Point(2, 2);
-                onTick!.Invoke(timer, new object[] { EventArgs.Empty });
-
-                Assert.False(overlay.Visible);
-            }
-            finally
-            {
-                MainForm.CursorPositionProvider = null;
-            }
+            Assert.Empty(form.Controls.Find("promptOverlay", true));
+            Assert.Null(typeof(MainForm).GetMethod(
+                "ShowPromptOverlay", BindingFlags.NonPublic | BindingFlags.Instance));
         });
     }
 

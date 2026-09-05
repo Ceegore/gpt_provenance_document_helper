@@ -80,6 +80,11 @@ requests; **Queue Production Batch** submits eligible requests to OpenAI Batch.
 An API result is never marked Done by itself: it becomes Done only after the
 existing Main commit has completed durably.
 
+Animation source documents may use the exact filename token `{frame:03d}`. It is
+preserved in the manifest request semantics and represented as `_frames` in the
+safe Windows asset-folder name; arbitrary invalid filename characters still fail
+validation.
+
 The queue, its original order, and completed rows are restored after restarting
 the application, even if the imported manifest was moved or deleted. Use
 **Clear Queue** to deliberately remove that local queue snapshot and its

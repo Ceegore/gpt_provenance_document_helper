@@ -266,15 +266,17 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            ColumnCount = 3,
-            RowCount = 1
+            ColumnCount = 2,
+            RowCount = 2
         };
 
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        // Hug the content; see BuildSettingsGroup for why this is required.
+        // The mode controls occupy their own responsive row. Keeping them in an
+        // AutoSize third column made the rightmost controls disappear when the
+        // window was narrower than the preferred desktop layout.
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var lblName = new Label { Text = "Asset Name", AutoSize = true, Anchor = AnchorStyles.Left };
@@ -285,12 +287,9 @@ partial class MainForm
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Anchor = AnchorStyles.Left,
+            Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
-            // Keep the mode controls on ONE line. Wrapping stacked them into four
-            // rows, inflating the Current Asset group and squeezing the cards
-            // section off screen at the default window size.
-            WrapContents = false,
+            WrapContents = true,
             Margin = new Padding(0)
         };
 
@@ -331,7 +330,9 @@ partial class MainForm
             Text = "Variants",
             AutoSize = true,
             Anchor = AnchorStyles.Left,
-            Margin = new Padding(14, 6, 0, 0)
+            // FlowLayoutPanel already vertically centres controls in this row.
+            // A top margin made this label visibly lower than its selector.
+            Margin = new Padding(14, 0, 0, 0)
         };
 
         cmbVariants = new ComboBox
@@ -354,15 +355,29 @@ partial class MainForm
             + "before clicking Reference - the count is locked once a reference "
             + "session is active.");
 
+        // Keep the label and selector together when the mode row wraps; a
+        // FlowLayoutPanel otherwise can put them on different lines.
+        var variantsFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(14, 0, 0, 0)
+        };
+        lblVariants.Margin = new Padding(0);
+        cmbVariants.Margin = new Padding(4, 0, 0, 0);
+        variantsFlow.Controls.Add(lblVariants);
+        variantsFlow.Controls.Add(cmbVariants);
+
         modeFlow.Controls.Add(chkNoReference);
         modeFlow.Controls.Add(chkDirectMode);
         modeFlow.Controls.Add(chkKeepSettings);
-        modeFlow.Controls.Add(lblVariants);
-        modeFlow.Controls.Add(cmbVariants);
+        modeFlow.Controls.Add(variantsFlow);
 
         layout.Controls.Add(lblName, 0, 0);
         layout.Controls.Add(pnlAssetFolderNameHost, 1, 0);
-        layout.Controls.Add(modeFlow, 2, 0);
+        layout.Controls.Add(modeFlow, 1, 1);
 
         grpCurrentAsset.Controls.Add(layout);
         root.Controls.Add(grpCurrentAsset, 0, 2);
@@ -603,7 +618,6 @@ partial class MainForm
             Height = 16,
             MaximumSize = new Size(0, 16)
         };
-        _toolTip.SetToolTip(lblPromptPreview, "Hover for the full Prompt.");
 
         txtPrompt = new TextBox
         {
@@ -664,8 +678,8 @@ partial class MainForm
             Text = "Status History & Actions",
             Dock = DockStyle.Fill,
             AutoSize = false,
-            Height = 145,
-            MinimumSize = new Size(0, 135),
+            Height = 210,
+            MinimumSize = new Size(0, 190),
             Padding = new Padding(10)
         };
 
@@ -753,44 +767,39 @@ partial class MainForm
         queueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var actionsLayout = new TableLayoutPanel
+        // Five percent-sized Dock.Fill buttons in one table row were both
+        // clipped horizontally and stretched vertically. A wrapping flow keeps
+        // every action reachable at its normal height.
+        var actionsLayout = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 5,
-            RowCount = 1,
+            Dock = DockStyle.Top,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
             Margin = new Padding(0, 0, 0, 4)
         };
-        for (var column = 0; column < 5; column++)
-        {
-            actionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f));
-        }
 
         btnImportRequest = CreateButton("Import Request...");
         btnImportRequest.Name = "btnImportRequest";
-        btnImportRequest.Dock = DockStyle.Fill;
 
         btnClearRequestQueue = CreateButton("Clear Queue");
         btnClearRequestQueue.Name = "btnClearRequestQueue";
-        btnClearRequestQueue.Dock = DockStyle.Fill;
 
         btnGenerateNow = CreateButton("Generate Now (API)");
         btnGenerateNow.Name = "btnGenerateNow";
-        btnGenerateNow.Dock = DockStyle.Fill;
 
         btnQueueProductionBatch = CreateButton("Queue Production Batch");
         btnQueueProductionBatch.Name = "btnQueueProductionBatch";
-        btnQueueProductionBatch.Dock = DockStyle.Fill;
 
         btnRetrySelectedApi = CreateButton("Retry / Resolve...");
         btnRetrySelectedApi.Name = "btnRetrySelectedApi";
-        btnRetrySelectedApi.Dock = DockStyle.Fill;
 
-        actionsLayout.Controls.Add(btnImportRequest, 0, 0);
-        actionsLayout.Controls.Add(btnClearRequestQueue, 1, 0);
-        actionsLayout.Controls.Add(btnGenerateNow, 2, 0);
-        actionsLayout.Controls.Add(btnQueueProductionBatch, 3, 0);
-        actionsLayout.Controls.Add(btnRetrySelectedApi, 4, 0);
+        actionsLayout.Controls.Add(btnImportRequest);
+        actionsLayout.Controls.Add(btnClearRequestQueue);
+        actionsLayout.Controls.Add(btnGenerateNow);
+        actionsLayout.Controls.Add(btnQueueProductionBatch);
+        actionsLayout.Controls.Add(btnRetrySelectedApi);
 
         lblRequestSource = new Label
         {

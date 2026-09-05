@@ -35,7 +35,7 @@ public class ChangeV11MainFormTests
     }
 
     [Fact]
-    public void MainRoot_AutoScrollFalse()
+    public void MainRoot_AutoScrollKeepsReducedHeightWorkflowReachable()
     {
         RunOnSta(() =>
         {
@@ -49,7 +49,7 @@ public class ChangeV11MainFormTests
                 workspace.CreateAssetProcessor(),
                 workspace.CreateSessionService());
 
-            Assert.False(form.AutoScroll);
+            Assert.True(form.AutoScroll);
         });
     }
 

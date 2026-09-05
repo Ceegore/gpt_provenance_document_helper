@@ -1276,6 +1276,74 @@ public class UpgradeV13MainFormTests
     }
 
     [Fact]
+    public void RequestQueueActionsWrapAtNormalHeightAndStatusHistoryIsUsable()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            using var form = CreateProductionForm(workspace);
+            form.Show();
+            form.PerformLayout();
+
+            var importButton = FindControl<Button>(form, "btnImportRequest");
+            var actionHost = Assert.IsType<FlowLayoutPanel>(importButton.Parent);
+            Assert.True(actionHost.WrapContents);
+
+            foreach (var button in actionHost.Controls.OfType<Button>())
+            {
+                Assert.InRange(button.Height, 20, 45);
+                Assert.True(button.Right <= actionHost.ClientSize.Width);
+                Assert.True(button.Bottom <= actionHost.ClientSize.Height);
+            }
+
+            var status = FindControl<GroupBox>(form, "grpStatus");
+            var history = FindControl<ListView>(form, "lvRecentDocuments");
+            Assert.True(status.Height >= 190);
+            Assert.True(history.Height >= 120);
+        });
+    }
+
+    [Fact]
+    public void ReducedHeightUsesScrollingInsteadOfClippingWorkflow()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            using var form = CreateProductionForm(workspace);
+            form.Size = new Size(1100, 600);
+            form.Show();
+            form.PerformLayout();
+
+            var workspaceControl = FindControl<TableLayoutPanel>(form, "pnlWorkspace");
+            Assert.True(form.AutoScroll);
+            Assert.True(workspaceControl.AutoScroll);
+            Assert.True(workspaceControl.Height >= 880);
+            Assert.True(form.VerticalScroll.Visible || workspaceControl.VerticalScroll.Visible);
+        });
+    }
+
+    [Fact]
+    public void VariantsLabelAndSelectorShareTheModeControlBaseline()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            using var form = CreateProductionForm(workspace);
+            form.Show();
+            form.PerformLayout();
+
+            var label = FindControl<Label>(form, "lblVariants");
+            var selector = FindControl<ComboBox>(form, "cmbVariants");
+            Assert.InRange(
+                Math.Abs(
+                    (label.Top + (label.Height / 2))
+                    - (selector.Top + (selector.Height / 2))),
+                0,
+                2);
+        });
+    }
+
+    [Fact]
     public void CompleteActiveRequestAfterMainCommit_ResetsActiveRequestAndApiCandidateMetadata()
     {
         RunOnSta(() =>
