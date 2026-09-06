@@ -848,10 +848,9 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5
+            RowCount = 4
         };
 
-        queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -891,14 +890,28 @@ partial class MainForm
         actionsLayout.Controls.Add(btnQueueProductionBatch);
         actionsLayout.Controls.Add(btnRetrySelectedApi);
 
-        var queueFilterLayout = new FlowLayoutPanel
+        // Keep the filter and manifest source on one compact row. The request queue
+        // lives alongside the image workspace, so its controls must not steal a
+        // separate line from the cards merely to show context information.
+        var queueContextLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0, 0, 0, 4)
+        };
+        queueContextLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        queueContextLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var queueFilterLayout = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Margin = new Padding(0, 0, 0, 4)
+            Anchor = AnchorStyles.Left
         };
         var lblQueueFilter = new Label
         {
@@ -925,9 +938,11 @@ partial class MainForm
         {
             Name = "lblRequestSource",
             Text = "No Request Manifest imported.",
-            AutoSize = true,
+            AutoSize = false,
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
+            Height = 24,
+            TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray
         };
 
@@ -951,9 +966,8 @@ partial class MainForm
             Name = "lblRequestProgress",
             Text = string.Empty,
             AutoSize = true,
-            Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
-            Margin = new Padding(0, 6, 0, 0)
+            Margin = new Padding(0, 6, 12, 0)
         };
 
         lblPixelSeriesProgress = new Label
@@ -962,26 +976,26 @@ partial class MainForm
             Text = string.Empty,
             AutoSize = true,
             AutoEllipsis = true,
-            Dock = DockStyle.Fill,
             ForeColor = Color.DimGray,
-            Margin = new Padding(0, 2, 0, 0)
+            Margin = new Padding(0, 6, 0, 0)
         };
 
         queueLayout.Controls.Add(actionsLayout, 0, 0);
-        queueLayout.Controls.Add(queueFilterLayout, 0, 1);
-        queueLayout.Controls.Add(lblRequestSource, 0, 2);
-        queueLayout.Controls.Add(lvRequestQueue, 0, 3);
+        queueContextLayout.Controls.Add(queueFilterLayout, 0, 0);
+        queueContextLayout.Controls.Add(lblRequestSource, 1, 0);
+        queueLayout.Controls.Add(queueContextLayout, 0, 1);
+        queueLayout.Controls.Add(lvRequestQueue, 0, 2);
         var queueProgressLayout = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.TopDown,
+            FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false
         };
         queueProgressLayout.Controls.Add(lblRequestProgress);
         queueProgressLayout.Controls.Add(lblPixelSeriesProgress);
-        queueLayout.Controls.Add(queueProgressLayout, 0, 4);
+        queueLayout.Controls.Add(queueProgressLayout, 0, 3);
 
         grpRequestQueue.Controls.Add(queueLayout);
     }
