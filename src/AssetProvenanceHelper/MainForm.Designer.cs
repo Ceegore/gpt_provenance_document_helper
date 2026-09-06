@@ -157,7 +157,10 @@ partial class MainForm
             // Match the form's supported minimum width. Keeping a wider
             // workspace here pushed the right-side queue partly off-screen at
             // the smallest allowed window size.
-            MinimumSize = new Size(1040, 880),
+            // The image cards need at least 260px to remain the usable primary
+            // workspace. 920px leaves them a comfortable 276px at the normal
+            // layout while the outer form scrolls on smaller displays.
+            MinimumSize = new Size(1040, 920),
             Padding = new Padding(12),
             ColumnCount = 2,
             RowCount = 1
