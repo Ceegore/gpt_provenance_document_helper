@@ -663,7 +663,7 @@ public class UpgradeV13ParanoidServiceTests
     }
 
     [Fact]
-    public void Progress_SaveOverwriteSucceeds()
+    public void Progress_SavePreservesOtherManifestCompletion()
     {
         using var workspace = new TestWorkspace();
 
@@ -679,8 +679,9 @@ public class UpgradeV13ParanoidServiceTests
         Assert.Equal(2, keys.Count);
         Assert.Contains("k2", keys);
 
-        // Old fingerprint's keys are gone.
-        Assert.Empty(service.LoadForManifest("fp-1"));
+        // Queue persistence is now independent per manifest. Importing a later
+        // Teil file must never make an earlier Teil reappear as unfinished.
+        Assert.Equal(new[] { "k1" }, service.LoadForManifest("fp-1"));
     }
 
     [Fact]

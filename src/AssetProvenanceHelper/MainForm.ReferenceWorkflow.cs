@@ -11,6 +11,17 @@ partial class MainForm
 {
     private void HandleReference()
     {
+        var workflow = GetActiveQueueWorkflowMetadata();
+        if (workflow.IsPixelExact)
+        {
+            ShowMessageBox(
+                "Pixel-Exact requests are committed with Main Image. The generated master/reference relationship belongs to the external image generator; the helper stores each queue output as its own final asset.",
+                "Use Main Image for Pixel-Exact",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
         if (_state == UiState.Idle
             && !CanStartNewAssetWithProvider)
         {

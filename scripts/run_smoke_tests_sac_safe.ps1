@@ -85,9 +85,11 @@ if (-not (Test-Path $providerTemplateExample)) { throw "Provider template exampl
 $examplesDir = Join-Path $AppDir "examples"
 $requestManifestTemplate = Join-Path $examplesDir "asset_request_manifest_template.json"
 $requestConversionPrompt = Join-Path $examplesDir "asset_request_conversion_prompt.txt"
+$pixelExactManifestTemplate = Join-Path $examplesDir "pixel_exact_manifest_template.json"
 if (-not (Test-Path $requestManifestTemplate)) { throw "Request Manifest template missing at: $requestManifestTemplate" }
 if (-not (Test-Path $requestConversionPrompt)) { throw "Request conversion prompt missing at: $requestConversionPrompt" }
-Write-Host "v1.3 provider/request support files verified."
+if (-not (Test-Path $pixelExactManifestTemplate)) { throw "Pixel-Exact manifest template missing at: $pixelExactManifestTemplate" }
+Write-Host "Provider/request/Pixel-Exact support files verified."
 
 # --- 2. Real process startup, window title & graceful shutdown -------------
 # NOTE: launched via the signed dotnet host, so the process Windows evaluates is

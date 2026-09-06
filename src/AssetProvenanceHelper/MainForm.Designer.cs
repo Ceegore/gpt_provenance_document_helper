@@ -26,6 +26,11 @@ partial class MainForm
     private TextBox txtAssetRoot = null!;
     private Panel pnlAssetRootHost = null!;
     private Button btnBrowseAssetRoot = null!;
+    private CheckBox chkCollect = null!;
+    private Label lblCollectFolder = null!;
+    private TextBox txtCollectFolder = null!;
+    private Panel pnlCollectFolderHost = null!;
+    private Button btnBrowseCollectFolder = null!;
     private ComboBox cmbProvider = null!;
     private Label lblProviderWarning = null!;
 
@@ -37,6 +42,9 @@ partial class MainForm
     private CheckBox chkKeepSettings = null!;
     private ComboBox cmbVariants = null!;
     private Label lblVariants = null!;
+    private CheckBox chkPixelExact = null!;
+    private ComboBox cmbPixelExactCount = null!;
+    private Label lblPixelExactCount = null!;
 
     private TableLayoutPanel pnlCardsContainer = null!;
     private GroupBox grpReference = null!;
@@ -129,17 +137,18 @@ partial class MainForm
         MinimumSize = new Size(1040, 600);
         // Keep the cards as the primary workspace at the preferred size while
         // retaining the now-useful history area below them.
-        Size = new Size(1500, 940);
+        Size = new Size(1500, 980);
         KeyPreview = true;
         AutoScroll = true;
 
         pnlWorkspace = new TableLayoutPanel
         {
             Name = "pnlWorkspace",
+            // Its height follows the viewport when there is room, but remains
+            // scrollable rather than compressed below the workflow minimum.
             Dock = DockStyle.Top,
             AutoScroll = true,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            AutoSize = false,
             // Match the form's supported minimum width. Keeping a wider
             // workspace here pushed the right-side queue partly off-screen at
             // the smallest allowed window size.
@@ -180,6 +189,16 @@ partial class MainForm
         pnlWorkspace.Controls.Add(grpRequestQueue, 1, 0);
 
         Controls.Add(pnlWorkspace);
+
+        Resize += (_, _) =>
+        {
+            pnlWorkspace.Height = Math.Max(
+                pnlWorkspace.MinimumSize.Height,
+                ClientSize.Height);
+        };
+        pnlWorkspace.Height = Math.Max(
+            pnlWorkspace.MinimumSize.Height,
+            ClientSize.Height);
 
         helpOverlay = new HelpOverlayControl();
         helpOverlay.Name = "helpOverlay";

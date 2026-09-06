@@ -186,7 +186,7 @@ partial class MainForm
             Dock = DockStyle.Fill,
             AutoSize = true,
             ColumnCount = 3,
-            RowCount = 3
+            RowCount = 4
         };
 
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
@@ -196,6 +196,7 @@ partial class MainForm
         // Rows must hug their content. Without explicit AutoSize row styles the
         // TableLayoutPanel splits its height evenly across the rows, which is what
         // produced the oversized grey blocks under each field.
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -218,9 +219,49 @@ partial class MainForm
         btnBrowseAssetRoot = CreateButton("Browse");
         btnBrowseAssetRoot.Name = "btnBrowseAssetRoot";
 
+        var assetRootActions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Anchor = AnchorStyles.Left
+        };
+
         layout.Controls.Add(lblRoot, 0, 1);
         layout.Controls.Add(pnlAssetRootHost, 1, 1);
-        layout.Controls.Add(btnBrowseAssetRoot, 2, 1);
+        assetRootActions.Controls.Add(btnBrowseAssetRoot);
+
+        // Optional flat collection folder. It is deliberately separate from the
+        // asset root: normal provenance output is never redirected or flattened.
+        chkCollect = new CheckBox
+        {
+            Name = "chkCollect",
+            Text = "Collect copies",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left
+        };
+        txtCollectFolder = new TextBox { Name = "txtCollectFolder" };
+        pnlCollectFolderHost = CreateFieldHost(txtCollectFolder, compact: true);
+        btnBrowseCollectFolder = CreateButton("Browse");
+        btnBrowseCollectFolder.Name = "btnBrowseCollectFolder";
+
+        assetRootActions.Controls.Add(chkCollect);
+        layout.Controls.Add(assetRootActions, 2, 1);
+
+        // This row is intentionally collapsed until Collect copies is enabled.
+        // The default window keeps the workspace height from v1.5.1, while the
+        // requested folder picker appears directly beneath Asset Root on demand.
+        lblCollectFolder = new Label
+        {
+            Name = "lblCollectFolder",
+            Text = "Collect Folder",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left
+        };
+        layout.Controls.Add(lblCollectFolder, 0, 2);
+        layout.Controls.Add(pnlCollectFolderHost, 1, 2);
+        layout.Controls.Add(btnBrowseCollectFolder, 2, 2);
 
         // AI Generation Provider
         var lblProvider = new Label { Text = "AI Generation Provider", AutoSize = true, Anchor = AnchorStyles.Left };
@@ -242,9 +283,9 @@ partial class MainForm
         };
         var pnlProviderHost = CreateFieldHost(cmbProvider, compact: true);
 
-        layout.Controls.Add(lblProvider, 0, 2);
-        layout.Controls.Add(pnlProviderHost, 1, 2);
-        layout.Controls.Add(lblProviderWarning, 2, 2);
+        layout.Controls.Add(lblProvider, 0, 3);
+        layout.Controls.Add(pnlProviderHost, 1, 3);
+        layout.Controls.Add(lblProviderWarning, 2, 3);
 
         grpSettings.Controls.Add(layout);
         root.Controls.Add(grpSettings, 0, 1);
@@ -370,10 +411,58 @@ partial class MainForm
         variantsFlow.Controls.Add(lblVariants);
         variantsFlow.Controls.Add(cmbVariants);
 
+        chkPixelExact = new CheckBox
+        {
+            Name = "chkPixelExact",
+            Text = "Pixel-exact mode",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(14, 0, 0, 0)
+        };
+        lblPixelExactCount = new Label
+        {
+            Name = "lblPixelExactCount",
+            Text = "Pixel phases",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Visible = false
+        };
+        cmbPixelExactCount = new ComboBox
+        {
+            Name = "cmbPixelExactCount",
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Anchor = AnchorStyles.Left,
+            Width = 60,
+            Visible = false
+        };
+        cmbPixelExactCount.Items.Add("none");
+        for (var i = 1; i <= AppConstants.MaxPixelExactOutputCount; i++)
+        {
+            cmbPixelExactCount.Items.Add(i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        cmbPixelExactCount.SelectedIndex = 0;
+        _toolTip.SetToolTip(
+            cmbPixelExactCount,
+            "Number of ordered non-master images produced by the selected RefN collection prompt. "
+            + "This mode cannot be combined with Variants or Direct mode.");
+
+        var pixelExactFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(14, 0, 0, 0)
+        };
+        pixelExactFlow.Controls.Add(lblPixelExactCount);
+        pixelExactFlow.Controls.Add(cmbPixelExactCount);
+
         modeFlow.Controls.Add(chkNoReference);
         modeFlow.Controls.Add(chkDirectMode);
         modeFlow.Controls.Add(chkKeepSettings);
         modeFlow.Controls.Add(variantsFlow);
+        modeFlow.Controls.Add(chkPixelExact);
+        modeFlow.Controls.Add(pixelExactFlow);
 
         layout.Controls.Add(lblName, 0, 0);
         layout.Controls.Add(pnlAssetFolderNameHost, 1, 0);
@@ -822,8 +911,9 @@ partial class MainForm
         };
 
         lvRequestQueue.Columns.Add("Status", 70);
-        lvRequestQueue.Columns.Add("Asset", 180);
-        lvRequestQueue.Columns.Add("Resolution", -2);
+        lvRequestQueue.Columns.Add("Asset", 150);
+        lvRequestQueue.Columns.Add("Resolution", 82);
+        lvRequestQueue.Columns.Add(string.Empty, 28);
 
         lblRequestProgress = new Label
         {

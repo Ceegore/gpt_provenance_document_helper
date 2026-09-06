@@ -30,6 +30,12 @@ public static class AppConstants
     public const string RequestQueueStateFileName =
         "request-queue-state.json";
 
+    public const string PixelExactBatchStateFileName =
+        "pixel-exact-batch-state.json";
+
+    public const string PixelExactStagingFolderName =
+        "pixel-exact";
+
     public const string ReferenceRoleLabel =
         "Intermediate reference image";
 
@@ -46,6 +52,8 @@ public static class AppConstants
         "not recorded";
 
     public const int MaxVariantCount = 10;
+
+    public const int MaxPixelExactOutputCount = 10;
 
     public static readonly IReadOnlyList<string> DefaultImageExtensions =
         new[]

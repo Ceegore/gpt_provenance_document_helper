@@ -1,13 +1,19 @@
+using System.Text.Json.Serialization;
+
 namespace AssetProvenanceHelper.Models;
 
 public sealed class RequestProgressState
 {
     public int SchemaVersion { get; set; } =
-        1;
+        2;
 
-    public string ManifestFingerprint { get; set; } =
-        string.Empty;
+    public Dictionary<string, List<string>> CompletedByManifest { get; set; } =
+        new(StringComparer.Ordinal);
 
-    public List<string> CompletedRequestKeys { get; set; } =
-        new();
+    // Schema-1 compatibility fields. Schema-2 writes never populate these.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ManifestFingerprint { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? CompletedRequestKeys { get; set; }
 }

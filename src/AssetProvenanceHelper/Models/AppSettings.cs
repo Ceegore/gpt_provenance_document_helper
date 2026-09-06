@@ -8,6 +8,12 @@ public sealed class AppSettings
 
     public string AssetRootFolder { get; set; } = string.Empty;
 
+    /// <summary>When true, each successfully committed main image is also copied
+    /// flat into <see cref="CollectFolder"/> for convenient visual review.</summary>
+    public bool CollectEnabled { get; set; }
+
+    public string CollectFolder { get; set; } = string.Empty;
+
     public List<string> AcceptedExtensions { get; set; } =
         AppConstants.DefaultImageExtensions.ToList();
 

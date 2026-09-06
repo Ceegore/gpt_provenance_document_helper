@@ -53,6 +53,9 @@ OUTPUT RULES
     - Do not shorten it.
     - Do not omit any line or technical specification.
     - Preserve the prompt's content exactly, using valid JSON escaping.
+    - If a prompt contains FLOWMETA and/or PROZESSMARKER, preserve those clauses
+      verbatim inside "prompt". They are workflow instructions for the helper,
+      not new JSON properties and not text to be summarized or normalized.
 
 11. Do not omit any requested asset.
 
