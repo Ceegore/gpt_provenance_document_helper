@@ -848,9 +848,10 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4
+            RowCount = 5
         };
 
+        queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queueLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -890,6 +891,36 @@ partial class MainForm
         actionsLayout.Controls.Add(btnQueueProductionBatch);
         actionsLayout.Controls.Add(btnRetrySelectedApi);
 
+        var queueFilterLayout = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(0, 0, 0, 4)
+        };
+        var lblQueueFilter = new Label
+        {
+            Text = "Show",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 3, 6, 0)
+        };
+        cmbRequestQueueFilter = new ComboBox
+        {
+            Name = "cmbRequestQueueFilter",
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 150,
+            Anchor = AnchorStyles.Left
+        };
+        cmbRequestQueueFilter.Items.Add("All requests");
+        cmbRequestQueueFilter.Items.Add("Open Pixel series");
+        cmbRequestQueueFilter.SelectedIndex = 0;
+        _toolTip.SetToolTip(cmbRequestQueueFilter, "Shows all rows belonging to canonical Pixel-Exact series that still have unfinished phases. Legacy/manual rows remain under All requests.");
+        queueFilterLayout.Controls.Add(lblQueueFilter);
+        queueFilterLayout.Controls.Add(cmbRequestQueueFilter);
+
         lblRequestSource = new Label
         {
             Name = "lblRequestSource",
@@ -925,10 +956,32 @@ partial class MainForm
             Margin = new Padding(0, 6, 0, 0)
         };
 
+        lblPixelSeriesProgress = new Label
+        {
+            Name = "lblPixelSeriesProgress",
+            Text = string.Empty,
+            AutoSize = true,
+            AutoEllipsis = true,
+            Dock = DockStyle.Fill,
+            ForeColor = Color.DimGray,
+            Margin = new Padding(0, 2, 0, 0)
+        };
+
         queueLayout.Controls.Add(actionsLayout, 0, 0);
-        queueLayout.Controls.Add(lblRequestSource, 0, 1);
-        queueLayout.Controls.Add(lvRequestQueue, 0, 2);
-        queueLayout.Controls.Add(lblRequestProgress, 0, 3);
+        queueLayout.Controls.Add(queueFilterLayout, 0, 1);
+        queueLayout.Controls.Add(lblRequestSource, 0, 2);
+        queueLayout.Controls.Add(lvRequestQueue, 0, 3);
+        var queueProgressLayout = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false
+        };
+        queueProgressLayout.Controls.Add(lblRequestProgress);
+        queueProgressLayout.Controls.Add(lblPixelSeriesProgress);
+        queueLayout.Controls.Add(queueProgressLayout, 0, 4);
 
         grpRequestQueue.Controls.Add(queueLayout);
     }

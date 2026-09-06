@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using AssetProvenanceHelper;
 using AssetProvenanceHelper.Models;
 using AssetProvenanceHelper.Services;
 
@@ -110,6 +111,35 @@ public sealed class PixelExactWorkflowServiceTests : IDisposable
         Assert.Equal(3, state.TotalPhases);
         Assert.Equal(manifest.Items[1].RequestKey, state.CollectionRequestKey);
         Assert.Equal(manifest.Items[1].Prompt, state.CollectionGenerationPrompt);
+    }
+
+    [Fact]
+    public void SeriesProgress_UsesOnlyCanonicalSeries_AndKeepsItsCompletedContext()
+    {
+        var manifest = CreateManifest();
+        manifest.Items[0].IsCompleted = true;
+        var service = new QueueSeriesProgressService(_parser);
+
+        var series = Assert.Single(service.Summarize(manifest.Items, new HashSet<string>(StringComparer.Ordinal)));
+
+        Assert.Equal("scene_a", series.SeriesId);
+        Assert.Equal(1, series.CompletedPhases);
+        Assert.Equal(3, series.TotalPhases);
+        Assert.True(series.IsOpen);
+    }
+
+    [Fact]
+    public void PhasePreview_ListsTheExactOldestToNewestTargetMapping()
+    {
+        var text = MainForm.BuildPixelExactPhasePreviewText(
+        [
+            new MainForm.PixelExactPhasePreview(1, 2, "morning.png", "scene_morning", "768x1024"),
+            new MainForm.PixelExactPhasePreview(2, 2, "night.png", "scene_night", "768x1024")
+        ]);
+
+        Assert.Contains("1/2: morning.png  →  scene_morning (768x1024)", text);
+        Assert.Contains("2/2: night.png  →  scene_night (768x1024)", text);
+        Assert.Contains("oldest-to-newest", text);
     }
 
     private AssetRequestManifest CreateManifest()

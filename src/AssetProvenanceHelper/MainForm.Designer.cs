@@ -87,9 +87,11 @@ partial class MainForm
     private Button btnGenerateNow = null!;
     private Button btnQueueProductionBatch = null!;
     private Button btnRetrySelectedApi = null!;
+    private ComboBox cmbRequestQueueFilter = null!;
     private Label lblRequestSource = null!;
     private ListView lvRequestQueue = null!;
     private Label lblRequestProgress = null!;
+    private Label lblPixelSeriesProgress = null!;
 
     private HelpOverlayControl helpOverlay = null!;
     private ToolTip _toolTip = null!;

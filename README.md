@@ -115,6 +115,13 @@ and the conversion prompt in `src/AssetProvenanceHelper/examples`.
    and is marked Done only after its own durable commit. Every final provenance
    file records the actual RefN collection prompt, never an AusRef mapping text.
 
+Before the collection is frozen, a confirmation lists each detected source file
+and its exact target asset in oldest-to-newest order. Canceling this dialog makes
+no filesystem change. The queue's **Show: Open Pixel series** filter keeps every
+row of an incomplete canonical series visible (including an already completed
+master for context); the status below the queue reports both the overall and the
+currently selected series progress.
+
 The Pixel-Exact selector and phase drop-down are mutually exclusive with
 Variants and Direct mode. Pixel-Exact multi-image sequences intentionally do not
 run through the API controls: API generation must have an API key and produces

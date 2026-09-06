@@ -7,6 +7,12 @@ partial class MainForm
 {
     private readonly record struct PixelSeedCompletion(string RequestKey, string SeriesId);
     private readonly record struct PixelExactTarget(int OutputIndex, AssetRequestItem Request);
+    internal sealed record PixelExactPhasePreview(
+        int OutputIndex,
+        int OutputCount,
+        string SourceFileName,
+        string TargetAssetName,
+        string Resolution);
     /// <summary>0 means no collection on this row; otherwise 1..MaxPixelExactOutputCount.</summary>
     private int GetSelectedPixelExactOutputCount() => Math.Max(0, cmbPixelExactCount.SelectedIndex);
 
@@ -261,6 +267,30 @@ partial class MainForm
         }
 
         PixelExactBatchState state;
+        var previewSources = sources;
+        try
+        {
+            if (previewSources.Count == 0)
+            {
+                previewSources = _pixelExactBatchStateService.Load()?.Outputs
+                    .OrderBy(output => output.OutputIndex)
+                    .Select(output => output.StagedPath)
+                    .ToArray()
+                    ?? [];
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not prepare the Pixel-Exact phase preview.", ex);
+            return;
+        }
+
+        if (!ConfirmPixelExactPhaseOrder(targets, previewSources))
+        {
+            AddStatus("Pixel-Exact collection cancelled at phase-order confirmation.");
+            return;
+        }
+
         try
         {
             state = PreparePixelExactCollectionState(workflow, _activeRequest, sources);
@@ -535,6 +565,51 @@ partial class MainForm
             ShowError("Could not scan the Image Download Folder for Pixel-Exact images.", ex);
             return null;
         }
+    }
+
+    private bool ConfirmPixelExactPhaseOrder(IReadOnlyList<PixelExactTarget> targets, IReadOnlyList<string> orderedSources)
+    {
+        if (targets.Count == 0 || targets.Count != orderedSources.Count)
+        {
+            ShowMessageBox(
+                "The detected Pixel-Exact source images and queue targets do not have the same count. No files were written.",
+                "Pixel-Exact phase order unavailable",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return false;
+        }
+
+        var phases = targets
+            .Select((target, index) => new PixelExactPhasePreview(
+                target.OutputIndex,
+                targets.Count,
+                Path.GetFileName(orderedSources[index]),
+                target.Request.AssetName,
+                target.Request.Resolution))
+            .ToArray();
+        var confirmation = ShowConfirmDialog(
+            BuildPixelExactPhasePreviewText(phases),
+            "Confirm Pixel-Exact phase order",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Question);
+        return confirmation == DialogResult.OK;
+    }
+
+    internal static string BuildPixelExactPhasePreviewText(IReadOnlyList<PixelExactPhasePreview> phases)
+    {
+        ArgumentNullException.ThrowIfNull(phases);
+        if (phases.Count == 0)
+        {
+            throw new ArgumentException("At least one Pixel-Exact phase is required.", nameof(phases));
+        }
+
+        var rows = phases.Select(phase =>
+            $"{phase.OutputIndex}/{phase.OutputCount}: {phase.SourceFileName}  →  {phase.TargetAssetName} ({phase.Resolution})");
+        return "Review the ordered Pixel-Exact phases before any asset is written."
+            + Environment.NewLine + Environment.NewLine
+            + string.Join(Environment.NewLine, rows)
+            + Environment.NewLine + Environment.NewLine
+            + "The helper will freeze these files and commit them oldest-to-newest. Continue?";
     }
 
     private PixelExactBatchState PreparePixelExactCollectionState(QueuePromptWorkflowMetadata workflow, AssetRequestItem activeRequest, IReadOnlyList<string> sources)

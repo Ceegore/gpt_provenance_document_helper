@@ -34,6 +34,7 @@ private readonly SettingsService _settingsService;
     private readonly GenerationJobStore _generationJobStore;
     private readonly PixelExactBatchStateService _pixelExactBatchStateService;
     private readonly QueuePromptWorkflowParser _queuePromptWorkflowParser = new();
+    private readonly QueueSeriesProgressService _queueSeriesProgressService;
 
     private AppSettings _settings;
     private AssetSession? _currentSession;
@@ -101,6 +102,7 @@ private readonly SettingsService _settingsService;
             ?? new PixelExactBatchStateService(
                 AppBootstrap.GetPixelExactBatchStatePath(AppBootstrap.GetStateDirectory()),
                 AppBootstrap.GetPixelExactStagingPath(AppBootstrap.GetStateDirectory()));
+        _queueSeriesProgressService = new QueueSeriesProgressService(_queuePromptWorkflowParser);
         _imageGenerationProvider = imageGenerationProvider ?? new OpenAiImageGenerationProvider();
         _secretStore = secretStore ?? new DpapiSecretStore();
         _generationJobStore = generationJobStore ?? new GenerationJobStore(Path.Combine(AppBootstrap.GetStateDirectory(), "generation-jobs.json"));
@@ -292,6 +294,7 @@ private readonly SettingsService _settingsService;
         btnGenerateNow.Click += (_, _) => HandleGenerateNow();
         btnQueueProductionBatch.Click += (_, _) => HandleQueueProductionBatch();
         btnRetrySelectedApi.Click += (_, _) => HandleRetrySelectedApi();
+        cmbRequestQueueFilter.SelectedIndexChanged += (_, _) => HandleRequestQueueFilterChanged();
         lvRequestQueue.SelectedIndexChanged += (_, _) => ApplyRequestQueueState();
         lvRequestQueue.MouseUp += (_, e) => HandleRequestQueueMouseUp(e);
         lvRequestQueue.KeyDown += (_, e) =>

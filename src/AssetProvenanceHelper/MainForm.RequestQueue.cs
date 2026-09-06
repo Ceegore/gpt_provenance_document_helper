@@ -229,8 +229,20 @@ partial class MainForm
                 .GetItemsForManifest(_currentManifest.ManifestFingerprint)
                 .ToDictionary(j => j.RequestKey, StringComparer.Ordinal);
 
+            var openSeriesIds = _queueSeriesProgressService
+                .Summarize(_currentManifest.Items, _completedRequestKeys)
+                .Where(series => series.IsOpen)
+                .Select(series => series.SeriesId)
+                .ToHashSet(StringComparer.Ordinal);
+            var showOpenPixelSeriesOnly = cmbRequestQueueFilter.SelectedIndex == 1;
+
             foreach (var request in _currentManifest.Items)
             {
+                if (showOpenPixelSeriesOnly && !IsRequestInOpenCanonicalPixelSeries(request, openSeriesIds))
+                {
+                    continue;
+                }
+
                 preloadedJobs.TryGetValue(request.RequestKey, out var preloadedJob);
                 var (statusText, backColor) = GetRequestItemVisualStatus(request, preloadedJob);
 
@@ -268,6 +280,21 @@ partial class MainForm
         {
             lvRequestQueue.EndUpdate();
         }
+    }
+
+    private void HandleRequestQueueFilterChanged()
+    {
+        RefreshRequestQueueVisuals();
+        UpdateRequestProgressLabel();
+    }
+
+    private bool IsRequestInOpenCanonicalPixelSeries(AssetRequestItem request, ISet<string> openSeriesIds)
+    {
+        var workflow = _queuePromptWorkflowParser.Parse(request.Prompt);
+        return workflow.IsPixelExact
+            && workflow.HasCanonicalMetadata
+            && workflow.SeriesId is not null
+            && openSeriesIds.Contains(workflow.SeriesId);
     }
 
     private Font? _queueBoldFont;
@@ -988,6 +1015,7 @@ partial class MainForm
         _activeRequest = null;
         _activeApiCandidateMetadata = null;
         _completedRequestKeys.Clear();
+        cmbRequestQueueFilter.SelectedIndex = 0;
         SetSelectedImage(ImageSlot.Main, null);
         lblRequestSource.Text = "No Request Manifest imported.";
         RefreshRequestQueueVisuals();
@@ -1006,11 +1034,28 @@ partial class MainForm
         if (_currentManifest is null)
         {
             lblRequestProgress.Text = string.Empty;
+            lblPixelSeriesProgress.Text = string.Empty;
             return;
         }
 
-        lblRequestProgress.Text =
-            $"{_completedRequestKeys.Count} of {_currentManifest.Items.Count} done";
+        lblRequestProgress.Text = $"{_completedRequestKeys.Count} of {_currentManifest.Items.Count} done";
+
+        var series = _queueSeriesProgressService.Summarize(_currentManifest.Items, _completedRequestKeys);
+        if (series.Count == 0)
+        {
+            lblPixelSeriesProgress.Text = "Pixel series: none detected";
+            return;
+        }
+
+        var open = series.Where(item => item.IsOpen).ToList();
+        var active = _activeRequest is null
+            ? null
+            : series.FirstOrDefault(item => string.Equals(item.SeriesId, _queuePromptWorkflowParser.Parse(_activeRequest.Prompt).SeriesId, StringComparison.Ordinal));
+        var activeText = active is null
+            ? string.Empty
+            : $"Current series: {active.CompletedPhases}/{active.TotalPhases} complete • ";
+        var filterText = cmbRequestQueueFilter.SelectedIndex == 1 ? " • filter: open series" : string.Empty;
+        lblPixelSeriesProgress.Text = $"{activeText}Pixel series: {series.Count - open.Count}/{series.Count} complete, {open.Count} open{filterText}";
     }
 
     /// <summary>
