@@ -55,6 +55,12 @@ partial class MainForm
             return;
         }
 
+        if (ManifestContainsUnsupportedAutomatedMultiOutputWorkflow(_currentManifest, out var unsupportedWorkflowReason))
+        {
+            ShowMessageBox(unsupportedWorkflowReason, "Manual workflow required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         var apiKey = _secretStore.LoadSecret(SettingsDialog.OpenAiApiKeySecretName);
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -674,6 +680,12 @@ partial class MainForm
                 "Production Batch blocked",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (ManifestContainsUnsupportedAutomatedMultiOutputWorkflow(_currentManifest, out var unsupportedWorkflowReason))
+        {
+            ShowMessageBox(unsupportedWorkflowReason, "Manual workflow required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 

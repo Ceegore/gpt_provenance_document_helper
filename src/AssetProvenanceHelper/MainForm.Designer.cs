@@ -26,6 +26,11 @@ partial class MainForm
     private TextBox txtAssetRoot = null!;
     private Panel pnlAssetRootHost = null!;
     private Button btnBrowseAssetRoot = null!;
+    private CheckBox chkCollect = null!;
+    private Label lblCollectFolder = null!;
+    private TextBox txtCollectFolder = null!;
+    private Panel pnlCollectFolderHost = null!;
+    private Button btnBrowseCollectFolder = null!;
     private ComboBox cmbProvider = null!;
     private Label lblProviderWarning = null!;
 
@@ -37,6 +42,9 @@ partial class MainForm
     private CheckBox chkKeepSettings = null!;
     private ComboBox cmbVariants = null!;
     private Label lblVariants = null!;
+    private CheckBox chkPixelExact = null!;
+    private ComboBox cmbPixelExactCount = null!;
+    private Label lblPixelExactCount = null!;
 
     private TableLayoutPanel pnlCardsContainer = null!;
     private GroupBox grpReference = null!;
@@ -79,9 +87,11 @@ partial class MainForm
     private Button btnGenerateNow = null!;
     private Button btnQueueProductionBatch = null!;
     private Button btnRetrySelectedApi = null!;
+    private ComboBox cmbRequestQueueFilter = null!;
     private Label lblRequestSource = null!;
     private ListView lvRequestQueue = null!;
     private Label lblRequestProgress = null!;
+    private Label lblPixelSeriesProgress = null!;
 
     private HelpOverlayControl helpOverlay = null!;
     private ToolTip _toolTip = null!;
@@ -128,14 +138,18 @@ partial class MainForm
         // lower workflow controls.
         MinimumSize = new Size(1040, 600);
         // Keep the cards as the primary workspace at the preferred size while
-        // retaining the now-useful history area below them.
-        Size = new Size(1500, 940);
+        // retaining a useful history area and the visible Pixel-series summary.
+        // Smaller displays scroll the workspace instead of clipping controls.
+        Size = new Size(1500, 1020);
         KeyPreview = true;
         AutoScroll = true;
 
         pnlWorkspace = new TableLayoutPanel
         {
             Name = "pnlWorkspace",
+            // Let the workflow keep its usable natural height. The form's
+            // AutoScroll then exposes every lower control when a user reduces
+            // the window, instead of compressing the image workspace.
             Dock = DockStyle.Top,
             AutoScroll = true,
             AutoSize = true,
@@ -143,7 +157,10 @@ partial class MainForm
             // Match the form's supported minimum width. Keeping a wider
             // workspace here pushed the right-side queue partly off-screen at
             // the smallest allowed window size.
-            MinimumSize = new Size(1040, 880),
+            // The image cards need at least 260px to remain the usable primary
+            // workspace. 920px leaves them a comfortable 276px at the normal
+            // layout while the outer form scrolls on smaller displays.
+            MinimumSize = new Size(1040, 920),
             Padding = new Padding(12),
             ColumnCount = 2,
             RowCount = 1

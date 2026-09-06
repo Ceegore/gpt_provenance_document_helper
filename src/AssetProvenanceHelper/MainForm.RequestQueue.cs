@@ -229,8 +229,20 @@ partial class MainForm
                 .GetItemsForManifest(_currentManifest.ManifestFingerprint)
                 .ToDictionary(j => j.RequestKey, StringComparer.Ordinal);
 
+            var openSeriesIds = _queueSeriesProgressService
+                .Summarize(_currentManifest.Items, _completedRequestKeys)
+                .Where(series => series.IsOpen)
+                .Select(series => series.SeriesId)
+                .ToHashSet(StringComparer.Ordinal);
+            var showOpenPixelSeriesOnly = cmbRequestQueueFilter.SelectedIndex == 1;
+
             foreach (var request in _currentManifest.Items)
             {
+                if (showOpenPixelSeriesOnly && !IsRequestInOpenCanonicalPixelSeries(request, openSeriesIds))
+                {
+                    continue;
+                }
+
                 preloadedJobs.TryGetValue(request.RequestKey, out var preloadedJob);
                 var (statusText, backColor) = GetRequestItemVisualStatus(request, preloadedJob);
 
@@ -240,7 +252,8 @@ partial class MainForm
                         {
                             statusText,
                             request.AssetName,
-                            request.Resolution
+                            request.Resolution,
+                            request.IsCompleted || _completedRequestKeys.Contains(request.RequestKey) ? "×" : string.Empty
                         })
                     {
                         Tag = request
@@ -267,6 +280,21 @@ partial class MainForm
         {
             lvRequestQueue.EndUpdate();
         }
+    }
+
+    private void HandleRequestQueueFilterChanged()
+    {
+        RefreshRequestQueueVisuals();
+        UpdateRequestProgressLabel();
+    }
+
+    private bool IsRequestInOpenCanonicalPixelSeries(AssetRequestItem request, ISet<string> openSeriesIds)
+    {
+        var workflow = _queuePromptWorkflowParser.Parse(request.Prompt);
+        return workflow.IsPixelExact
+            && workflow.HasCanonicalMetadata
+            && workflow.SeriesId is not null
+            && openSeriesIds.Contains(workflow.SeriesId);
     }
 
     private Font? _queueBoldFont;
@@ -297,7 +325,157 @@ partial class MainForm
             return;
         }
 
+        // The compact action column is intentionally handled before the normal
+        // row activation. It is the only destructive queue gesture and always
+        // obtains a second confirmation below.
+        if (hit.SubItem is not null
+            && hit.Item.SubItems.Count > 3
+            && ReferenceEquals(hit.SubItem, hit.Item.SubItems[3]))
+        {
+            HandleCompletedRequestReset(hit.Item);
+            return;
+        }
+
         HandleRequestQueueItemActivate(hit.Item);
+    }
+
+    private void HandleCompletedRequestReset(ListViewItem lvi)
+    {
+        if (lvi.Tag is not AssetRequestItem item
+            || _currentManifest is null
+            || (!item.IsCompleted && !_completedRequestKeys.Contains(item.RequestKey))
+            || _state == UiState.ReferenceReady
+            || _isGeneratingDirect
+            || _isSubmittingBatch)
+        {
+            return;
+        }
+
+        var confirmation = ShowConfirmDialog(
+            $"Delete the completed asset folder for '{item.AssetName}' and reset this queue row to Pending?\n\nOnly the direct child folder under the configured Asset Root Folder will be removed. This cannot be undone.",
+            "Delete completed queue asset",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+        if (confirmation != DialogResult.Yes && confirmation != DialogResult.OK)
+        {
+            return;
+        }
+
+        var settings = ReadSettingsFromUi();
+        string assetFolder;
+        try
+        {
+            assetFolder = GetSafeDirectAssetFolder(settings.AssetRootFolder, item.AssetName);
+            if (!Directory.Exists(assetFolder))
+            {
+                throw new DirectoryNotFoundException($"Completed asset folder was not found: {assetFolder}");
+            }
+            if (ValidationService.IsReparsePoint(assetFolder) || ContainsReparsePoint(assetFolder))
+            {
+                throw new IOException("The completed asset folder contains a reparse point and cannot be deleted safely.");
+            }
+
+            RemoveCollectCopiesForAsset(assetFolder, item.AssetName);
+            Directory.Delete(assetFolder, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Completed queue asset was not deleted; the queue row was left unchanged.", ex);
+            return;
+        }
+
+        try
+        {
+            var next = new HashSet<string>(_completedRequestKeys, StringComparer.Ordinal);
+            next.Remove(item.RequestKey);
+            _requestProgressService?.Save(_currentManifest.ManifestFingerprint, next);
+            _completedRequestKeys.Clear();
+            _completedRequestKeys.UnionWith(next);
+            item.IsCompleted = false;
+            ResetPixelExactJournalForDeletedRequest(item);
+            RefreshRequestQueueVisuals();
+            UpdateRequestProgressLabel();
+            AddStatus($"Completed queue asset deleted and reset: {item.AssetName}");
+        }
+        catch (Exception ex)
+        {
+            // The asset is intentionally already gone. Surface the durable queue
+            // bookkeeping failure so a re-import/reconciliation can be chosen.
+            ShowError("Asset folder was deleted, but its queue reset could not be saved.", ex);
+        }
+    }
+
+    private static string GetSafeDirectAssetFolder(string assetRoot, string assetName)
+    {
+        var normalizedRoot = ValidationService.NormalizePath(assetRoot);
+        if (!Directory.Exists(normalizedRoot) || ValidationService.IsReparsePoint(normalizedRoot))
+        {
+            throw new IOException("Asset Root Folder is unavailable or is a reparse point.");
+        }
+
+        var target = ValidationService.NormalizePath(Path.Combine(normalizedRoot, assetName));
+        if (!ValidationService.PathsEqual(Path.GetDirectoryName(target) ?? string.Empty, normalizedRoot))
+        {
+            throw new InvalidDataException("Queue asset folder is not a direct child of Asset Root Folder.");
+        }
+        return target;
+    }
+
+    private static bool ContainsReparsePoint(string root)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var directory = pending.Pop();
+            foreach (var path in Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (ValidationService.IsReparsePoint(path))
+                {
+                    return true;
+                }
+                if (Directory.Exists(path))
+                {
+                    pending.Push(path);
+                }
+            }
+        }
+        return false;
+    }
+
+    private void RemoveCollectCopiesForAsset(string assetFolder, string assetName)
+    {
+        // Copies may have been collected before the user later disabled the
+        // option; use the remembered folder so reset removes only its own
+        // deterministic copies as well.
+        if (string.IsNullOrWhiteSpace(_settings.CollectFolder))
+        {
+            return;
+        }
+
+        var collectFolder = ValidationService.NormalizePath(_settings.CollectFolder);
+        if (!Directory.Exists(collectFolder))
+        {
+            return;
+        }
+        if (ValidationService.IsReparsePoint(collectFolder))
+        {
+            throw new IOException("Collect folder is a reparse point and cannot be modified safely.");
+        }
+
+        foreach (var source in Directory.EnumerateFiles(assetFolder, "*", SearchOption.TopDirectoryOnly)
+                     .Where(path => _settings.AcceptedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)))
+        {
+            var copy = GetCollectDestinationPath(collectFolder, assetName, source);
+            if (File.Exists(copy))
+            {
+                if (ValidationService.IsReparsePoint(copy))
+                {
+                    throw new IOException("Collect copy is a reparse point and cannot be removed safely.");
+                }
+                File.Delete(copy);
+            }
+        }
     }
 
     internal void HandleRequestQueueItemActivate(
@@ -308,9 +486,9 @@ partial class MainForm
             return;
         }
 
-        if (item.IsCompleted
-            || _completedRequestKeys.Contains(
-                item.RequestKey))
+        if ((item.IsCompleted
+                || _completedRequestKeys.Contains(item.RequestKey))
+            && !IsResettablePixelExactCollectionRequest(item))
         {
             // Done rows may be selected visually but never reactivated.
             return;
@@ -349,6 +527,7 @@ partial class MainForm
 
             txtPrompt.Text =
                 item.Prompt;
+
         }
         finally
         {
@@ -356,6 +535,7 @@ partial class MainForm
         }
 
         UpdatePromptPreview();
+        ApplyQueueWorkflowAutodetection(item);
         TryCopyPromptToClipboard(item.Prompt);
 
         if (_currentManifest != null)
@@ -547,15 +727,24 @@ partial class MainForm
             btnImportRequest.Enabled = !apiMutationActive;
 
             var hasApiKey = HasOpenAiApiKeyConfigured();
+            var unsupportedWorkflowReason = string.Empty;
+            var hasUnsupportedMultiOutputWorkflow = _currentManifest is not null
+                && ManifestContainsUnsupportedAutomatedMultiOutputWorkflow(_currentManifest, out unsupportedWorkflowReason);
             var canRunApi =
                 _currentManifest is not null
                 && !apiMutationActive
-                && hasApiKey;
+                && hasApiKey
+                && !hasUnsupportedMultiOutputWorkflow;
 
             btnGenerateNow.Enabled = canRunApi;
             btnQueueProductionBatch.Enabled = canRunApi;
 
-            if (_currentManifest is not null && !hasApiKey)
+            if (_currentManifest is not null && hasUnsupportedMultiOutputWorkflow)
+            {
+                _toolTip.SetToolTip(btnGenerateNow, unsupportedWorkflowReason);
+                _toolTip.SetToolTip(btnQueueProductionBatch, unsupportedWorkflowReason);
+            }
+            else if (_currentManifest is not null && !hasApiKey)
             {
                 var noKeyTooltip = "Configure an OpenAI API key in Settings first.";
                 _toolTip.SetToolTip(btnGenerateNow, noKeyTooltip);
@@ -662,7 +851,7 @@ partial class MainForm
     /// Marks the matching Request Done only after the Main durable commit.
     /// Progress persistence is updated only while the manifest is loaded.
     /// </summary>
-    private void CompleteActiveRequestAfterMainCommit(
+    private bool CompleteActiveRequestAfterMainCommit(
         AssetSession session)
     {
         var completedRequestKey =
@@ -675,7 +864,7 @@ partial class MainForm
         if (string.IsNullOrWhiteSpace(completedRequestKey)
             || _currentManifest is null)
         {
-            return;
+            return true;
         }
 
         var existingJob =
@@ -705,32 +894,38 @@ partial class MainForm
 
         if (item is null)
         {
-            return;
+            return true;
+        }
+
+        var progressSaved = true;
+        try
+        {
+            var next = new HashSet<string>(_completedRequestKeys, StringComparer.Ordinal)
+            {
+                completedRequestKey
+            };
+            _requestProgressService?.Save(
+                _currentManifest.ManifestFingerprint,
+                next);
+            _completedRequestKeys.Clear();
+            _completedRequestKeys.UnionWith(next);
+        }
+        catch (Exception ex)
+        {
+            // The Main asset is already durable and the established queue UX
+            // reports it as Done. Pixel-Exact callers use this return value to
+            // withhold their stricter batch-journal transition until a later
+            // reconciliation can persist the completion.
+            progressSaved = false;
+            AddStatus($"Asset committed, but queue completion could not be saved: {ex.Message}");
         }
 
         item.IsCompleted = true;
         _completedRequestKeys.Add(completedRequestKey);
 
-        if (_activeRequest is not null
-            && string.Equals(_activeRequest.RequestKey, completedRequestKey, StringComparison.Ordinal))
-        {
-            _activeRequest = null;
-            _activeApiCandidateMetadata = null;
-        }
-
-        try
-        {
-            _requestProgressService?.Save(
-                _currentManifest.ManifestFingerprint,
-                _completedRequestKeys);
-        }
-        catch
-        {
-            // Progress is bookkeeping; never roll back the completed asset.
-        }
-
         RefreshRequestQueueVisuals();
         UpdateRequestProgressLabel();
+        return progressSaved;
     }
 
     private void HandleRequestCancellation()
@@ -783,12 +978,44 @@ partial class MainForm
             return;
         }
 
+        try
+        {
+            var pixelState = _pixelExactBatchStateService.Load();
+            if (pixelState is not null && !pixelState.Completed)
+            {
+                var confirmation = ShowConfirmDialog(
+                    "A Pixel-Exact collection is still pending. Clearing the queue will discard its staged download receipt, so it cannot be resumed safely.\n\nClear the queue and discard that pending collection?",
+                    "Discard pending Pixel-Exact collection",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (confirmation != DialogResult.Yes && confirmation != DialogResult.OK)
+                {
+                    return;
+                }
+                _pixelExactBatchStateService.DiscardPendingState();
+            }
+            else if (pixelState is not null)
+            {
+                _pixelExactBatchStateService.ClearCompletedState();
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError("Queue was not cleared because its Pixel-Exact state could not be handled safely.", ex);
+            return;
+        }
+
+        var clearedManifestFingerprint = _currentManifest?.ManifestFingerprint;
         _requestQueueStateService?.Clear();
-        _requestProgressService?.Clear();
+        if (!string.IsNullOrWhiteSpace(clearedManifestFingerprint))
+        {
+            _requestProgressService?.ClearForManifest(clearedManifestFingerprint);
+        }
         _currentManifest = null;
         _activeRequest = null;
         _activeApiCandidateMetadata = null;
         _completedRequestKeys.Clear();
+        cmbRequestQueueFilter.SelectedIndex = 0;
         SetSelectedImage(ImageSlot.Main, null);
         lblRequestSource.Text = "No Request Manifest imported.";
         RefreshRequestQueueVisuals();
@@ -807,11 +1034,28 @@ partial class MainForm
         if (_currentManifest is null)
         {
             lblRequestProgress.Text = string.Empty;
+            lblPixelSeriesProgress.Text = string.Empty;
             return;
         }
 
-        lblRequestProgress.Text =
-            $"{_completedRequestKeys.Count} of {_currentManifest.Items.Count} done";
+        lblRequestProgress.Text = $"{_completedRequestKeys.Count} of {_currentManifest.Items.Count} done";
+
+        var series = _queueSeriesProgressService.Summarize(_currentManifest.Items, _completedRequestKeys);
+        if (series.Count == 0)
+        {
+            lblPixelSeriesProgress.Text = "Pixel series: none detected";
+            return;
+        }
+
+        var open = series.Where(item => item.IsOpen).ToList();
+        var active = _activeRequest is null
+            ? null
+            : series.FirstOrDefault(item => string.Equals(item.SeriesId, _queuePromptWorkflowParser.Parse(_activeRequest.Prompt).SeriesId, StringComparison.Ordinal));
+        var activeText = active is null
+            ? string.Empty
+            : $"Current series: {active.CompletedPhases}/{active.TotalPhases} complete • ";
+        var filterText = cmbRequestQueueFilter.SelectedIndex == 1 ? " • filter: open series" : string.Empty;
+        lblPixelSeriesProgress.Text = $"{activeText}Pixel series: {series.Count - open.Count}/{series.Count} complete, {open.Count} open{filterText}";
     }
 
     /// <summary>

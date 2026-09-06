@@ -32,6 +32,10 @@ public sealed class AppBootstrapContext
 
     public required string RequestQueueStatePath { get; init; }
 
+    public required string PixelExactBatchStatePath { get; init; }
+
+    public required string PixelExactStagingPath { get; init; }
+
     public required AppSettings Settings { get; set; }
 
     public required SettingsService SettingsService { get; init; }
@@ -53,6 +57,8 @@ public sealed class AppBootstrapContext
     public required RequestProgressService RequestProgressService { get; init; }
 
     public required RequestQueueStateService RequestQueueStateService { get; init; }
+
+    public required PixelExactBatchStateService PixelExactBatchStateService { get; init; }
 
     public required ISecretStore SecretStore { get; init; }
 
@@ -265,6 +271,12 @@ public static class AppBootstrap
             stateDirectory,
             AppConstants.RequestQueueStateFileName);
 
+    public static string GetPixelExactBatchStatePath(string stateDirectory) =>
+        Path.Combine(stateDirectory, AppConstants.PixelExactBatchStateFileName);
+
+    public static string GetPixelExactStagingPath(string stateDirectory) =>
+        Path.Combine(stateDirectory, AppConstants.PixelExactStagingFolderName);
+
     public static AppSettings LoadSettingsOrDefaults(
         SettingsService settingsService,
         Action<string, string>? showWarning = null)
@@ -368,6 +380,10 @@ public static class AppBootstrap
                 GetRequestQueueStatePath(stateDirectory),
                 validationService);
 
+        var pixelExactBatchStateService = new PixelExactBatchStateService(
+            GetPixelExactBatchStatePath(stateDirectory),
+            GetPixelExactStagingPath(stateDirectory));
+
         var secretStore =
             new DpapiSecretStore(
                 Path.Combine(
@@ -421,6 +437,12 @@ public static class AppBootstrap
             RequestQueueStatePath =
                 GetRequestQueueStatePath(stateDirectory),
 
+            PixelExactBatchStatePath =
+                GetPixelExactBatchStatePath(stateDirectory),
+
+            PixelExactStagingPath =
+                GetPixelExactStagingPath(stateDirectory),
+
             Settings =
                 settings,
 
@@ -453,6 +475,9 @@ public static class AppBootstrap
 
             RequestQueueStateService =
                 requestQueueStateService,
+
+            PixelExactBatchStateService =
+                pixelExactBatchStateService,
 
             SecretStore =
                 secretStore,

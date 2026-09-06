@@ -32,6 +32,9 @@ private readonly SettingsService _settingsService;
     private readonly IImageGenerationProvider _imageGenerationProvider;
     private readonly ISecretStore _secretStore;
     private readonly GenerationJobStore _generationJobStore;
+    private readonly PixelExactBatchStateService _pixelExactBatchStateService;
+    private readonly QueuePromptWorkflowParser _queuePromptWorkflowParser = new();
+    private readonly QueueSeriesProgressService _queueSeriesProgressService;
 
     private AppSettings _settings;
     private AssetSession? _currentSession;
@@ -50,6 +53,7 @@ private readonly SettingsService _settingsService;
     private readonly HashSet<string> _completedRequestKeys =
         new(StringComparer.Ordinal);
     private bool _settingRequestBoundFields;
+    private bool _settingWorkflowSelectors;
 
     /// <summary>
     /// Source paths of Main images durably committed during this app session.
@@ -80,7 +84,8 @@ private readonly SettingsService _settingsService;
         ISecretStore? secretStore = null,
         GenerationJobStore? generationJobStore = null,
         GeneratedImageStagingService? stagingService = null,
-        RequestQueueStateService? requestQueueStateService = null)
+        RequestQueueStateService? requestQueueStateService = null,
+        PixelExactBatchStateService? pixelExactBatchStateService = null)
     {
         _settings = settings;
         _settingsService = settingsService;
@@ -93,6 +98,11 @@ private readonly SettingsService _settingsService;
         _recentDocumentHistoryService = recentDocumentHistoryService;
         _requestProgressService = requestProgressService;
         _requestQueueStateService = requestQueueStateService;
+        _pixelExactBatchStateService = pixelExactBatchStateService
+            ?? new PixelExactBatchStateService(
+                AppBootstrap.GetPixelExactBatchStatePath(AppBootstrap.GetStateDirectory()),
+                AppBootstrap.GetPixelExactStagingPath(AppBootstrap.GetStateDirectory()));
+        _queueSeriesProgressService = new QueueSeriesProgressService(_queuePromptWorkflowParser);
         _imageGenerationProvider = imageGenerationProvider ?? new OpenAiImageGenerationProvider();
         _secretStore = secretStore ?? new DpapiSecretStore();
         _generationJobStore = generationJobStore ?? new GenerationJobStore(Path.Combine(AppBootstrap.GetStateDirectory(), "generation-jobs.json"));
@@ -178,6 +188,7 @@ private readonly SettingsService _settingsService;
     {
         btnBrowseDownload.Click += (_, _) => BrowseDownloadFolder();
         btnBrowseAssetRoot.Click += (_, _) => BrowseAssetRoot();
+        btnBrowseCollectFolder.Click += (_, _) => BrowseCollectFolder();
 
         // Reference controls
         btnRefreshReference.Click += (_, _) => RefreshImageSelection(ImageSlot.Reference);
@@ -199,6 +210,12 @@ private readonly SettingsService _settingsService;
         {
             _settings.KeepSettingsEnabled = chkKeepSettings.Checked;
         };
+        chkCollect.CheckedChanged += (_, _) =>
+        {
+            _settings.CollectEnabled = chkCollect.Checked;
+            UpdateCollectControls();
+        };
+        chkPixelExact.CheckedChanged += (_, _) => OnPixelExactChanged();
 
         btnReference.Click += (_, _) =>
         {
@@ -224,6 +241,7 @@ private readonly SettingsService _settingsService;
 
         txtDownloadFolder.Leave += (_, _) => SaveSettingsSafe();
         txtAssetRoot.Leave += (_, _) => SaveSettingsSafe();
+        txtCollectFolder.Leave += (_, _) => SaveSettingsSafe();
         FormClosing += (_, e) =>
         {
             if (_isGeneratingDirect || _isSubmittingBatch)
@@ -276,6 +294,7 @@ private readonly SettingsService _settingsService;
         btnGenerateNow.Click += (_, _) => HandleGenerateNow();
         btnQueueProductionBatch.Click += (_, _) => HandleQueueProductionBatch();
         btnRetrySelectedApi.Click += (_, _) => HandleRetrySelectedApi();
+        cmbRequestQueueFilter.SelectedIndexChanged += (_, _) => HandleRequestQueueFilterChanged();
         lvRequestQueue.SelectedIndexChanged += (_, _) => ApplyRequestQueueState();
         lvRequestQueue.MouseUp += (_, e) => HandleRequestQueueMouseUp(e);
         lvRequestQueue.KeyDown += (_, e) =>
@@ -298,6 +317,10 @@ private readonly SettingsService _settingsService;
 
     private void OnNoReferenceChanged()
     {
+        if (_settingWorkflowSelectors)
+        {
+            return;
+        }
         if (_state != UiState.Idle)
         {
             return;
@@ -314,6 +337,10 @@ private readonly SettingsService _settingsService;
 
     private void OnDirectModeChanged()
     {
+        if (_settingWorkflowSelectors)
+        {
+            return;
+        }
         _settings.DirectModeEnabled = chkDirectMode.Checked;
 
         if (_state == UiState.Idle)
@@ -326,6 +353,11 @@ private readonly SettingsService _settingsService;
     {
         txtDownloadFolder.Text = _settings.DownloadFolder;
         txtAssetRoot.Text = _settings.AssetRootFolder;
+        txtCollectFolder.Text = string.IsNullOrWhiteSpace(_settings.CollectFolder)
+            ? Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
+            : _settings.CollectFolder;
+        chkCollect.Checked = _settings.CollectEnabled;
+        UpdateCollectControls();
         chkDirectMode.Checked = _settings.DirectModeEnabled;
         chkKeepSettings.Checked = _settings.KeepSettingsEnabled;
     }
@@ -350,6 +382,8 @@ private readonly SettingsService _settingsService;
     {
         _settings.DownloadFolder = txtDownloadFolder.Text;
         _settings.AssetRootFolder = txtAssetRoot.Text;
+        _settings.CollectEnabled = chkCollect.Checked;
+        _settings.CollectFolder = txtCollectFolder.Text;
         return _settings;
     }
 
@@ -399,6 +433,44 @@ private readonly SettingsService _settingsService;
         }
 
         BrowseAssetRootWithDialog();
+    }
+
+    private void BrowseCollectFolder()
+    {
+        if (FolderBrowserDialogProvider is not null)
+        {
+            var selected = FolderBrowserDialogProvider(this, txtCollectFolder.Text);
+            if (selected is not null)
+            {
+                txtCollectFolder.Text = selected;
+                SaveSettingsSafe();
+            }
+            return;
+        }
+
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Select flat collection folder for committed image copies",
+            SelectedPath = txtCollectFolder.Text
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            txtCollectFolder.Text = dialog.SelectedPath;
+            SaveSettingsSafe();
+        }
+    }
+
+    private void UpdateCollectControls()
+    {
+        var enabled = chkCollect.Checked;
+        txtCollectFolder.Enabled = enabled;
+        lblCollectFolder.Visible = enabled;
+        pnlCollectFolderHost.Visible = enabled;
+        btnBrowseCollectFolder.Visible = enabled;
+        btnBrowseCollectFolder.Enabled = enabled;
+        _toolTip.SetToolTip(chkCollect,
+            "Copies each committed image into the selected flat folder. "
+            + "Normal asset folders and provenance files remain unchanged.");
     }
 
     [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
@@ -584,7 +656,7 @@ private readonly SettingsService _settingsService;
         // The selection itself is never reset here: it is still needed while a
         // reference session is live, because it drives the batch that finishes
         // variant A.
-        cmbVariants.Enabled = !referenceReady;
+        ApplyPixelExactControlState(referenceReady);
 
         var assetFolder = _currentSession?.AssetFolder ?? _lastCompletedAssetFolderPath;
         btnOpenAssetFolder.Enabled = !string.IsNullOrWhiteSpace(assetFolder) && Directory.Exists(assetFolder);

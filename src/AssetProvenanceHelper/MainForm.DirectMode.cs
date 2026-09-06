@@ -9,6 +9,21 @@ partial class MainForm
 {
     private void HandleMainImageEntryPoint()
     {
+        if (!EnsureActiveWorkflowMetadataIsExecutable(out var workflow))
+        {
+            return;
+        }
+
+        // Canonical/legacy FLOWMETA is the preferred authority. An explicitly
+        // selected count also supports the documented manual queue fallback for
+        // unannotated legacy rows; in that case the next N-1 safe queue rows are
+        // the targets and the current prompt remains the generation prompt.
+        if (chkPixelExact.Checked && (workflow.IsPixelExact || GetSelectedPixelExactOutputCount() > 0))
+        {
+            HandlePixelExactMainImage(workflow);
+            return;
+        }
+
         if (_activeApiCandidateMetadata is not null)
         {
             HandleMainImage();

@@ -1,0 +1,23 @@
+{
+  "manifestVersion": 2,
+  "assets": [
+    {
+      "filename": "scene_master.webp",
+      "resolution": "768x1024",
+      "alpha": "not_required",
+      "prompt": "Create exactly one approved master image for this scene. FLOWMETA: SERIE=example_scene; SERIENGROESSE=3; NEXT=Ref2. PROZESSMARKER: Einzeln"
+    },
+    {
+      "filename": "scene_state_two.webp",
+      "resolution": "768x1024",
+      "alpha": "not_required",
+      "prompt": "Use the approved master image as a hard reference. Create exactly two separate state images, oldest requested state first. FLOWMETA: SERIE=example_scene; OUTPUT_COUNT=2. PROZESSMARKER: Ref2"
+    },
+    {
+      "filename": "scene_state_three.webp",
+      "resolution": "768x1024",
+      "alpha": "not_required",
+      "prompt": "No separate generation: this asset is output 2 of the preceding Ref2 collection. FLOWMETA: SERIE=example_scene; OUTPUT_INDEX=2; MASTER=Ref2. PROZESSMARKER: AusRef2"
+    }
+  ]
+}

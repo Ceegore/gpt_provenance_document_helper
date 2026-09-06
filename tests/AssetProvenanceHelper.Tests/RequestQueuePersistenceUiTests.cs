@@ -93,4 +93,37 @@ public sealed class RequestQueuePersistenceUiTests
             Assert.False(File.Exists(workspace.RequestProgressPath));
         });
     }
+
+    [Fact]
+    public void OpenPixelSeriesFilter_ShowsEveryRowOfTheIncompleteCanonicalSeries()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var manifestPath = Path.Combine(workspace.Root, "pixel-manifest.json");
+            File.WriteAllText(manifestPath, """
+                { "manifestVersion": 2, "assets": [
+                  { "filename": "master.png", "resolution": "512x512", "alpha": "not_required", "prompt": "Seed. FLOWMETA: SERIE=example_scene; SERIENGROESSE=3; NEXT=Ref2. PROZESSMARKER: Einzeln" },
+                  { "filename": "state_one.png", "resolution": "512x512", "alpha": "not_required", "prompt": "Collection. FLOWMETA: SERIE=example_scene; OUTPUT_COUNT=2. PROZESSMARKER: Ref2" },
+                  { "filename": "state_two.png", "resolution": "512x512", "alpha": "not_required", "prompt": "Map. FLOWMETA: SERIE=example_scene; OUTPUT_INDEX=2; MASTER=Ref2. PROZESSMARKER: AusRef2" },
+                  { "filename": "ordinary.png", "resolution": "512x512", "alpha": "not_required", "prompt": "An ordinary request." }
+                ] }
+                """);
+
+            MainForm.OpenFileDialogProvider = (_, _) => manifestPath;
+            using var form = CreateForm(workspace);
+            typeof(MainForm).GetMethod("HandleImportRequest", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(form, null);
+
+            var filter = Assert.IsType<ComboBox>(form.Controls.Find("cmbRequestQueueFilter", true).Single());
+            var queue = Assert.IsType<ListView>(form.Controls.Find("lvRequestQueue", true).Single());
+            filter.SelectedIndex = 1;
+
+            Assert.Equal(3, queue.Items.Count);
+            Assert.All(queue.Items.Cast<ListViewItem>(), row => Assert.DoesNotContain("ordinary", row.SubItems[1].Text, StringComparison.Ordinal));
+            var progress = Assert.IsType<Label>(form.Controls.Find("lblPixelSeriesProgress", true).Single());
+            Assert.Contains("0/1 complete, 1 open", progress.Text);
+            Assert.Contains("filter: open series", progress.Text);
+        });
+    }
 }

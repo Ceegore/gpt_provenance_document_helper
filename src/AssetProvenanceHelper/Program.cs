@@ -116,7 +116,8 @@ internal static class Program
                 context.SecretStore,
                 context.GenerationJobStore,
                 null,
-                context.RequestQueueStateService);
+                context.RequestQueueStateService,
+                context.PixelExactBatchStateService);
 
         if (ApplicationRunProvider is not null)
         {

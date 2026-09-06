@@ -172,6 +172,7 @@ public sealed class SettingsService
     {
         settings.DownloadFolder ??= string.Empty;
         settings.AssetRootFolder ??= string.Empty;
+        settings.CollectFolder ??= string.Empty;
 
         settings.AcceptedExtensions =
             settings.AcceptedExtensions?

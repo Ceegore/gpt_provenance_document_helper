@@ -92,6 +92,67 @@ completion display. Clearing the queue does not delete locally staged candidates
 generation-job records, or any remote OpenAI batch; those remain available for
 paid-output/recovery safety.
 
+### Pixel-Exact browser/download workflow
+
+The request queue also supports a manual, browser-based series workflow. It uses
+the existing version-2 manifest schema; the only extra information is preserved
+inside the prompt as `FLOWMETA: ...` and `PROZESSMARKER: ...`. Do not turn those
+clauses into JSON fields or remove them during conversion. See
+[`pixel_exact_manifest_template.json`](src/AssetProvenanceHelper/examples/pixel_exact_manifest_template.json)
+and the conversion prompt in `src/AssetProvenanceHelper/examples`.
+
+1. Import the manifest and select its **Einzeln** seed row. The helper selects
+   **Pixel-exact mode**, **No reference mode**, and `Pixel phases: none`.
+   Generate the one approved master image in the external browser, select it in
+   the helper, and click **Main Image**. The seed becomes Done.
+2. The matching **RefN** row is loaded automatically. Generate exactly N
+   separate images with the approved master attached as the external tool's
+   reference, then save all N into the configured download folder. The earliest
+   phase must be the oldest of those N files; the last phase must be the newest.
+3. Click **Main Image** once. The helper freezes those N files in its local
+   journal before writing anything, then commits them oldest-to-newest to the
+   RefN row and the following AusRefN rows. Each output has its own asset folder
+   and is marked Done only after its own durable commit. Every final provenance
+   file records the actual RefN collection prompt, never an AusRef mapping text.
+
+Before the collection is frozen, a confirmation lists each detected source file
+and its exact target asset in oldest-to-newest order. Canceling this dialog makes
+no filesystem change. The queue's **Show: Open Pixel series** filter keeps every
+row of an incomplete canonical series visible (including an already completed
+master for context); the status below the queue reports both the overall and the
+currently selected series progress.
+
+The Pixel-Exact selector and phase drop-down are mutually exclusive with
+Variants and Direct mode. Pixel-Exact multi-image sequences intentionally do not
+run through the API controls: API generation must have an API key and produces
+one independently staged candidate per queue row.
+
+For a deliberately manual legacy queue without `FLOWMETA`/`PROZESSMARKER`, select
+the intended collection row, enable **Pixel-exact mode**, and choose `Pixel phases`
+explicitly. The helper then uses that row plus the immediately following N−1 rows
+as the ordered targets. It refuses any conflicting recognized workflow metadata;
+use the canonical metadata format whenever it is available.
+
+Use the small **×** at the right of a green queue row to delete that direct
+asset folder after confirmation and return only that row to Pending. The helper
+rejects junctions/reparse points before deletion. A reset Pixel-Exact output can
+be resumed from its already frozen batch by selecting its RefN row again.
+
+### Optional flat collection folder
+
+Enable **Collect copies** to copy every successfully committed image into one
+flat review folder (default: Windows Pictures). Normal asset folders and all
+provenance files are still written exactly as before; the collection folder
+contains image copies only. The deterministic copies are removed again when the
+matching completed queue row is deleted with **×**.
+
+### Installed templates
+
+Keep both `templates` and `provider_templates` in an installed build.
+`templates` contains the required base Reference/Final provenance renderers;
+`provider_templates` is the separately selected catalog for generation providers.
+Neither directory replaces the other.
+
 ---
 
 ## Keyboard Shortcuts

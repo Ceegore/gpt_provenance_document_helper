@@ -287,6 +287,11 @@ partial class MainForm
         DateTimeOffset processedAt,
         bool suppressUiCompletion = false)
     {
+        if (!TryPersistPixelExactSeedReceiptBeforeMainWrite(session))
+        {
+            return false;
+        }
+
         string committedFilename;
 
         try
@@ -397,6 +402,7 @@ partial class MainForm
 
         // DURABLE COMMIT POINT: Complete outputs exist and active session.json is deleted.
         _committedMainSourcesThisSession.Add(ValidationService.NormalizePath(sourceImage));
+        TryCollectCommittedMainImage(session, committedFilename);
 
         if (!suppressUiCompletion)
         {
@@ -406,13 +412,98 @@ partial class MainForm
         return true;
     }
 
+    /// <summary>
+    /// Creates the optional flat visual-review copy only after the normal asset
+    /// transaction has committed. A collection failure never rolls back or
+    /// compromises a provenance-complete asset.
+    /// </summary>
+    private void TryCollectCommittedMainImage(AssetSession session, string committedFilename)
+    {
+        if (!_settings.CollectEnabled || string.IsNullOrWhiteSpace(_settings.CollectFolder))
+        {
+            return;
+        }
+
+        try
+        {
+            var source = Path.Combine(session.AssetFolder, committedFilename);
+            if (!File.Exists(source))
+            {
+                throw new FileNotFoundException("Committed Main image is unavailable for collection.", source);
+            }
+
+            var collectFolder = ValidationService.NormalizePath(_settings.CollectFolder);
+            if (Directory.Exists(collectFolder) && ValidationService.IsReparsePoint(collectFolder))
+            {
+                throw new IOException("Collect folder is a reparse point and cannot be used safely.");
+            }
+
+            Directory.CreateDirectory(collectFolder);
+            if (ValidationService.IsReparsePoint(collectFolder))
+            {
+                throw new IOException("Collect folder is a reparse point and cannot be used safely.");
+            }
+
+            var destination = GetCollectDestinationPath(collectFolder, session.AssetFolderName, source);
+            if (File.Exists(destination))
+            {
+                var existingHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(destination)));
+                var sourceHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(source)));
+                if (string.Equals(existingHash, sourceHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                throw new IOException($"Collect destination already exists with different content: {Path.GetFileName(destination)}");
+            }
+
+            var temporary = Path.Combine(collectFolder, ".collect-" + Guid.NewGuid().ToString("N") + Path.GetExtension(destination));
+            try
+            {
+                File.Copy(source, temporary, overwrite: false);
+                File.Move(temporary, destination, overwrite: false);
+            }
+            finally
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+            }
+
+            AddStatus($"Collected visual copy: {Path.GetFileName(destination)}");
+        }
+        catch (Exception ex)
+        {
+            AddStatus($"Asset committed, but its collect copy could not be created: {ex.Message}");
+        }
+    }
+
+    private static string GetCollectDestinationPath(string collectFolder, string assetName, string source)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(source))).ToLowerInvariant();
+        var stem = Path.GetFileNameWithoutExtension(source);
+        var extension = Path.GetExtension(source);
+        var fileName = assetName + "__" + stem + "__" + hash[..12] + extension;
+        var destination = ValidationService.NormalizePath(Path.Combine(collectFolder, fileName));
+        if (!ValidationService.PathsEqual(Path.GetDirectoryName(destination) ?? string.Empty, collectFolder))
+        {
+            throw new InvalidDataException("Collect destination escaped the selected folder.");
+        }
+        return destination;
+    }
+
     private void CompleteMainUiAfterDurableCommit(
         AssetSession session,
         string committedFilename,
         DateTimeOffset processedAt)
     {
+        var pixelSeed = CapturePixelExactSeedCompletion(session, committedFilename, processedAt);
+
         // Capture Request completion before UI fields are cleared.
-        CompleteActiveRequestAfterMainCommit(session);
+        var queueProgressSaved = CompleteActiveRequestAfterMainCommit(session);
+
+        if (pixelSeed is not null && queueProgressSaved)
+        {
+            FinalizePixelExactSeedAfterQueueCompletion(pixelSeed.Value.RequestKey);
+        }
 
         _lastCompletedAssetFolderPath = session.AssetFolder;
         _currentSession = null;
@@ -442,6 +533,11 @@ partial class MainForm
             AddStatus("Asset completed.");
 
             ApplyState();
+
+            if (pixelSeed is not null)
+            {
+                TryActivateNextPixelExactCollection(pixelSeed.Value.SeriesId);
+            }
 
             ShowMessageBox(
                 "Asset completed successfully.",
