@@ -138,19 +138,22 @@ partial class MainForm
         // lower workflow controls.
         MinimumSize = new Size(1040, 600);
         // Keep the cards as the primary workspace at the preferred size while
-        // retaining the now-useful history area below them.
-        Size = new Size(1500, 980);
+        // retaining a useful history area and the visible Pixel-series summary.
+        // Smaller displays scroll the workspace instead of clipping controls.
+        Size = new Size(1500, 1020);
         KeyPreview = true;
         AutoScroll = true;
 
         pnlWorkspace = new TableLayoutPanel
         {
             Name = "pnlWorkspace",
-            // Its height follows the viewport when there is room, but remains
-            // scrollable rather than compressed below the workflow minimum.
+            // Let the workflow keep its usable natural height. The form's
+            // AutoScroll then exposes every lower control when a user reduces
+            // the window, instead of compressing the image workspace.
             Dock = DockStyle.Top,
             AutoScroll = true,
-            AutoSize = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             // Match the form's supported minimum width. Keeping a wider
             // workspace here pushed the right-side queue partly off-screen at
             // the smallest allowed window size.
@@ -191,16 +194,6 @@ partial class MainForm
         pnlWorkspace.Controls.Add(grpRequestQueue, 1, 0);
 
         Controls.Add(pnlWorkspace);
-
-        Resize += (_, _) =>
-        {
-            pnlWorkspace.Height = Math.Max(
-                pnlWorkspace.MinimumSize.Height,
-                ClientSize.Height);
-        };
-        pnlWorkspace.Height = Math.Max(
-            pnlWorkspace.MinimumSize.Height,
-            ClientSize.Height);
 
         helpOverlay = new HelpOverlayControl();
         helpOverlay.Name = "helpOverlay";
