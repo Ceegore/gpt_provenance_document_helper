@@ -91,7 +91,7 @@ public class ProgramStartupTests
         finally
         {
             AppBootstrap.MutexNameOverride = null;
-            AppBootstrap.StateDirectoryOverride = null;
+            TestAppState.RestoreDefault();
             Program.BaseDirectoryOverride = null;
             MainForm.MessageBoxProvider = null;
 
@@ -359,7 +359,7 @@ public class ProgramStartupTests
                 Program.MessageProvider = null;
                 Program.ApplicationRunProvider = null;
                 AppBootstrap.MutexNameOverride = null;
-                AppBootstrap.StateDirectoryOverride = null;
+                TestAppState.RestoreDefault();
                 Program.BaseDirectoryOverride = null;
                 MainForm.MessageBoxProvider = null;
             }

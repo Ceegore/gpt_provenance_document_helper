@@ -122,6 +122,13 @@ jobs:
           }
           Get-ChildItem 'artifacts/publish-sacsafe' | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
 
+      # This is a release contract, not merely a documentation preference: users
+      # need the documented dotnet and Unblock-File paths when Windows marks the
+      # downloaded launcher as internet-sourced. Fail closed if it disappears.
+      - name: Verify Smart App Control installation guidance
+        shell: pwsh
+        run: pwsh scripts/verify_release_readme.ps1 -PublishDir artifacts/publish-sacsafe
+
       # Proves the shipped payload actually starts, via the signed dotnet host.
       - name: Verify the package launches
         shell: pwsh

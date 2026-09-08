@@ -214,6 +214,40 @@ partial class MainForm
             return;
         }
 
+        // Clearing and re-adding every row (below) resets the ListView scroll
+        // offset to the top, so the current top row / selection are captured
+        // here and restored after the rebuild to keep the user's place.
+        string? savedTopRequestKey = null;
+        var savedTopIndex = -1;
+        string? savedSelectedRequestKey = null;
+        var savedSelectedWasFocused = false;
+
+        try
+        {
+            // Reading TopItem forces native handle creation, so a headless
+            // refresh must not touch it at all. There is no scroll offset to
+            // preserve before the list has ever been shown.
+            if (!_suppressQueueScrollRestore && lvRequestQueue.IsHandleCreated)
+            {
+                var topItem = lvRequestQueue.TopItem;
+                savedTopRequestKey = TryGetRequestKey(topItem);
+                savedTopIndex = TryGetIndex(topItem);
+
+                if (lvRequestQueue.SelectedItems.Count > 0)
+                {
+                    var selected = lvRequestQueue.SelectedItems[0];
+                    savedSelectedRequestKey = TryGetRequestKey(selected);
+                    savedSelectedWasFocused = selected.Focused;
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // TopItem throws when the handle is not created yet or the current
+            // View does not support it; falling back to "nothing captured" just
+            // means the rebuilt list opens at the top, same as before this fix.
+        }
+
         lvRequestQueue.BeginUpdate();
 
         try
@@ -280,11 +314,135 @@ partial class MainForm
         {
             lvRequestQueue.EndUpdate();
         }
+
+        RestoreRequestQueueScrollAndSelection(
+            savedTopRequestKey,
+            savedTopIndex,
+            savedSelectedRequestKey,
+            savedSelectedWasFocused);
+    }
+
+    private static string? TryGetRequestKey(ListViewItem? lvi) =>
+        lvi?.Tag is AssetRequestItem item ? item.RequestKey : null;
+
+    private static int TryGetIndex(ListViewItem? lvi) =>
+        lvi?.Index ?? -1;
+
+    /// <summary>
+    /// Re-selects and re-scrolls the queue after <see cref="RefreshRequestQueueVisuals"/>
+    /// rebuilt it, using the Request key captured beforehand so the user's place in a
+    /// long queue is not lost when a row activates or completes. A no-op when nothing
+    /// was captured (fresh import / first render), so a new manifest still opens at
+    /// the top.
+    /// </summary>
+    private void RestoreRequestQueueScrollAndSelection(
+        string? savedTopRequestKey,
+        int savedTopIndex,
+        string? savedSelectedRequestKey,
+        bool savedSelectedWasFocused)
+    {
+        if (savedTopRequestKey is null
+            && savedTopIndex < 0
+            && savedSelectedRequestKey is null)
+        {
+            return;
+        }
+
+        if (lvRequestQueue.Items.Count == 0 || !lvRequestQueue.IsHandleCreated)
+        {
+            return;
+        }
+
+        if (savedSelectedRequestKey is not null)
+        {
+            foreach (ListViewItem lvi in lvRequestQueue.Items)
+            {
+                if (string.Equals(TryGetRequestKey(lvi), savedSelectedRequestKey, StringComparison.Ordinal))
+                {
+                    lvi.Selected = true;
+                    if (savedSelectedWasFocused)
+                    {
+                        lvi.Focused = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        var currentRequestKeysInOrder = lvRequestQueue.Items
+            .Cast<ListViewItem>()
+            .Select(lvi => TryGetRequestKey(lvi) ?? string.Empty)
+            .ToList();
+        var restoredTopIndex =
+            ResolveRestoredTopIndex(currentRequestKeysInOrder, savedTopRequestKey, savedTopIndex);
+
+        if (restoredTopIndex < 0)
+        {
+            return;
+        }
+
+        try
+        {
+            // TopItem must be set after EndUpdate: WinForms silently drops the
+            // assignment made while a BeginUpdate/EndUpdate block is open.
+            lvRequestQueue.TopItem = lvRequestQueue.Items[restoredTopIndex];
+        }
+        catch (InvalidOperationException)
+        {
+            // The TopItem setter throws when the current View is not Details/List
+            // or when the handle is not ready; scroll position is not critical
+            // enough to fail the refresh over.
+        }
+    }
+
+    /// <summary>
+    /// Resolves which row to scroll to after a queue rebuild. Exposed as an
+    /// internal, ListView-free helper so the restoration logic can be unit
+    /// tested without a real Windows Forms control.
+    /// </summary>
+    internal static int ResolveRestoredTopIndex(
+        IReadOnlyList<string> currentRequestKeysInOrder,
+        string? savedTopRequestKey,
+        int savedTopIndex)
+    {
+        if (currentRequestKeysInOrder.Count == 0)
+        {
+            return -1;
+        }
+
+        if (!string.IsNullOrEmpty(savedTopRequestKey))
+        {
+            for (var i = 0; i < currentRequestKeysInOrder.Count; i++)
+            {
+                if (string.Equals(currentRequestKeysInOrder[i], savedTopRequestKey, StringComparison.Ordinal))
+                {
+                    return i;
+                }
+            }
+        }
+
+        if (savedTopIndex < 0)
+        {
+            return -1;
+        }
+
+        return Math.Min(savedTopIndex, currentRequestKeysInOrder.Count - 1);
     }
 
     private void HandleRequestQueueFilterChanged()
     {
-        RefreshRequestQueueVisuals();
+        // Changing the filter builds a different set of rows, so the previous
+        // top row has no meaningful position in it. Restoring a clamped index
+        // there would scroll to an unrelated request.
+        _suppressQueueScrollRestore = true;
+        try
+        {
+            RefreshRequestQueueVisuals();
+        }
+        finally
+        {
+            _suppressQueueScrollRestore = false;
+        }
         UpdateRequestProgressLabel();
     }
 

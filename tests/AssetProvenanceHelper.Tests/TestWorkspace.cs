@@ -19,6 +19,12 @@ public sealed class TestWorkspace : IDisposable
 
     public string Examples { get; }
 
+    /// <summary>The folder AppBootstrap resolves to while this workspace is
+    /// alive, so a MainForm built without the optional state services keeps its
+    /// journals here instead of in the real per-user folder. It sits outside
+    /// <see cref="Root"/> to keep deeply nested staging paths under MAX_PATH.</summary>
+    public string StateDirectory { get; }
+
     public string RecentDocumentsPath =>
         Path.Combine(
             Root,
@@ -112,9 +118,17 @@ public sealed class TestWorkspace : IDisposable
         Directory.CreateDirectory(
             Examples);
 
+        StateDirectory =
+            TestAppState.CreateScopedStateDirectory();
+
+        _previousStateDirectory = TestAppState.Current;
+        TestAppState.Current = StateDirectory;
+
         WriteValidTemplates();
         WriteValidProviderTemplate();
     }
+
+    private readonly string _previousStateDirectory;
 
     public AppSettings CreateSettings()
     {
@@ -331,8 +345,43 @@ public sealed class TestWorkspace : IDisposable
             RequestQueueStatePath,
             CreateValidationService());
 
+    /// <summary>Keeps a MainForm's Pixel-Exact journal inside the workspace. A
+    /// form constructed without one falls back to the real per-user state
+    /// directory, where a test can read - and discard - live operator data.</summary>
+    public PixelExactBatchStateService
+        CreatePixelExactBatchStateService() =>
+        new(
+            Path.Combine(
+                Root,
+                AppConstants.PixelExactBatchStateFileName),
+            Path.Combine(
+                Root,
+                AppConstants.PixelExactStagingFolderName));
+
     public void Dispose()
     {
+        // Released before the delete below, so nothing resolves into a folder
+        // that is about to disappear.
+        if (string.Equals(TestAppState.Current, StateDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            TestAppState.Current = _previousStateDirectory;
+        }
+
+        try
+        {
+            if (Directory.Exists(StateDirectory))
+            {
+                Directory.Delete(StateDirectory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Best effort: the per-process root is removed at process exit.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
         for (var attempt = 0; attempt < 3; attempt++)
         {
             try

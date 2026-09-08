@@ -192,7 +192,7 @@ public sealed class PixelExactBatchStateService
             || state.MasterProcessedAt is null))
             throw new InvalidDataException("Committed Pixel-Exact seed lacks immutable master authority.");
         if (state.BatchId is not null && !BatchIdRegex.IsMatch(state.BatchId)) throw new InvalidDataException("Pixel-Exact batch state has an invalid batch id.");
-        if (state.Completed && state.Outputs.Any(output => output.State != PixelExactOutputCommitState.QueueCompleted)) throw new InvalidDataException("A Pixel-Exact batch cannot be completed before every output is queued complete.");
+        if (state.Completed && state.Outputs.Any(output => output.State != PixelExactOutputCommitState.QueueCompleted && !output.DeferredNoTargetRow)) throw new InvalidDataException("A Pixel-Exact batch cannot be completed before every output is queued complete or deferred.");
         if (state.Outputs.Count != 0 && state.Outputs.Count != state.BundleCount) throw new InvalidDataException("Pixel-Exact staged output count is invalid.");
         if (state.Outputs.Count > 0 && (state.BatchId is null || string.IsNullOrWhiteSpace(state.CollectionGenerationPrompt) || !HashRegex.IsMatch(state.CollectionGenerationPromptSha256 ?? string.Empty) || !string.Equals(HashText(state.CollectionGenerationPrompt!), state.CollectionGenerationPromptSha256, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Pixel-Exact staged prompt authority is invalid.");
@@ -204,6 +204,10 @@ public sealed class PixelExactBatchStateService
                 throw new InvalidDataException("Pixel-Exact committing output lacks immutable target authority.");
             if (output.State >= PixelExactOutputCommitState.AssetCommitted && string.IsNullOrWhiteSpace(output.AssetFolderPath))
                 throw new InvalidDataException("Pixel-Exact committed output lacks its asset folder authority.");
+            // A deferral only ever describes an output that was never bound to a
+            // queue row. It must never be able to hide a half-written commit.
+            if (output.DeferredNoTargetRow && (output.State != PixelExactOutputCommitState.Staged || output.RequestKey is not null || output.AssetName is not null || output.ExpectedCommitSession is not null || output.AssetFolderPath is not null))
+                throw new InvalidDataException("A deferred Pixel-Exact output must not carry commit authority.");
         }
         if (state.Outputs.Select(output => output.OutputIndex).Distinct().Count() != state.Outputs.Count) throw new InvalidDataException("Pixel-Exact output indices are duplicate.");
     }

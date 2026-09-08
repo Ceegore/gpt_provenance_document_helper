@@ -41,11 +41,28 @@ public sealed class ApiGenerationBatchTests : IDisposable
         {
             try
             {
+                // The dialog seams are static and shared by the whole assembly.
+                // Installing them here keeps this class from depending on
+                // whatever the previously executed class happened to leave
+                // behind: an unseamed MessageBox blocks this STA thread until
+                // the 30s join below gives up.
+                MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
+                MainForm.OpenFolderProvider = _ => { };
+                TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
                 action();
             }
             catch (Exception ex)
             {
                 error = ex;
+            }
+            finally
+            {
+                MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
+                MainForm.OpenFolderProvider = null;
+                MainForm.OpenFileDialogProvider = null;
+                TwoChoiceDialog.CustomChoiceProvider = null;
             }
         });
         thread.SetApartmentState(ApartmentState.STA);
