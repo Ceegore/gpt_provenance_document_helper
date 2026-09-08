@@ -7,12 +7,20 @@ partial class MainForm
 {
     private readonly record struct PixelSeedCompletion(string RequestKey, string SeriesId);
     private readonly record struct PixelExactTarget(int OutputIndex, AssetRequestItem Request);
+    /// <summary>Bound queue rows plus the output indices this manifest part does
+    /// not carry. A canonical series may legitimately continue in a later
+    /// manifest, so those indices are deferred instead of failing the batch.</summary>
+    private sealed record PixelExactTargetResolution(
+        IReadOnlyList<PixelExactTarget> Targets,
+        IReadOnlyList<int> DeferredOutputIndexes,
+        int OutputCount);
     internal sealed record PixelExactPhasePreview(
         int OutputIndex,
         int OutputCount,
         string SourceFileName,
         string TargetAssetName,
-        string Resolution);
+        string Resolution,
+        bool IsDeferred = false);
     /// <summary>0 means no collection on this row; otherwise 1..MaxPixelExactOutputCount.</summary>
     private int GetSelectedPixelExactOutputCount() => Math.Max(0, cmbPixelExactCount.SelectedIndex);
 
@@ -199,11 +207,10 @@ partial class MainForm
 
         if (workflow.Kind == QueuePromptWorkflowKind.PixelExactOutput)
         {
-            ShowMessageBox(
-                "This row is filled automatically by its preceding RefN collection request. Select that RefN row, download all requested images, then click Main Image once.",
-                "Select the collection request",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            if (ConfirmContinuationPixelExactOutputCommit(workflow))
+            {
+                HandleMainImage();
+            }
             return;
         }
 
@@ -237,11 +244,12 @@ partial class MainForm
             return;
         }
 
-        var targets = TryResolvePixelExactTargets(workflow, _activeRequest);
-        if (targets is null)
+        var resolution = TryResolvePixelExactTargets(workflow, _activeRequest);
+        if (resolution is null)
         {
             return;
         }
+        var targets = resolution.Targets;
 
         var settings = ReadSettingsFromUi();
         IReadOnlyList<string> sources = Array.Empty<string>();
@@ -285,7 +293,7 @@ partial class MainForm
             return;
         }
 
-        if (!ConfirmPixelExactPhaseOrder(targets, previewSources))
+        if (!ConfirmPixelExactPhaseOrder(resolution, previewSources))
         {
             AddStatus("Pixel-Exact collection cancelled at phase-order confirmation.");
             return;
@@ -299,6 +307,13 @@ partial class MainForm
         catch (Exception ex)
         {
             ShowError("Could not establish the durable Pixel-Exact collection receipt.", ex);
+            return;
+        }
+
+        // The journal records the deferral before the first commit so an
+        // interrupted batch can still be closed out with the same phases.
+        if (!TryRecordDeferredPixelExactOutputs(state, resolution.DeferredOutputIndexes))
+        {
             return;
         }
 
@@ -424,9 +439,12 @@ partial class MainForm
             AddStatus($"Pixel-Exact output {target.OutputIndex} committed: {target.Request.AssetName}");
         }
 
+        // A deferred phase is terminal for this batch. Without that the journal
+        // slot would stay pending forever and block every following series.
         try
         {
-            state.Completed = state.Outputs.All(output => output.State == PixelExactOutputCommitState.QueueCompleted);
+            state.Completed = state.Outputs.All(output =>
+                output.State == PixelExactOutputCommitState.QueueCompleted || output.DeferredNoTargetRow);
             _pixelExactBatchStateService.Save(state);
         }
         catch (Exception ex)
@@ -434,18 +452,98 @@ partial class MainForm
             AddStatus($"Pixel-Exact outputs are committed, but final batch cleanup needs reconciliation: {ex.Message}");
         }
 
+        var completedRequest = _activeRequest;
         _activeRequest = null;
         _activeApiCandidateMetadata = null;
         ResetAssetInputFieldsAfterDurableAction();
         ApplyState();
+
+        var deferredReport = BuildPixelExactDeferredReport(state, resolution.DeferredOutputIndexes);
+        foreach (var line in deferredReport)
+        {
+            AddStatus(line);
+        }
+
+        // The next queue row is selected before the summary dialog so the
+        // operator can paste its prompt straight after acknowledging it.
+        TryActivateNextOpenQueueRequest(completedRequest);
+
         ShowMessageBox(
-            $"{completed} Pixel-Exact outputs were committed as individual queue assets.",
+            $"{completed} Pixel-Exact outputs were committed as individual queue assets."
+                + (deferredReport.Count == 0
+                    ? string.Empty
+                    : Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine, deferredReport)),
             "Pixel-Exact collection complete",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
     }
 
-    private IReadOnlyList<PixelExactTarget>? TryResolvePixelExactTargets(QueuePromptWorkflowMetadata workflow, AssetRequestItem activeRequest)
+    /// <summary>Marks the phases this manifest part cannot bind. They keep their
+    /// staged bytes and stay uncommitted, but they no longer hold the batch open.</summary>
+    private bool TryRecordDeferredPixelExactOutputs(PixelExactBatchState state, IReadOnlyList<int> deferredOutputIndexes)
+    {
+        if (deferredOutputIndexes.Count == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            foreach (var outputIndex in deferredOutputIndexes)
+            {
+                var output = state.Outputs.SingleOrDefault(item => item.OutputIndex == outputIndex);
+                if (output is null || output.State != PixelExactOutputCommitState.Staged)
+                {
+                    throw new InvalidDataException($"Pixel-Exact output {outputIndex} cannot be deferred from its current journal state.");
+                }
+                output.DeferredNoTargetRow = true;
+            }
+            _pixelExactBatchStateService.Save(state);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not record the deferred Pixel-Exact phases of this series.", ex);
+            return false;
+        }
+    }
+
+    internal static IReadOnlyList<string> BuildPixelExactDeferredPhaseReport(
+        string seriesId,
+        IReadOnlyList<int> deferredOutputIndexes,
+        int outputCount,
+        IReadOnlyList<string> originalSourceFileNames)
+    {
+        if (deferredOutputIndexes.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var lines = new List<string>
+        {
+            $"Series '{seriesId}' has no queue row for output "
+                + string.Join(", ", deferredOutputIndexes.Select(index => $"{index}/{outputCount}"))
+                + " in the imported manifest. Those phases were not committed."
+        };
+        for (var index = 0; index < deferredOutputIndexes.Count; index++)
+        {
+            var fileName = index < originalSourceFileNames.Count ? originalSourceFileNames[index] : "(unknown)";
+            lines.Add($"Deferred output {deferredOutputIndexes[index]}/{outputCount}: {fileName}");
+        }
+        lines.Add("Import the continuation manifest that carries these AusRefN rows, then commit each one with its own downloaded image.");
+        return lines;
+    }
+
+    private IReadOnlyList<string> BuildPixelExactDeferredReport(PixelExactBatchState state, IReadOnlyList<int> deferredOutputIndexes)
+    {
+        var fileNames = deferredOutputIndexes
+            .Select(outputIndex => state.Outputs.FirstOrDefault(output => output.OutputIndex == outputIndex))
+            .Select(output => output is null ? "(unknown)" : Path.GetFileName(output.OriginalSourcePath))
+            .ToArray();
+        return BuildPixelExactDeferredPhaseReport(state.SeriesId, deferredOutputIndexes, state.BundleCount, fileNames);
+    }
+
+    private PixelExactTargetResolution? TryResolvePixelExactTargets(QueuePromptWorkflowMetadata workflow, AssetRequestItem activeRequest)
     {
         if (_currentManifest is null)
         {
@@ -460,31 +558,33 @@ partial class MainForm
         }
 
         var targets = new List<PixelExactTarget> { new(1, activeRequest) };
+        var deferred = new List<int>();
         if (workflow.HasCanonicalMetadata)
         {
             for (var outputIndex = 2; outputIndex <= outputCount; outputIndex++)
             {
-                var matches = _currentManifest.Items
-                    .Where(item =>
-                    {
-                        var parsed = _queuePromptWorkflowParser.Parse(item.Prompt);
-                        return parsed.Kind == QueuePromptWorkflowKind.PixelExactOutput
-                            && parsed.HasCanonicalMetadata
-                            && string.Equals(parsed.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
-                            && parsed.PixelOutputCount == outputCount
-                            && parsed.OutputIndex == outputIndex;
-                    })
-                    .ToList();
+                var matches = FindCanonicalPixelExactOutputRows(workflow.SeriesId, outputCount, outputIndex);
 
-                if (matches.Count != 1)
+                // Two rows claiming the same output index is corrupt metadata and
+                // still fails closed. Zero rows is the documented cross-manifest
+                // case: the continuation lives in a later manifest part, so the
+                // phase is deferred instead of discarding the whole collection.
+                if (matches.Count > 1)
                 {
                     ShowMessageBox(
-                        $"The Pixel-Exact series metadata does not contain exactly one target row for output {outputIndex}. No images were processed.",
+                        $"The Pixel-Exact series metadata contains {matches.Count} target rows for output {outputIndex}, but exactly one is required. No images were processed.",
                         "Invalid Pixel-Exact series",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
                     return null;
                 }
+
+                if (matches.Count == 0)
+                {
+                    deferred.Add(outputIndex);
+                    continue;
+                }
+
                 targets.Add(new PixelExactTarget(outputIndex, matches[0]));
             }
         }
@@ -515,12 +615,35 @@ partial class MainForm
             for (var index = 0; index < followers.Count; index++) targets.Add(new PixelExactTarget(index + 2, followers[index]));
         }
 
-        if (targets.Select(target => target.Request.RequestKey).Distinct(StringComparer.Ordinal).Count() != outputCount)
+        if (targets.Select(target => target.Request.RequestKey).Distinct(StringComparer.Ordinal).Count() != targets.Count)
         {
             ShowMessageBox("Pixel-Exact targets are not unique. No images were processed.", "Invalid Pixel-Exact series", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return null;
         }
-        return targets;
+        return new PixelExactTargetResolution(targets, deferred, outputCount);
+    }
+
+    /// <summary>All canonical AusRefN rows of one series that claim a single
+    /// output index. Zero rows means this manifest part does not carry the
+    /// phase; more than one means the series metadata is ambiguous.</summary>
+    private List<AssetRequestItem> FindCanonicalPixelExactOutputRows(string? seriesId, int outputCount, int outputIndex)
+    {
+        if (_currentManifest is null)
+        {
+            return [];
+        }
+
+        return _currentManifest.Items
+            .Where(item =>
+            {
+                var parsed = _queuePromptWorkflowParser.Parse(item.Prompt);
+                return parsed.Kind == QueuePromptWorkflowKind.PixelExactOutput
+                    && parsed.HasCanonicalMetadata
+                    && string.Equals(parsed.SeriesId, seriesId, StringComparison.Ordinal)
+                    && parsed.PixelOutputCount == outputCount
+                    && parsed.OutputIndex == outputIndex;
+            })
+            .ToList();
     }
 
     private IReadOnlyList<string>? TryResolvePixelExactMainImages(AppSettings settings, int outputCount)
@@ -567,9 +690,10 @@ partial class MainForm
         }
     }
 
-    private bool ConfirmPixelExactPhaseOrder(IReadOnlyList<PixelExactTarget> targets, IReadOnlyList<string> orderedSources)
+    private bool ConfirmPixelExactPhaseOrder(PixelExactTargetResolution resolution, IReadOnlyList<string> orderedSources)
     {
-        if (targets.Count == 0 || targets.Count != orderedSources.Count)
+        var targets = resolution.Targets;
+        if (targets.Count == 0 || resolution.OutputCount != orderedSources.Count)
         {
             ShowMessageBox(
                 "The detected Pixel-Exact source images and queue targets do not have the same count. No files were written.",
@@ -579,13 +703,23 @@ partial class MainForm
             return false;
         }
 
+        // Sources are addressed by output index, never by position in the target
+        // list. A deferred phase leaves a hole there and must not shift the rest.
         var phases = targets
-            .Select((target, index) => new PixelExactPhasePreview(
+            .Select(target => new PixelExactPhasePreview(
                 target.OutputIndex,
-                targets.Count,
-                Path.GetFileName(orderedSources[index]),
+                resolution.OutputCount,
+                Path.GetFileName(orderedSources[target.OutputIndex - 1]),
                 target.Request.AssetName,
                 target.Request.Resolution))
+            .Concat(resolution.DeferredOutputIndexes.Select(outputIndex => new PixelExactPhasePreview(
+                outputIndex,
+                resolution.OutputCount,
+                Path.GetFileName(orderedSources[outputIndex - 1]),
+                string.Empty,
+                string.Empty,
+                IsDeferred: true)))
+            .OrderBy(phase => phase.OutputIndex)
             .ToArray();
         var confirmation = ShowConfirmDialog(
             BuildPixelExactPhasePreviewText(phases),
@@ -603,12 +737,17 @@ partial class MainForm
             throw new ArgumentException("At least one Pixel-Exact phase is required.", nameof(phases));
         }
 
-        var rows = phases.Select(phase =>
-            $"{phase.OutputIndex}/{phase.OutputCount}: {phase.SourceFileName}  →  {phase.TargetAssetName} ({phase.Resolution})");
+        var rows = phases.Select(phase => phase.IsDeferred
+            ? $"{phase.OutputIndex}/{phase.OutputCount}: {phase.SourceFileName}  →  deferred (no target row in this manifest)"
+            : $"{phase.OutputIndex}/{phase.OutputCount}: {phase.SourceFileName}  →  {phase.TargetAssetName} ({phase.Resolution})");
+        var deferredNote = phases.Any(phase => phase.IsDeferred)
+            ? Environment.NewLine
+                + "Deferred phases are not written now. Their downloaded images stay in the Image Download Folder for the continuation manifest."
+            : string.Empty;
         return "Review the ordered Pixel-Exact phases before any asset is written."
             + Environment.NewLine + Environment.NewLine
             + string.Join(Environment.NewLine, rows)
-            + Environment.NewLine + Environment.NewLine
+            + Environment.NewLine + deferredNote + Environment.NewLine
             + "The helper will freeze these files and commit them oldest-to-newest. Continue?";
     }
 
@@ -765,13 +904,84 @@ partial class MainForm
         {
             var state = _pixelExactBatchStateService.Load();
             return state is not null
-                && state.Outputs.Any(output => output.State != PixelExactOutputCommitState.QueueCompleted)
+                && state.Outputs.Any(output => output.State != PixelExactOutputCommitState.QueueCompleted && !output.DeferredNoTargetRow)
                 && string.Equals(state.CollectionRequestKey, item.RequestKey, StringComparison.Ordinal);
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// A canonical AusRefN row is normally written by its RefN collection. When
+    /// the series continues into a later manifest part that collection row is
+    /// not importable here, so the phase is committed as a single confirmed
+    /// asset instead of leaving the queue permanently blocked.
+    /// </summary>
+    private bool ConfirmContinuationPixelExactOutputCommit(QueuePromptWorkflowMetadata workflow)
+    {
+        if (_currentManifest is null || _activeRequest is null || workflow.OutputIndex is not int outputIndex || workflow.PixelOutputCount is not int outputCount)
+        {
+            return false;
+        }
+
+        var collectionRow = _currentManifest.Items.FirstOrDefault(item =>
+        {
+            var parsed = _queuePromptWorkflowParser.Parse(item.Prompt);
+            return parsed.Kind == QueuePromptWorkflowKind.PixelExactRef
+                && parsed.HasCanonicalMetadata
+                && string.Equals(parsed.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
+                && parsed.PixelOutputCount == outputCount;
+        });
+
+        if (collectionRow is not null && IsOpenQueueRequest(collectionRow))
+        {
+            ShowMessageBox(
+                "This row is filled automatically by its preceding RefN collection request. Select that RefN row, download all requested images, then click Main Image once.",
+                "Select the collection request",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return false;
+        }
+
+        try
+        {
+            var pending = _pixelExactBatchStateService.Load();
+            if (pending is not null
+                && !pending.Completed
+                && string.Equals(pending.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
+                && pending.Outputs.Any(output => output.OutputIndex == outputIndex && !output.DeferredNoTargetRow && output.State != PixelExactOutputCommitState.QueueCompleted))
+            {
+                ShowMessageBox(
+                    "A Pixel-Exact collection of this series is still pending and already holds a staged image for this output. Finish that collection from its RefN row before committing this row on its own.",
+                    "Pixel-Exact collection pending",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not read the Pixel-Exact batch journal for this output row.", ex);
+            return false;
+        }
+
+        var confirmation = ShowConfirmDialog(
+            $"No open RefN collection request for series '{workflow.SeriesId}' exists in the imported manifest, so output {outputIndex}/{outputCount} cannot be filled automatically here."
+                + Environment.NewLine + Environment.NewLine
+                + $"Commit the selected image directly as '{_activeRequest.AssetName}'?"
+                + Environment.NewLine + Environment.NewLine
+                + "Use this for a series that continues in another manifest part. The provenance records this queue row's own prompt.",
+            "Commit continuation output",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Question);
+        if (confirmation != DialogResult.OK)
+        {
+            AddStatus($"Continuation commit cancelled for output {outputIndex}/{outputCount}.");
+            return false;
+        }
+        return true;
     }
 
     private void TryActivateNextPixelExactCollection(string seriesId)
@@ -796,12 +1006,66 @@ partial class MainForm
             return;
         }
 
-        var row = lvRequestQueue.Items.Cast<ListViewItem>()
-            .FirstOrDefault(item => ReferenceEquals(item.Tag, next));
-        if (row is not null)
+        if (TryActivateQueueRow(next))
         {
-            HandleRequestQueueItemActivate(row);
             AddStatus("Pixel-Exact collection request loaded. Generate/download all displayed Pixel phases, then click Main Image once.");
         }
+    }
+
+    /// <summary>
+    /// Selects the first still-open queue row at or after the row that was just
+    /// finished, so a completed collection hands the operator its next single
+    /// prompt (and the clipboard copy) without manual scrolling.
+    /// </summary>
+    private void TryActivateNextOpenQueueRequest(AssetRequestItem? completedRequest)
+    {
+        if (_currentManifest is null)
+        {
+            return;
+        }
+
+        var items = _currentManifest.Items;
+        var start = completedRequest is null ? 0 : items.ToList().FindIndex(item => ReferenceEquals(item, completedRequest)) + 1;
+        var next = items.Skip(Math.Max(0, start)).FirstOrDefault(IsOpenQueueRequest)
+            ?? items.FirstOrDefault(IsOpenQueueRequest);
+        if (next is null)
+        {
+            return;
+        }
+
+        if (TryActivateQueueRow(next))
+        {
+            AddStatus($"Next open Request loaded and its prompt copied to the clipboard: {next.AssetName}");
+        }
+    }
+
+    private bool IsOpenQueueRequest(AssetRequestItem item) =>
+        !item.IsCompleted && !_completedRequestKeys.Contains(item.RequestKey);
+
+    private bool TryActivateQueueRow(AssetRequestItem request)
+    {
+        var row = lvRequestQueue.Items.Cast<ListViewItem>()
+            .FirstOrDefault(item => ReferenceEquals(item.Tag, request));
+        if (row is null)
+        {
+            return false;
+        }
+
+        HandleRequestQueueItemActivate(row);
+
+        // The row is re-created by the refresh inside the activation, so the
+        // scroll target is resolved again rather than reusing the stale item.
+        var refreshed = lvRequestQueue.Items.Cast<ListViewItem>()
+            .FirstOrDefault(item => ReferenceEquals(item.Tag, request));
+        try
+        {
+            refreshed?.EnsureVisible();
+        }
+        catch (InvalidOperationException)
+        {
+            // A headless or not-yet-created list view cannot scroll. The row is
+            // still selected, which is all the workflow depends on.
+        }
+        return true;
     }
 }

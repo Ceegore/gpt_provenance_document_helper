@@ -331,6 +331,19 @@ public sealed class TestWorkspace : IDisposable
             RequestQueueStatePath,
             CreateValidationService());
 
+    /// <summary>Keeps a MainForm's Pixel-Exact journal inside the workspace. A
+    /// form constructed without one falls back to the real per-user state
+    /// directory, where a test can read - and discard - live operator data.</summary>
+    public PixelExactBatchStateService
+        CreatePixelExactBatchStateService() =>
+        new(
+            Path.Combine(
+                Root,
+                AppConstants.PixelExactBatchStateFileName),
+            Path.Combine(
+                Root,
+                AppConstants.PixelExactStagingFolderName));
+
     public void Dispose()
     {
         for (var attempt = 0; attempt < 3; attempt++)
