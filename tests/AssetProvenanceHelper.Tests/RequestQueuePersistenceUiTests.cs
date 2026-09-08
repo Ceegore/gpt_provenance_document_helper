@@ -16,6 +16,7 @@ public sealed class RequestQueuePersistenceUiTests
             try
             {
                 MainForm.MessageBoxProvider = (_, _, _, _, _) => { };
+                MainForm.ConfirmBoxProvider = (_, _, _, _, _) => DialogResult.OK;
                 MainForm.OpenFolderProvider = _ => { };
                 TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
                 action();
@@ -27,6 +28,7 @@ public sealed class RequestQueuePersistenceUiTests
             finally
             {
                 MainForm.MessageBoxProvider = null;
+                MainForm.ConfirmBoxProvider = null;
                 MainForm.OpenFolderProvider = null;
                 MainForm.OpenFileDialogProvider = null;
                 TwoChoiceDialog.CustomChoiceProvider = null;
@@ -56,7 +58,8 @@ public sealed class RequestQueuePersistenceUiTests
         null,
         null,
         null,
-        workspace.CreateRequestQueueStateService());
+        workspace.CreateRequestQueueStateService(),
+        workspace.CreatePixelExactBatchStateService());
 
     [Fact]
     public void ImportRestartAndClear_RestoresThenRemovesQueueState()

@@ -4,6 +4,48 @@ A robust, fail-safe Windows desktop utility for tracking, organizing, and record
 
 ---
 
+## Install a downloaded release on Smart App Control systems
+
+Install either way below. The release archive is named
+`AssetProvenanceHelper-v<version>.zip`; replace `<version>` with the version you
+downloaded.
+
+Either:
+
+- Install the prerequisite [.NET 10 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/10.0) — choose **.NET Desktop Runtime**, not the SDK.
+- Download and extract `AssetProvenanceHelper-v<version>.zip`.
+- Run:
+
+  ```powershell
+  dotnet "C:\Tools\AssetProvenanceHelper\AssetProvenanceHelper.dll"
+  ```
+
+Or:
+
+- Download and extract `AssetProvenanceHelper-v<version>.zip`.
+- Run this one line in PowerShell (adjust the path if you extracted elsewhere):
+
+  ```powershell
+  Get-ChildItem "C:\Tools\AssetProvenanceHelper" -Recurse | Unblock-File
+  ```
+
+- Double-click `Start AI Asset Provenance Helper.cmd`.
+
+### Why so complicated?
+
+Windows tags every downloaded file as internet-sourced, and Smart App Control
+refuses to run `.cmd` files carrying that tag — whatever is inside them. This
+app is not code-signed. Smart App Control refuses to launch unsigned `.exe`
+files outright — no error, no window. Therefore the release package contains no
+`.exe`; it runs the application inside Microsoft's signed `dotnet` host instead.
+The application is identical either way.
+
+Do **not** turn off Smart App Control to work around this. On Windows 11 it may
+only be re-enabled by reinstalling Windows. The installed `README.txt` contains
+the same instructions plus the language-independent GUI alternative.
+
+---
+
 ## Key Features
 
 - **Dual Workflow Modes**:
@@ -121,6 +163,28 @@ no filesystem change. The queue's **Show: Open Pixel series** filter keeps every
 row of an incomplete canonical series visible (including an already completed
 master for context); the status below the queue reports both the overall and the
 currently selected series progress.
+
+#### Series that continue in a later manifest part
+
+A large asset document is often exported as several manifest parts, and a series
+may legitimately begin in one part while its last `AusRefN` target rows live in
+the next. The helper handles that split instead of failing the collection:
+
+- Output indexes with no matching row in the imported manifest are **deferred**.
+  Every phase that does have a row is still committed normally, the phase-order
+  confirmation marks the deferred phases, and the completion summary names them
+  together with the download files they belong to. Those downloads stay untouched
+  in the Image Download Folder.
+- The batch journal closes once every non-deferred phase is done, so the next
+  series in the queue is never blocked by the deferral.
+- After importing the continuation manifest, select the leftover `AusRefN` row,
+  choose its downloaded image, and click **Main Image**. Because no `RefN`
+  collection row for that series is importable there, the helper asks for one
+  confirmation and then commits the row as a single asset. While the series'
+  `RefN` row *is* present and still open, that manual path stays blocked — the
+  collection remains the only way to fill those rows.
+- Two rows claiming the same `OUTPUT_INDEX` is still corrupt metadata and still
+  fails closed without writing anything.
 
 The Pixel-Exact selector and phase drop-down are mutually exclusive with
 Variants and Direct mode. Pixel-Exact multi-image sequences intentionally do not

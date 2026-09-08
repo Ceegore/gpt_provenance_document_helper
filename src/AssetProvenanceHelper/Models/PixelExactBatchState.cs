@@ -22,6 +22,16 @@ public sealed class PixelExactStagedOutput
     public AssetSession? ExpectedCommitSession { get; set; }
     public string? AssetFolderPath { get; set; }
     public DateTimeOffset? AssetCommittedAtUtc { get; set; }
+
+    /// <summary>
+    /// True when the imported manifest carries no queue row for this output
+    /// index. Canonical series may be split over several manifest parts, so a
+    /// missing target is a deferral, not a corrupt series. A deferred output
+    /// stays <see cref="PixelExactOutputCommitState.Staged"/> and is terminal
+    /// for the batch, which keeps the single journal slot free for the next
+    /// series instead of blocking it forever.
+    /// </summary>
+    public bool DeferredNoTargetRow { get; set; }
 }
 
 public sealed class PixelExactBatchState

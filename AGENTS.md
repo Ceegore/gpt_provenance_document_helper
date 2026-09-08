@@ -198,6 +198,33 @@ Two different artifacts can trip SAC. Keep them straight:
    `Process.Start("explorer.exe", ...)`, which can cause Windows Security / Smart App Control /
    Defender alerts and hang the test host.
 
+8. **Never let a test reach the real per-user state directory.**
+   `TestAppState` installs a module initializer that redirects
+   `AppBootstrap.GetStateDirectory()` for the whole test assembly, and each
+   `TestWorkspace` claims its own short scoped folder under it. That is not
+   cosmetic: a MainForm built without the optional state services otherwise
+   reads the operator's live Pixel-Exact journal, runs generation-job and
+   candidate recovery against the real store, writes staged candidates into the
+   real `generated/` folder, and can discard a pending batch. It also makes
+   results depend on machine state - a live pending batch once made a queue test
+   hang for 30s on a real modal dialog.
+   - Restore `TestAppState.RestoreDefault()`, **never** `AppBootstrap.StateDirectoryOverride = null`.
+   - Keep that scoped folder path short. Staged candidates nest
+     `generated/<64-hex>/<64-hex>/<id>.png`; GDI+ fails to decode a PNG past
+     MAX_PATH even where the .NET file APIs succeed, and it reports that as a
+     bogus "invalid input" decode error rather than a path error.
+   - `TestStateIsolationTests` guards all of this, including a fact that
+     snapshots the real folder around a MainForm construction.
+   - Related, and still open by choice: six classes construct a MainForm without
+     ever installing `MainForm.MessageBoxProvider` (`ChangeV11ImageSelectionTests`,
+     `ChangeV11MainFormTests`, `ChangeV11RecoveryTests`, `ChangeV11SettingsTests`,
+     `UpgradeV13LegacyCompatibilityTests`, `UpgradeV13RecentDocumentsTests`). All
+     61 of their tests pass in isolation with every seam null, so none of their
+     paths raises a dialog today - but many other classes null the seams in a
+     finally, so if a future change makes one of those paths show a message box
+     it will block the STA thread and look like a timeout, not a dialog. Install
+     the seams in the affected class rather than debugging the timeout.
+
 ## SAC-safe smoke test
 
 `scripts/run_smoke_tests_sac_safe.ps1` is the SAC-safe counterpart to
