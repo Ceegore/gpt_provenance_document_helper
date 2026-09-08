@@ -60,6 +60,14 @@ private readonly SettingsService _settingsService;
     /// newly built row set.</summary>
     private bool _suppressQueueScrollRestore;
 
+    /// <summary>Guards the Asset-column resize handler against re-entering
+    /// itself when setting a column width raises another Resize.</summary>
+    private bool _fittingQueueColumns;
+
+    /// <summary>Guards the Current Asset height fit against re-entering itself
+    /// when setting the height raises another Layout.</summary>
+    private bool _fittingCurrentAssetHeight;
+
     /// <summary>
     /// Source paths of Main images durably committed during this app session.
     /// In-memory only and intentionally not persisted - "momentary session" per the
@@ -316,6 +324,13 @@ private readonly SettingsService _settingsService;
         lvRecentDocuments.MouseMove += (_, e) => UpdateRecentDocumentTooltip(e);
 
         helpOverlay.CloseRequested += (_, _) => pnlMainContent.Enabled = true;
+        Resize += (_, _) =>
+        {
+            if (helpOverlay.Visible)
+            {
+                CoverClientAreaWithHelpOverlay();
+            }
+        };
 
         KeyDown += MainForm_KeyDown;
     }
@@ -691,9 +706,18 @@ private readonly SettingsService _settingsService;
         ClearValidationVisuals();
     }
 
+    /// <summary>Keeps the help overlay spanning the whole visible client area.
+    /// It is undocked so a docked sibling can never shrink it to a strip.</summary>
+    private void CoverClientAreaWithHelpOverlay()
+    {
+        helpOverlay.Bounds = ClientRectangle;
+        helpOverlay.BringToFront();
+    }
+
     private void ShowHelpOverlay()
     {
         pnlMainContent.Enabled = false;
+        CoverClientAreaWithHelpOverlay();
         helpOverlay.ShowOverlay();
     }
 

@@ -253,6 +253,7 @@ partial class MainForm
         try
         {
             lvRequestQueue.Items.Clear();
+            lvRequestQueue.ShowItemToolTips = true;
 
             if (_currentManifest is null)
             {
@@ -290,7 +291,11 @@ partial class MainForm
                             request.IsCompleted || _completedRequestKeys.Contains(request.RequestKey) ? "×" : string.Empty
                         })
                     {
-                        Tag = request
+                        Tag = request,
+                        // Long asset names share a prefix and the column can
+                        // still ellipsize on a narrow window, so the full name
+                        // stays reachable on hover.
+                        ToolTipText = request.AssetName
                     };
 
                 if (backColor != Color.White)
@@ -427,6 +432,40 @@ partial class MainForm
         }
 
         return Math.Min(savedTopIndex, currentRequestKeysInOrder.Count - 1);
+    }
+
+    /// <summary>
+    /// Widens the Asset column to whatever space the queue has left over. The
+    /// other three columns are fixed-width by design, so any growth of the
+    /// panel should go to the one column whose content is actually variable.
+    /// </summary>
+    private void FitRequestQueueAssetColumn()
+    {
+        if (IsDisposed || Disposing || lvRequestQueue.IsDisposed || lvRequestQueue.Columns.Count < 4)
+        {
+            return;
+        }
+
+        if (_fittingQueueColumns)
+        {
+            return;
+        }
+
+        _fittingQueueColumns = true;
+        try
+        {
+            var fixedWidth = lvRequestQueue.Columns[0].Width
+                + lvRequestQueue.Columns[2].Width
+                + lvRequestQueue.Columns[3].Width;
+            // Leave room for the vertical scrollbar so the last column never
+            // pushes a horizontal one into view.
+            var available = lvRequestQueue.ClientSize.Width - fixedWidth - SystemInformation.VerticalScrollBarWidth;
+            lvRequestQueue.Columns[1].Width = Math.Max(150, available);
+        }
+        finally
+        {
+            _fittingQueueColumns = false;
+        }
     }
 
     private void HandleRequestQueueFilterChanged()

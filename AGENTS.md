@@ -86,9 +86,17 @@ The tag push builds and attaches:
 
 | Asset | Purpose |
 |---|---|
-| `AssetProvenanceHelper-v<ver>-win-x64.zip` | Self-contained; end users need no .NET install |
-| `AssetProvenanceHelper-v<ver>-framework-dependent.zip` | Fallback for users whose machine enforces SAC; runs via `dotnet AssetProvenanceHelper.dll` |
-| `SHA256SUMS.txt` | Checksums for both archives |
+| `AssetProvenanceHelper-v<ver>.zip` | Framework-dependent, **apphost-free**; started through the signed `dotnet` host by the bundled launcher |
+| `SHA256SUMS.txt` | Checksum for that archive |
+
+> This table described two archives (`-win-x64` self-contained and
+> `-framework-dependent`) long after the pipeline stopped producing them. The
+> self-contained package was dropped precisely because its unsigned apphost is
+> what Smart App Control blocks; `release.yml` now publishes with
+> `-p:UseAppHost=false` and fails the build if any `.exe` is present. Verified
+> against the real releases: v1.5.0 through v1.5.3 each shipped exactly the one
+> zip above. `scripts/verify_release_assets.ps1` now checks this table against
+> the workflow so it cannot drift again.
 
 The workflow **refuses to publish** if the tag does not match the csproj `<Version>`
 (so `v1.5.0` on a `1.4.0` build fails instead of shipping a mislabelled zip), and it
@@ -224,6 +232,29 @@ Two different artifacts can trip SAC. Keep them straight:
      finally, so if a future change makes one of those paths show a message box
      it will block the STA thread and look like a timeout, not a dialog. Install
      the seams in the affected class rather than debugging the timeout.
+
+## Visual regressions
+
+WinForms layout defects do not throw. A group can size itself from a child that
+sizes itself from the group and settle 88px too tall; a nested TableLayoutPanel
+whose percent-sized row is too small overlaps its own rows rather than clipping;
+a Fill-docked overlay beside a Top-docked sibling silently receives only the
+leftover strip. All three shipped in v1.5.3 and none was visible to the suite.
+
+`MainFormLayoutRegressionTests` now asserts those invariants numerically, and
+setting `APH_SHOT_DIR` makes its last test write a PNG of each screen state
+through `PrintWindow` (skipped otherwise, so CI never pays for it):
+
+```powershell
+$env:APH_SHOT_DIR = "$env:TEMPph-shots"
+dotnet test tests/AssetProvenanceHelper.Tests/AssetProvenanceHelper.Tests.csproj -c Debug --no-build `
+  --filter "FullyQualifiedName~CaptureScreenStatesForVisualAudit"
+```
+
+Note the desktop-automation tooling cannot drive this app: it runs inside the
+signed `dotnet` host, so the process is `dotnet.exe` and no allowlist entry
+resolves to it. Publishing an apphost `.exe` to work around that is exactly what
+SAC blocks. Drive the form in-process instead, as that test does.
 
 ## SAC-safe smoke test
 

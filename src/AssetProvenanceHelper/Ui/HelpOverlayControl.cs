@@ -14,7 +14,12 @@ public class HelpOverlayControl : UserControl
 
     public HelpOverlayControl()
     {
-        Dock = DockStyle.Fill;
+        // Deliberately undocked. Docking Fill made this a sibling of the
+        // Top-docked workspace, so it only ever received the leftover strip
+        // below it - 61px against a 560px content panel, which clipped the help
+        // text away entirely and left just the title bar visible. The owner
+        // positions it over the whole client area instead.
+        Dock = DockStyle.None;
         Visible = false;
         BackColor = Color.FromArgb(200, 20, 25, 35); // Semi-transparent dark overlay
 

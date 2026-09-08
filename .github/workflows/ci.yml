@@ -41,6 +41,10 @@ jobs:
       - name: Restore
         run: dotnet restore AssetProvenanceHelper.sln
 
+      - name: Verify documented release assets match the release workflow
+        shell: pwsh
+        run: pwsh scripts/verify_release_assets.ps1
+
       - name: Debug build - warnings are errors
         run: >
           dotnet build AssetProvenanceHelper.sln

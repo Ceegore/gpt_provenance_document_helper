@@ -167,7 +167,11 @@ partial class MainForm
         };
 
         pnlWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        pnlWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 380));
+        // 380 left the Asset column ~150px after the three fixed columns and the
+        // scrollbar, which truncates every real asset name to the same shared
+        // prefix. The left column keeps well over its 1040px minimum at any
+        // window size this layout already supported.
+        pnlWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 460));
 
         pnlMainContent = new TableLayoutPanel
         {
