@@ -2,38 +2,43 @@ AI Asset Provenance Helper
 ==========================
 
 
-FASTEST START (works on any Windows language, no dialogs)
----------------------------------------------------------
+INSTALL
+-------
 
-1. Extract this ZIP anywhere you can write, e.g. C:\Tools\AssetProvenanceHelper
+Either:
 
-2. Open PowerShell, paste this ONE line, and adjust the path if needed:
+1. Install the prerequisite .NET 10 Desktop Runtime (x64), once:
+     https://dotnet.microsoft.com/download/dotnet/10.0
+   Choose ".NET Desktop Runtime", not the SDK and not the ASP.NET runtime.
+
+2. Download AssetProvenanceHelper-v<version>.zip and extract it anywhere you
+   can write, for example C:\Tools\AssetProvenanceHelper.
+
+3. Run:
+
+     dotnet "C:\Tools\AssetProvenanceHelper\AssetProvenanceHelper.dll"
+
+Or:
+
+1. Download AssetProvenanceHelper-v<version>.zip and extract it.
+
+2. Run this one line in PowerShell (adjust the path if extracted elsewhere):
 
      Get-ChildItem "C:\Tools\AssetProvenanceHelper" -Recurse | Unblock-File
 
 3. Double-click:  Start AI Asset Provenance Helper.cmd
 
-Requires the free .NET 10 Desktop Runtime (x64), installed once:
-  https://dotnet.microsoft.com/download/dotnet/10.0
-Choose ".NET Desktop Runtime" - not the SDK, not the ASP.NET runtime.
 
+WHY SO COMPLICATED?
+-------------------
 
-DON'T WANT TO RUN ANY COMMAND? START THE APP DIRECTLY
------------------------------------------------------
+Windows tags every downloaded file as internet-sourced, and Smart App Control
+refuses to run .cmd files carrying that tag - whatever is inside them. This app
+is not code-signed. Smart App Control refuses to launch unsigned .exe files
+outright - no error, no window. So the package contains no .exe; it runs the
+app inside Microsoft's signed dotnet host instead. The application is identical either way.
 
-This always works, even on files still marked as downloaded:
-
-  dotnet "C:\Tools\AssetProvenanceHelper\AssetProvenanceHelper.dll"
-
-That is literally all the launcher does.
-
-
-WHY STEP 2 IS NEEDED
---------------------
-
-Windows tags every downloaded file as "came from the internet". Smart App
-Control refuses to run .cmd files carrying that tag, no matter what is inside
-them. You will see nothing at all, or:
+If the .cmd launcher is still blocked, you may see:
 
   "Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert.
    Gefaehrliche Dateierweiterung aus dem Web."
@@ -41,7 +46,8 @@ them. You will see nothing at all, or:
     Dangerous file extension from the web.")
 
 Unblock-File removes that tag. The app's .dll does NOT need this - only the
-.cmd launcher does.
+.cmd launcher does. The direct dotnet command above remains available even
+before unblocking.
 
 
 DOING IT THROUGH THE GUI INSTEAD (optional)
