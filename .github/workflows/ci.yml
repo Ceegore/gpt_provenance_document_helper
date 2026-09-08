@@ -17,10 +17,14 @@ jobs:
     name: Windows Build & Test
     runs-on: windows-latest
     # The 20x flakiness loop re-runs the full (now genuinely serial, per B-03)
-    # suite 20 times; this job took 25m20s on run 33230139355 with 1008 tests,
-    # leaving only ~5 min of headroom against the previous 30-minute limit.
-    # 45 minutes gives real margin for continued test-suite growth.
-    timeout-minutes: 45
+    # suite 20 times, so this job's cost scales with the whole suite times 20 and
+    # the headroom keeps evaporating as tests are added: 25m20s at 1008 tests,
+    # then 41.8m / 43.4m / 44.0m on the last three green runs against the
+    # 45-minute limit, and 45.2m (cancelled) at 1277 tests. The next test to be
+    # added would have blown any of those margins, so the budget - not the loop -
+    # is what needs to grow. 90 minutes is roughly twice the current cost, which
+    # is the same ratio the 45-minute limit originally bought.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
