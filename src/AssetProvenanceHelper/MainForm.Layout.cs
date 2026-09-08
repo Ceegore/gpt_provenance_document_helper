@@ -293,20 +293,33 @@ partial class MainForm
 
     private void BuildCurrentAssetGroup(TableLayoutPanel root)
     {
+        // AutoSize defaults to GrowOnly, which never lets the group shrink back
+        // after an early wide layout pass. That left ~88px of dead space under
+        // the mode checkboxes and, because this row is AutoSize while the image
+        // cards below are the only Percent row, every one of those pixels came
+        // straight out of the card workspace.
         grpCurrentAsset = new GroupBox
         {
             Name = "grpCurrentAsset",
             Text = "Current Asset",
-            Dock = DockStyle.Fill,
-            AutoSize = true,
+            Dock = DockStyle.Top,
+            AutoSize = false,
             Padding = new Padding(10),
             Margin = new Padding(0, 0, 0, 8)
         };
 
+        // Top, not Fill. A Fill-docked AutoSize panel inside an AutoSize
+        // GroupBox forms a layout fixed point: the group sizes itself from the
+        // panel's CURRENT height and the panel fills whatever the group gives
+        // it, so both settle at a stale value. Measured here as rows=[26,111]
+        // against preferred=49 - 88px of dead space taken from the image cards,
+        // which are the only Percent row below. Top breaks the cycle because
+        // the panel then takes its own preferred height.
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
             RowCount = 2
         };
@@ -324,11 +337,18 @@ partial class MainForm
         txtAssetFolderName = new TextBox { Name = "txtAssetFolderName" };
         pnlAssetFolderNameHost = CreateFieldHost(txtAssetFolderName, compact: true);
 
+        // Top, not Fill: a wrapping FlowLayoutPanel docked Fill inside an
+        // AutoSize row reports a preferred height that reserves room for an
+        // extra wrapped line, which left ~75px of dead space under the mode
+        // checkboxes and starved the image cards below. Top still spans the
+        // cell width, so the responsive wrapping this row was built for is
+        // unaffected.
         var modeFlow = new FlowLayoutPanel
         {
+            Name = "pnlModeFlow",
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = true,
             Margin = new Padding(0)
@@ -469,6 +489,67 @@ partial class MainForm
         layout.Controls.Add(modeFlow, 1, 1);
 
         grpCurrentAsset.Controls.Add(layout);
+
+        // AutoSize could not be trusted here: the group and its Fill-docked
+        // child sized themselves from each other and settled 88px too tall,
+        // which came straight out of the image cards below. Deriving the height
+        // from the content's preferred size breaks that cycle and still tracks
+        // DPI and font changes, because the chrome delta is measured rather
+        // than assumed.
+        void FitCurrentAssetHeight()
+        {
+            if (_fittingCurrentAssetHeight)
+            {
+                return;
+            }
+
+            _fittingCurrentAssetHeight = true;
+            try
+            {
+                var chrome = grpCurrentAsset.Height - grpCurrentAsset.DisplayRectangle.Height;
+                var target = layout.GetPreferredSize(new Size(layout.Width, 0)).Height + chrome;
+                if (target <= 0 || Math.Abs(grpCurrentAsset.Height - target) <= 1)
+                {
+                    return;
+                }
+
+                // Applied after the current layout pass rather than inside it.
+                // Changing the height here directly leaves the parent's
+                // AutoSize row holding its already-measured value, and the
+                // group then bleeds over the cards below by the difference.
+                var parent = grpCurrentAsset.Parent;
+                if (parent is null || !parent.IsHandleCreated)
+                {
+                    grpCurrentAsset.Height = target;
+                    return;
+                }
+
+                if (_currentAssetHeightFitPending)
+                {
+                    return;
+                }
+
+                _currentAssetHeightFitPending = true;
+                parent.BeginInvoke(() =>
+                {
+                    _currentAssetHeightFitPending = false;
+                    if (grpCurrentAsset.IsDisposed || parent.IsDisposed)
+                    {
+                        return;
+                    }
+                    grpCurrentAsset.Height = target;
+                    parent.PerformLayout();
+                });
+            }
+            finally
+            {
+                _fittingCurrentAssetHeight = false;
+            }
+        }
+
+        grpCurrentAsset.Layout += (_, _) => FitCurrentAssetHeight();
+        layout.Layout += (_, _) => FitCurrentAssetHeight();
+
         root.Controls.Add(grpCurrentAsset, 0, 2);
     }
 
@@ -611,14 +692,17 @@ partial class MainForm
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 6
+            RowCount = 9
         };
 
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Selected text
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Timestamp
         mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 35)); // Drop box
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Buttons
-        mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); // Prompt
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Prompt title
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Prompt preview
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); // Prompt box
+        mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Prompt buttons
         mainLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // CTA
 
         lblMainSelectedImage = new Label
@@ -677,17 +761,12 @@ partial class MainForm
         mainButtons.Controls.Add(btnDropMain);
         mainButtons.Controls.Add(btnOpenDownloadsMain);
 
-        var promptContainer = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 4
-        };
-        promptContainer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        promptContainer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        promptContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        promptContainer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
+        // The prompt title, preview, box and buttons are added directly to
+        // mainLayout rather than to a nested table. A nested TableLayoutPanel
+        // whose own rows need more height than its percent-sized parent row
+        // grants overflows into the following row instead of clipping, which is
+        // what drew the buttons through the prompt text. Flat rows let one
+        // table arbitrate the whole column, so that cannot happen.
         var lblPromptTitle = new Label
         {
             Text = "Final Prompt",
@@ -722,6 +801,7 @@ partial class MainForm
 
         var promptButtons = new FlowLayoutPanel
         {
+            Name = "pnlPromptButtons",
             Dock = DockStyle.Fill,
             AutoSize = true,
             FlowDirection = FlowDirection.LeftToRight,
@@ -736,11 +816,6 @@ partial class MainForm
         promptButtons.Controls.Add(btnPasteClipboard);
         promptButtons.Controls.Add(btnClearPrompt);
 
-        promptContainer.Controls.Add(lblPromptTitle, 0, 0);
-        promptContainer.Controls.Add(lblPromptPreview, 0, 1);
-        promptContainer.Controls.Add(pnlPromptHost, 0, 2);
-        promptContainer.Controls.Add(promptButtons, 0, 3);
-
         btnMainImage = CreateCtaButton("Main Image", UiTheme.MainAccent);
         btnMainImage.Name = "btnMainImage";
 
@@ -748,8 +823,11 @@ partial class MainForm
         mainLayout.Controls.Add(lblMainTimestamp, 0, 1);
         mainLayout.Controls.Add(pnlMainImageHost, 0, 2);
         mainLayout.Controls.Add(mainButtons, 0, 3);
-        mainLayout.Controls.Add(promptContainer, 0, 4);
-        mainLayout.Controls.Add(btnMainImage, 0, 5);
+        mainLayout.Controls.Add(lblPromptTitle, 0, 4);
+        mainLayout.Controls.Add(lblPromptPreview, 0, 5);
+        mainLayout.Controls.Add(pnlPromptHost, 0, 6);
+        mainLayout.Controls.Add(promptButtons, 0, 7);
+        mainLayout.Controls.Add(btnMainImage, 0, 8);
 
         grpMain.Controls.Add(mainLayout);
 
@@ -960,6 +1038,12 @@ partial class MainForm
         lvRequestQueue.Columns.Add("Asset", 150);
         lvRequestQueue.Columns.Add("Resolution", 82);
         lvRequestQueue.Columns.Add(string.Empty, 28);
+
+        // Asset names in a real manifest run to ~30 characters and share long
+        // prefixes, so a fixed 150px column truncates every row to the same
+        // text. Give the column whatever width the queue actually has.
+        lvRequestQueue.Resize += (_, _) => FitRequestQueueAssetColumn();
+        lvRequestQueue.HandleCreated += (_, _) => FitRequestQueueAssetColumn();
 
         lblRequestProgress = new Label
         {

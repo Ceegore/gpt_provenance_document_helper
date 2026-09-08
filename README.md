@@ -197,6 +197,9 @@ explicitly. The helper then uses that row plus the immediately following N−1 r
 as the ordered targets. It refuses any conflicting recognized workflow metadata;
 use the canonical metadata format whenever it is available.
 
+The queue's Asset column widens with the panel and each row carries its full
+asset name as a tooltip, so rows that share a long prefix stay distinguishable.
+
 Use the small **×** at the right of a green queue row to delete that direct
 asset folder after confirmation and return only that row to Pending. The helper
 rejects junctions/reparse points before deletion. A reset Pixel-Exact output can
