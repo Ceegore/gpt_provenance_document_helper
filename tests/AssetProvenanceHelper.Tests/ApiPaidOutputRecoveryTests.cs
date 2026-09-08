@@ -38,6 +38,32 @@ public sealed class ApiPaidOutputRecoveryTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Pumps the message loop until <paramref name="condition"/> holds or the
+    /// deadline passes. Fixed iteration counts turn any slow runner into a
+    /// flaky failure; this keeps the fast path fast and only spends the full
+    /// budget when something is genuinely slow.
+    /// </summary>
+    private static void PumpUntil(Func<bool> condition, int timeoutMilliseconds = 30000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            Application.DoEvents();
+            if (condition())
+            {
+                // Let any continuation queued by the state change run too.
+                for (var i = 0; i < 5; i++)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(10);
+                }
+                return;
+            }
+            Thread.Sleep(20);
+        }
+    }
+
     private static void RunOnSta(Action action)
     {
         Exception? error = null;
@@ -425,11 +451,11 @@ public sealed class ApiPaidOutputRecoveryTests : IDisposable
 
                 btnGenerate.PerformClick();
 
-                for (var i = 0; i < 70; i++)
-                {
-                    Application.DoEvents();
-                    Thread.Sleep(20);
-                }
+                // A fixed 70x20ms budget was not enough for the three-attempt
+                // retry chain on a loaded CI runner: the job was still
+                // Normalizing when the assertion ran. Wait for the outcome
+                // instead of for a duration.
+                PumpUntil(() => jobStore.Load().Items.FirstOrDefault()?.Status == GenerationItemStatus.Ready);
 
                 Assert.Equal(1, provider.GenerateCount);
                 Assert.Equal(3, attempts);

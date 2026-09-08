@@ -524,8 +524,15 @@ partial class MainForm
                     return;
                 }
 
+                if (_currentAssetHeightFitPending)
+                {
+                    return;
+                }
+
+                _currentAssetHeightFitPending = true;
                 parent.BeginInvoke(() =>
                 {
+                    _currentAssetHeightFitPending = false;
                     if (grpCurrentAsset.IsDisposed || parent.IsDisposed)
                     {
                         return;

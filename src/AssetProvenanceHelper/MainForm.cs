@@ -68,6 +68,10 @@ private readonly SettingsService _settingsService;
     /// when setting the height raises another Layout.</summary>
     private bool _fittingCurrentAssetHeight;
 
+    /// <summary>True while a deferred Current Asset height fit is already
+    /// queued, so repeated layout passes cannot flood the message loop.</summary>
+    private bool _currentAssetHeightFitPending;
+
     /// <summary>
     /// Source paths of Main images durably committed during this app session.
     /// In-memory only and intentionally not persisted - "momentary session" per the
