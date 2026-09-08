@@ -55,6 +55,11 @@ private readonly SettingsService _settingsService;
     private bool _settingRequestBoundFields;
     private bool _settingWorkflowSelectors;
 
+    /// <summary>Set while a queue rebuild deliberately starts at the top, such as
+    /// after the filter changed and the previous top row has no position in the
+    /// newly built row set.</summary>
+    private bool _suppressQueueScrollRestore;
+
     /// <summary>
     /// Source paths of Main images durably committed during this app session.
     /// In-memory only and intentionally not persisted - "momentary session" per the

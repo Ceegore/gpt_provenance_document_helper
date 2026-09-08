@@ -227,7 +227,7 @@ partial class MainForm
             // Reading TopItem forces native handle creation, so a headless
             // refresh must not touch it at all. There is no scroll offset to
             // preserve before the list has ever been shown.
-            if (lvRequestQueue.IsHandleCreated)
+            if (!_suppressQueueScrollRestore && lvRequestQueue.IsHandleCreated)
             {
                 var topItem = lvRequestQueue.TopItem;
                 savedTopRequestKey = TryGetRequestKey(topItem);
@@ -431,7 +431,18 @@ partial class MainForm
 
     private void HandleRequestQueueFilterChanged()
     {
-        RefreshRequestQueueVisuals();
+        // Changing the filter builds a different set of rows, so the previous
+        // top row has no meaningful position in it. Restoring a clamped index
+        // there would scroll to an unrelated request.
+        _suppressQueueScrollRestore = true;
+        try
+        {
+            RefreshRequestQueueVisuals();
+        }
+        finally
+        {
+            _suppressQueueScrollRestore = false;
+        }
         UpdateRequestProgressLabel();
     }
 

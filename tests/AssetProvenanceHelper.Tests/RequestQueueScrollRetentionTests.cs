@@ -83,8 +83,10 @@ public sealed class RequestQueueScrollRetentionTests
             TwoChoiceDialog.CustomChoiceProvider = (_, _, _, _, _) => true;
             try
             {
+                // Far more rows than any plausible window height can show, so the
+                // list is guaranteed scrollable on a CI runner as well as here.
                 var manifest = new StringBuilder("{ \"manifestVersion\": 1, \"assets\": [");
-                for (var index = 0; index < 60; index++)
+                for (var index = 0; index < 400; index++)
                 {
                     manifest.Append(index == 0 ? string.Empty : ",");
                     manifest.Append($"{{ \"filename\": \"row_{index:D3}.png\", \"resolution\": \"512x512\", \"prompt\": \"prompt {index}\" }}");
@@ -117,9 +119,9 @@ public sealed class RequestQueueScrollRetentionTests
                     .Invoke(form, null);
 
                 var queue = Assert.IsType<ListView>(form.Controls.Find("lvRequestQueue", true).Single());
-                Assert.Equal(60, queue.Items.Count);
+                Assert.Equal(400, queue.Items.Count);
 
-                queue.TopItem = queue.Items[40];
+                queue.TopItem = queue.Items[380];
                 var scrolledTop = queue.TopItem!.Index;
                 Assert.True(scrolledTop > 0, "The queue must be scrollable for this regression to mean anything.");
 

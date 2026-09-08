@@ -93,7 +93,12 @@ public sealed class TestStateIsolationTests
                         Path.GetFullPath(AppBootstrap.GetStateDirectory()));
                 }
 
-                Assert.Equal(realFolderBefore, SnapshotRealUserFolder());
+                var leaked = SnapshotRealUserFolder()
+                    .Except(realFolderBefore, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                Assert.True(
+                    leaked.Length == 0,
+                    "A MainForm created new entries in the real user state folder: " + string.Join(", ", leaked));
             }
             catch (Exception ex)
             {
@@ -116,19 +121,21 @@ public sealed class TestStateIsolationTests
         }
     }
 
-    /// <summary>Path plus last-write time of everything in the real folder, so a
-    /// stray create, rewrite or delete by a MainForm shows up as a difference.</summary>
-    private static string SnapshotRealUserFolder()
+    /// <summary>
+    /// Every path in the real folder. Compared as a set of additions only: a
+    /// leaking MainForm creates journals and staged candidates, while an
+    /// operator using the real app alongside the suite only rewrites files that
+    /// already exist. Comparing timestamps too would turn that into a flake.
+    /// </summary>
+    private static IReadOnlyCollection<string> SnapshotRealUserFolder()
     {
         if (!Directory.Exists(RealUserStateDirectory))
         {
-            return string.Empty;
+            return Array.Empty<string>();
         }
 
-        var entries = Directory
+        return Directory
             .EnumerateFileSystemEntries(RealUserStateDirectory, "*", SearchOption.AllDirectories)
-            .Select(entry => entry + "|" + File.GetLastWriteTimeUtc(entry).ToString("O"))
-            .OrderBy(entry => entry, StringComparer.OrdinalIgnoreCase);
-        return string.Join("\n", entries);
+            .ToArray();
     }
 }

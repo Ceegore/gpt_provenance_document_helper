@@ -295,6 +295,90 @@ public sealed class PixelExactCrossManifestSeriesTests
         });
     }
 
+    /// <summary>
+    /// A legacy AusRefN prompt carries no SERIE or OUTPUT_INDEX, so the
+    /// continuation path cannot identify it. It must still explain itself rather
+    /// than turning Main Image into a dead click.
+    /// </summary>
+    [Fact]
+    public void LegacyOutputRow_WithoutCanonicalMetadata_StillExplainsItself()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var batchState = CreateBatchStateService(workspace);
+            var messages = new List<string>();
+            InstallSafeSeams(messages);
+            try
+            {
+                using var form = CreateForm(workspace, batchState);
+                ImportManifest(workspace, form, """
+                    { "manifestVersion": 2, "assets": [
+                      { "filename": "legacy_collection.png", "resolution": "512x512", "alpha": "not_required", "prompt": "Legacy collection. PROZESSMARKER: Ref2" },
+                      { "filename": "legacy_output.png", "resolution": "512x512", "alpha": "not_required", "prompt": "Legacy mapping row. PROZESSMARKER: AusRef2" }
+                    ] }
+                    """);
+
+                var image = workspace.CreateImage("legacy.png", new byte[] { 0x81 });
+                form.HandleRequestQueueItemActivate(QueueRow(form, "legacy_output"));
+                form.SetSelectedImage(ImageSlot.Main, image);
+
+                messages.Clear();
+                InvokePrivate(form, "HandleMainImageEntryPoint");
+
+                Assert.Contains(messages, text => text.Contains("filled automatically by its preceding RefN", StringComparison.Ordinal));
+                Assert.False(Directory.Exists(Path.Combine(workspace.Assets, "legacy_output")));
+            }
+            finally
+            {
+                ClearSeams();
+            }
+        });
+    }
+
+    /// <summary>
+    /// The queue rebuild restores whatever was selected when it started, so a
+    /// programmatic hand-off must move the selection itself. Otherwise the list
+    /// highlights the old row while the form and clipboard hold the new one, and
+    /// a following Enter acts on the stale row.
+    /// </summary>
+    [Fact]
+    public void FinishedCollection_MovesTheSelectionToTheRowItActivated()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var batchState = CreateBatchStateService(workspace);
+            var messages = new List<string>();
+            InstallSafeSeams(messages);
+            try
+            {
+                using var form = CreateForm(workspace, batchState);
+                // Selection restoration only runs against a created handle, so
+                // this assertion needs a real window rather than a headless form.
+                form.Show();
+                ImportManifest(workspace, form, SplitSeriesManifest);
+
+                CommitSeed(workspace, form);
+                CreateOrderedImages(workspace, "phase", 3, DateTime.UtcNow.AddMinutes(-30));
+
+                var queue = FindControl<ListView>(form, "lvRequestQueue");
+                InvokePrivate(form, "HandleMainImageEntryPoint");
+
+                var selected = Assert.Single(queue.SelectedItems.Cast<ListViewItem>());
+                var selectedRequest = Assert.IsType<AssetRequestItem>(selected.Tag);
+                Assert.Equal("next_single", selectedRequest.AssetName);
+                Assert.Equal(
+                    FindControl<TextBox>(form, "txtAssetFolderName").Text,
+                    selectedRequest.AssetName);
+            }
+            finally
+            {
+                ClearSeams();
+            }
+        });
+    }
+
     [Fact]
     public void AmbiguousSeriesMetadata_StillFailsClosed_WithoutWritingAnyAsset()
     {

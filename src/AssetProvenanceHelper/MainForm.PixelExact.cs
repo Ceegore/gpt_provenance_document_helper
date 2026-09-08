@@ -913,6 +913,13 @@ partial class MainForm
         }
     }
 
+    private void ShowCollectionRequestGuidance() =>
+        ShowMessageBox(
+            "This row is filled automatically by its preceding RefN collection request. Select that RefN row, download all requested images, then click Main Image once.",
+            "Select the collection request",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+
     /// <summary>
     /// A canonical AusRefN row is normally written by its RefN collection. When
     /// the series continues into a later manifest part that collection row is
@@ -921,8 +928,12 @@ partial class MainForm
     /// </summary>
     private bool ConfirmContinuationPixelExactOutputCommit(QueuePromptWorkflowMetadata workflow)
     {
+        // Only a canonical row carries the series identity this path needs. A
+        // legacy AusRefN prompt has no SERIE or OUTPUT_INDEX, so it keeps the
+        // established guidance instead of failing the click silently.
         if (_currentManifest is null || _activeRequest is null || workflow.OutputIndex is not int outputIndex || workflow.PixelOutputCount is not int outputCount)
         {
+            ShowCollectionRequestGuidance();
             return false;
         }
 
@@ -937,11 +948,7 @@ partial class MainForm
 
         if (collectionRow is not null && IsOpenQueueRequest(collectionRow))
         {
-            ShowMessageBox(
-                "This row is filled automatically by its preceding RefN collection request. Select that RefN row, download all requested images, then click Main Image once.",
-                "Select the collection request",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowCollectionRequestGuidance();
             return false;
         }
 
@@ -1024,20 +1031,28 @@ partial class MainForm
             return;
         }
 
-        var items = _currentManifest.Items;
-        var start = completedRequest is null ? 0 : items.ToList().FindIndex(item => ReferenceEquals(item, completedRequest)) + 1;
-        var next = items.Skip(Math.Max(0, start)).FirstOrDefault(IsOpenQueueRequest)
-            ?? items.FirstOrDefault(IsOpenQueueRequest);
-        if (next is null)
+        // Searched over the rendered rows, not the manifest: the queue filter can
+        // hide a manifest row, and handing back a request the operator cannot see
+        // would silently do nothing.
+        var rows = lvRequestQueue.Items.Cast<ListViewItem>().ToList();
+        var completedIndex = completedRequest is null
+            ? -1
+            : rows.FindIndex(row => ReferenceEquals(row.Tag, completedRequest));
+        var next = rows.Skip(completedIndex + 1).FirstOrDefault(IsOpenQueueRow)
+            ?? rows.FirstOrDefault(IsOpenQueueRow);
+        if (next?.Tag is not AssetRequestItem request)
         {
             return;
         }
 
-        if (TryActivateQueueRow(next))
+        if (TryActivateQueueRow(request))
         {
-            AddStatus($"Next open Request loaded and its prompt copied to the clipboard: {next.AssetName}");
+            AddStatus($"Next open Request loaded: {request.AssetName}");
         }
     }
+
+    private bool IsOpenQueueRow(ListViewItem row) =>
+        row.Tag is AssetRequestItem item && IsOpenQueueRequest(item);
 
     private bool IsOpenQueueRequest(AssetRequestItem item) =>
         !item.IsCompleted && !_completedRequestKeys.Contains(item.RequestKey);
@@ -1050,6 +1065,17 @@ partial class MainForm
         {
             return false;
         }
+
+        // Selection is moved first. The refresh inside the activation restores
+        // whatever was selected when it started, so leaving the old row selected
+        // would highlight it while the form and clipboard hold the new one - and
+        // a following Enter would then act on the stale row.
+        foreach (var selected in lvRequestQueue.SelectedItems.Cast<ListViewItem>().ToList())
+        {
+            selected.Selected = false;
+        }
+        row.Selected = true;
+        row.Focused = true;
 
         HandleRequestQueueItemActivate(row);
 
@@ -1066,6 +1092,9 @@ partial class MainForm
             // A headless or not-yet-created list view cannot scroll. The row is
             // still selected, which is all the workflow depends on.
         }
-        return true;
+
+        // Activation refuses some rows outright. Reporting success only when it
+        // actually took keeps the caller's status line honest.
+        return ReferenceEquals(_activeRequest, request);
     }
 }

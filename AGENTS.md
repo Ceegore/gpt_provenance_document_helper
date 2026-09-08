@@ -215,6 +215,15 @@ Two different artifacts can trip SAC. Keep them straight:
      bogus "invalid input" decode error rather than a path error.
    - `TestStateIsolationTests` guards all of this, including a fact that
      snapshots the real folder around a MainForm construction.
+   - Related, and still open by choice: six classes construct a MainForm without
+     ever installing `MainForm.MessageBoxProvider` (`ChangeV11ImageSelectionTests`,
+     `ChangeV11MainFormTests`, `ChangeV11RecoveryTests`, `ChangeV11SettingsTests`,
+     `UpgradeV13LegacyCompatibilityTests`, `UpgradeV13RecentDocumentsTests`). All
+     61 of their tests pass in isolation with every seam null, so none of their
+     paths raises a dialog today - but many other classes null the seams in a
+     finally, so if a future change makes one of those paths show a message box
+     it will block the STA thread and look like a timeout, not a dialog. Install
+     the seams in the affected class rather than debugging the timeout.
 
 ## SAC-safe smoke test
 
