@@ -176,7 +176,7 @@ public sealed class PixelExactCrossManifestSeriesTests
                 Assert.True(Directory.Exists(Path.Combine(workspace.Assets, "series_state_two")));
                 Assert.True(File.Exists(Path.Combine(workspace.Assets, "series_state_two", AppConstants.FinalProvenanceFileName)));
 
-                var state = batchState.Load();
+                var state = batchState.Load("gas_station_zapfsaeule");
                 Assert.NotNull(state);
                 Assert.True(state!.Completed);
                 var deferred = Assert.Single(state.Outputs, output => output.DeferredNoTargetRow);

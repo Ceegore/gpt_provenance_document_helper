@@ -505,6 +505,8 @@ partial class MainForm
             FinalizePixelExactSeedAfterQueueCompletion(pixelSeed.Value.RequestKey);
         }
 
+        FinalizePixelExactDeferredOutputAfterCommit(session, queueProgressSaved);
+
         _lastCompletedAssetFolderPath = session.AssetFolder;
         _currentSession = null;
         _state = UiState.Idle;

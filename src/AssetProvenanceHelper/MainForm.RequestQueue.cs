@@ -1177,11 +1177,12 @@ partial class MainForm
 
         try
         {
-            var pixelState = _pixelExactBatchStateService.Load();
-            if (pixelState is not null && !pixelState.Completed)
+            var pixelStates = _pixelExactBatchStateService.LoadAll();
+            var pendingSeries = pixelStates.Count(state => !state.Completed);
+            if (pendingSeries > 0)
             {
                 var confirmation = ShowConfirmDialog(
-                    "A Pixel-Exact collection is still pending. Clearing the queue will discard its staged download receipt, so it cannot be resumed safely.\n\nClear the queue and discard that pending collection?",
+                    $"{pendingSeries} Pixel-Exact collection(s) are still pending. Clearing the queue will discard their staged download receipts, so they cannot be resumed safely.\n\nClear the queue and discard those pending collections?",
                     "Discard pending Pixel-Exact collection",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning);
@@ -1189,11 +1190,10 @@ partial class MainForm
                 {
                     return;
                 }
-                _pixelExactBatchStateService.DiscardPendingState();
             }
-            else if (pixelState is not null)
+            if (pixelStates.Count > 0)
             {
-                _pixelExactBatchStateService.ClearCompletedState();
+                _pixelExactBatchStateService.DiscardAll();
             }
         }
         catch (Exception ex)

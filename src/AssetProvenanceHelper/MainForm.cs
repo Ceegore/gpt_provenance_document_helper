@@ -50,6 +50,7 @@ private readonly SettingsService _settingsService;
 
     private AssetRequestManifest? _currentManifest;
     private AssetRequestItem? _activeRequest;
+    private PixelExactDeferredResolution? _pendingPixelExactDeferredResolution;
     private readonly HashSet<string> _completedRequestKeys =
         new(StringComparer.Ordinal);
     private bool _settingRequestBoundFields;
