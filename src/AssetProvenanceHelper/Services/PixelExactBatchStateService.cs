@@ -8,12 +8,36 @@ using AssetProvenanceHelper.Models;
 namespace AssetProvenanceHelper.Services;
 
 /// <summary>
-/// The durable outer journal for an ordered Pixel-Exact collection. It freezes
+/// The durable outer journal for ordered Pixel-Exact collections. It freezes
 /// download bytes and target bindings before the existing asset transactions
 /// begin, so a retry never remaps newer download files to later phases.
 /// </summary>
+/// <remarks>
+/// The journal holds one entry <em>per series</em>. A canonical series may have
+/// its seed row in one manifest part and its RefN/AusRefN rows in a later one,
+/// and a manifest part legitimately ends with a run of seed rows whose
+/// collections all live in the next part. A single-slot journal could not hold
+/// those receipts at the same time: the first seed claimed the slot, every
+/// following seed commit was refused as "another Pixel-Exact batch is pending",
+/// and every following RefN row later failed with "the matching Pixel-Exact
+/// seed has not been committed and marked done".
+/// </remarks>
 public sealed class PixelExactBatchStateService
 {
+    /// <summary>Completed batches are kept so a deleted output can still be
+    /// reset and re-committed from its RefN row. Retention is bounded because a
+    /// large manifest completes dozens of series and every entry embeds full
+    /// session receipts.</summary>
+    internal const int MaxRetainedCompletedBatches = 16;
+
+    internal const int JournalSchemaVersion = 2;
+
+    private sealed class PixelExactBatchJournal
+    {
+        public int SchemaVersion { get; set; } = JournalSchemaVersion;
+        public List<PixelExactBatchState> Batches { get; set; } = new();
+    }
+
     private static readonly Regex SeriesIdRegex = new(@"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex BatchIdRegex = new(@"^[a-fA-F0-9]{32}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex HashRegex = new(@"^[a-fA-F0-9]{64}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -36,29 +60,116 @@ public sealed class PixelExactBatchStateService
 
     public string StatePath { get; }
     public string StagingRoot { get; }
-    public bool HasPendingState => File.Exists(StatePath);
 
-    public PixelExactBatchState? Load()
+    /// <summary>True when the journal still holds an unfinished batch.</summary>
+    public bool HasPendingState
     {
-        if (!File.Exists(StatePath)) return null;
-        try
+        get
         {
-            var state = JsonSerializer.Deserialize<PixelExactBatchState>(File.ReadAllText(StatePath, Encoding.UTF8), JsonOptions)
-                ?? throw new InvalidDataException("pixel-exact-batch-state.json could not be deserialized.");
-            ValidateStateStructure(state);
-            return state;
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidDataException("Could not parse Pixel-Exact batch state.", ex);
+            // A journal that cannot be parsed counts as pending: callers use
+            // this to decide whether to warn before discarding operator work.
+            try { return LoadAll().Any(batch => !batch.Completed); }
+            catch (InvalidDataException) { return File.Exists(StatePath); }
         }
     }
 
+    /// <summary>Every batch the journal carries, in journal order.</summary>
+    public IReadOnlyList<PixelExactBatchState> LoadAll() => ReadJournal();
+
+    /// <summary>The batch of one series, or null when the journal has none.</summary>
+    public PixelExactBatchState? Load(string seriesId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(seriesId);
+        return ReadJournal().FirstOrDefault(batch => string.Equals(batch.SeriesId, seriesId, StringComparison.Ordinal));
+    }
+
+    public PixelExactBatchState? LoadBySeedRequestKey(string requestKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestKey);
+        return ReadJournal().FirstOrDefault(batch => string.Equals(batch.SeedRequestKey, requestKey, StringComparison.Ordinal));
+    }
+
+    public PixelExactBatchState? LoadByCollectionRequestKey(string requestKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestKey);
+        return ReadJournal().FirstOrDefault(batch => string.Equals(batch.CollectionRequestKey, requestKey, StringComparison.Ordinal));
+    }
+
+    public PixelExactBatchState? LoadByOutputRequestKey(string requestKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestKey);
+        return ReadJournal().FirstOrDefault(batch =>
+            batch.Outputs.Any(output => string.Equals(output.RequestKey, requestKey, StringComparison.Ordinal)));
+    }
+
+    /// <summary>Upserts one series' batch. Every other series is left alone.</summary>
     public void Save(PixelExactBatchState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         state.UpdatedAtUtc = DateTimeOffset.UtcNow;
         ValidateStateStructure(state);
+        var batches = ReadJournal();
+        var index = batches.FindIndex(batch => string.Equals(batch.SeriesId, state.SeriesId, StringComparison.Ordinal));
+        if (index >= 0)
+        {
+            batches[index] = state;
+        }
+        else
+        {
+            batches.Add(state);
+        }
+        WriteJournal(batches);
+    }
+
+    private List<PixelExactBatchState> ReadJournal()
+    {
+        if (!File.Exists(StatePath)) return new List<PixelExactBatchState>();
+        var text = File.ReadAllText(StatePath, Encoding.UTF8);
+        List<PixelExactBatchState> batches;
+        try
+        {
+            batches = DeserializeJournal(text);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("Could not parse Pixel-Exact batch state.", ex);
+        }
+        foreach (var batch in batches)
+        {
+            ValidateStateStructure(batch);
+        }
+        if (batches.Select(batch => batch.SeriesId).Distinct(StringComparer.Ordinal).Count() != batches.Count)
+        {
+            throw new InvalidDataException("Pixel-Exact batch state contains duplicate series entries.");
+        }
+        return batches;
+    }
+
+    /// <summary>Reads the v2 container, or the v1 single-batch document an
+    /// already installed operator state directory still carries.</summary>
+    private static List<PixelExactBatchState> DeserializeJournal(string text)
+    {
+        using var probe = JsonDocument.Parse(text);
+        if (probe.RootElement.ValueKind == JsonValueKind.Object
+            && probe.RootElement.TryGetProperty(nameof(PixelExactBatchJournal.Batches), out _))
+        {
+            var journal = JsonSerializer.Deserialize<PixelExactBatchJournal>(text, JsonOptions)
+                ?? throw new InvalidDataException("pixel-exact-batch-state.json could not be deserialized.");
+            if (journal.SchemaVersion != JournalSchemaVersion)
+            {
+                throw new InvalidDataException("Pixel-Exact batch journal has an unsupported schema version.");
+            }
+            return journal.Batches;
+        }
+
+        var legacy = JsonSerializer.Deserialize<PixelExactBatchState>(text, JsonOptions)
+            ?? throw new InvalidDataException("pixel-exact-batch-state.json could not be deserialized.");
+        return new List<PixelExactBatchState> { legacy };
+    }
+
+    private void WriteJournal(List<PixelExactBatchState> batches)
+    {
+        var retained = PruneCompletedBatches(batches);
         var directory = Path.GetDirectoryName(StatePath)!;
         Directory.CreateDirectory(directory);
         var temp = StatePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -67,7 +178,7 @@ public sealed class PixelExactBatchStateService
             using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
             {
-                writer.Write(JsonSerializer.Serialize(state, JsonOptions));
+                writer.Write(JsonSerializer.Serialize(new PixelExactBatchJournal { Batches = retained }, JsonOptions));
                 writer.Flush();
                 stream.Flush(true);
             }
@@ -77,6 +188,32 @@ public sealed class PixelExactBatchStateService
         {
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
         }
+    }
+
+    /// <summary>Drops the oldest finished batches once retention is exceeded.
+    /// An unfinished batch is never dropped - it is the resumable work - and
+    /// neither is a finished one that still holds an unresolved deferred phase:
+    /// its staged bytes and its file-name mapping are the only record of which
+    /// download belongs to the AusRefN row waiting in a later manifest part.
+    /// </summary>
+    private List<PixelExactBatchState> PruneCompletedBatches(List<PixelExactBatchState> batches)
+    {
+        var completed = batches
+            .Where(batch => batch.Completed && !HasUnresolvedDeferredOutput(batch))
+            .ToList();
+        if (completed.Count <= MaxRetainedCompletedBatches)
+        {
+            return batches;
+        }
+        var dropped = completed
+            .OrderByDescending(batch => batch.UpdatedAtUtc)
+            .Skip(MaxRetainedCompletedBatches)
+            .ToHashSet();
+        foreach (var batch in dropped)
+        {
+            TryDeleteDerivedBatchDirectory(batch.SeriesId, batch.BatchId);
+        }
+        return batches.Where(batch => !dropped.Contains(batch)).ToList();
     }
 
     public PixelExactBatchState CreateSeedReceiptState(QueuePromptWorkflowMetadata metadata, AssetRequestManifest manifest, AssetRequestItem seedRequest, AssetSession expectedCommitSession)
@@ -114,9 +251,13 @@ public sealed class PixelExactBatchStateService
         // exception when a caller supplies a shorter key. The journal series
         // identity is deliberately non-canonical and only needs a stable,
         // filesystem-safe derivation from this request.
-        var manualSeriesId = "manual-" + HashText(activeRequest.RequestKey ?? string.Empty)[..16];
-        return CreateBase(manualSeriesId, false, outputCount, outputCount + 1, manifest, activeRequest, null, null);
+        return CreateBase(DeriveManualSeriesId(activeRequest.RequestKey), false, outputCount, outputCount + 1, manifest, activeRequest, null, null);
     }
+
+    /// <summary>The journal identity of a manual (non-canonical) collection, so
+    /// a caller can look that collection's own entry up by request key.</summary>
+    public static string DeriveManualSeriesId(string? requestKey) =>
+        "manual-" + HashText(requestKey ?? string.Empty)[..16];
 
     public PixelExactBatchState StageBundle(PixelExactBatchState state, IReadOnlyList<string> orderedSourceImages, ProviderTemplateSnapshot? bundleProviderTemplate)
     {
@@ -232,19 +373,44 @@ public sealed class PixelExactBatchStateService
             ?? throw new InvalidDataException("AssetSession receipt could not be cloned.");
     }
 
-    public void ClearCompletedState()
+    /// <summary>Removes one finished series from the journal.</summary>
+    public void ClearCompletedState(string seriesId)
     {
-        var state = Load();
+        ArgumentException.ThrowIfNullOrWhiteSpace(seriesId);
+        var batches = ReadJournal();
+        var state = batches.FirstOrDefault(batch => string.Equals(batch.SeriesId, seriesId, StringComparison.Ordinal));
         if (state is null || !state.Completed) throw new InvalidOperationException("No completed Pixel-Exact state is available for cleanup.");
         TryDeleteDerivedBatchDirectory(state.SeriesId, state.BatchId);
-        if (File.Exists(StatePath)) File.Delete(StatePath);
+        batches.Remove(state);
+        WriteJournal(batches);
     }
 
-    public void DiscardPendingState()
+    /// <summary>Removes one series and its staged bytes from the journal,
+    /// finished or not. Every other series keeps its receipt.</summary>
+    public void DiscardPendingState(string seriesId)
     {
-        PixelExactBatchState? state = null;
-        try { state = Load(); } catch { }
-        if (state is not null && !state.Completed) TryDeleteDerivedBatchDirectory(state.SeriesId, state.BatchId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(seriesId);
+        List<PixelExactBatchState> batches;
+        try { batches = ReadJournal(); }
+        catch (InvalidDataException) { DiscardAll(); return; }
+        var state = batches.FirstOrDefault(batch => string.Equals(batch.SeriesId, seriesId, StringComparison.Ordinal));
+        if (state is null) return;
+        TryDeleteDerivedBatchDirectory(state.SeriesId, state.BatchId);
+        batches.Remove(state);
+        WriteJournal(batches);
+    }
+
+    /// <summary>Drops the whole journal and every staged bundle it can still
+    /// address. Used when the operator clears the Request Queue.</summary>
+    public void DiscardAll()
+    {
+        List<PixelExactBatchState> batches;
+        try { batches = ReadJournal(); }
+        catch (InvalidDataException) { batches = new List<PixelExactBatchState>(); }
+        foreach (var batch in batches)
+        {
+            TryDeleteDerivedBatchDirectory(batch.SeriesId, batch.BatchId);
+        }
         if (File.Exists(StatePath)) File.Delete(StatePath);
     }
 
@@ -272,8 +438,28 @@ public sealed class PixelExactBatchStateService
         Directory.CreateDirectory(series); if (Directory.Exists(batchDirectory)) throw new IOException("Pixel-Exact batch staging directory already exists.");
         Directory.CreateDirectory(batchDirectory); if (IsReparsePoint(batchDirectory)) throw new InvalidDataException("Pixel-Exact batch staging directory is a reparse point.");
     }
+    /// <summary>Removes a batch's staged bytes and, once it was the last batch
+    /// of that series, the now empty series directory. Without the second step
+    /// the staging root accumulates one empty folder per series forever.</summary>
     private void TryDeleteDerivedBatchDirectory(string series, string? batchId)
-    { try { if (batchId is not null) { var path = DeriveBatchDirectory(series, batchId); if (Directory.Exists(path) && !IsReparsePoint(path)) Directory.Delete(path, recursive: true); } } catch { } }
+    {
+        try
+        {
+            if (batchId is null) return;
+            var path = DeriveBatchDirectory(series, batchId);
+            if (Directory.Exists(path) && !IsReparsePoint(path)) Directory.Delete(path, recursive: true);
+            var seriesPath = Path.GetDirectoryName(path)!;
+            if (Directory.Exists(seriesPath) && !IsReparsePoint(seriesPath)
+                && !Directory.EnumerateFileSystemEntries(seriesPath).Any())
+            {
+                Directory.Delete(seriesPath);
+            }
+        }
+        catch { }
+    }
+
+    internal static bool HasUnresolvedDeferredOutput(PixelExactBatchState state) =>
+        state.Outputs.Any(output => output.DeferredNoTargetRow && output.State == PixelExactOutputCommitState.Staged);
     private static bool IsReparsePoint(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
     private static string HashFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
     private static string HashText(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();

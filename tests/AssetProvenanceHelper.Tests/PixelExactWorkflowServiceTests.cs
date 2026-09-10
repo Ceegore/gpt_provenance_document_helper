@@ -68,7 +68,7 @@ public sealed class PixelExactWorkflowServiceTests : IDisposable
         var state = service.CreateCollectionState(metadata, manifest, collection);
 
         var staged = service.StageBundle(state, [sourceOne, sourceTwo], null);
-        var reloaded = service.Load();
+        var reloaded = service.Load(state.SeriesId);
 
         Assert.NotNull(reloaded);
         Assert.Equal(2, reloaded!.Outputs.Count);

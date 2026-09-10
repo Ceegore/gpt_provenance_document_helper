@@ -177,12 +177,23 @@ the next. The helper handles that split instead of failing the collection:
   in the Image Download Folder.
 - The batch journal closes once every non-deferred phase is done, so the next
   series in the queue is never blocked by the deferral.
-- After importing the continuation manifest, select the leftover `AusRefN` row,
-  choose its downloaded image, and click **Main Image**. Because no `RefN`
-  collection row for that series is importable there, the helper asks for one
-  confirmation and then commits the row as a single asset. While the series'
-  `RefN` row *is* present and still open, that manual path stays blocked — the
-  collection remains the only way to fill those rows.
+- After importing the continuation manifest, select the leftover `AusRefN` row
+  and click **Main Image**. The helper still holds that phase's frozen image, so
+  it names that exact file in the confirmation and commits it — there is no need
+  to work out which of many downloads belonged to the row. If those bytes are
+  gone (journal discarded, file replaced), choose the image by hand as before;
+  the helper then asks for one confirmation and commits the row as a single
+  asset. While the series' `RefN` row *is* present and still open, that manual
+  path stays blocked — the collection remains the only way to fill those rows.
+- A **series whose master row lives in an earlier manifest part** is supported in
+  the same way. The journal keeps one receipt **per series**, so a part that ends
+  with a run of `Einzeln` master rows can be finished completely before its
+  `RefN`/`AusRefN` part is imported. If a series' master receipt is genuinely
+  unavailable (queue cleared, another machine) and no open master row for it is
+  importable either, the helper asks for one explicit confirmation and runs the
+  collection without a local master record. While the master row *is* importable
+  and still open, the collection refuses to run and names the row to process
+  first.
 - Two rows claiming the same `OUTPUT_INDEX` is still corrupt metadata and still
   fails closed without writing anything.
 

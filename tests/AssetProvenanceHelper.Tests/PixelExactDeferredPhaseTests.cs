@@ -129,7 +129,7 @@ public sealed class PixelExactDeferredPhaseTests : IDisposable
         state.Completed = true;
         service.Save(state);
 
-        var reloaded = service.Load();
+        var reloaded = service.Load(state.SeriesId);
 
         Assert.NotNull(reloaded);
         Assert.True(reloaded!.Completed);

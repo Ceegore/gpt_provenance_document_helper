@@ -6,6 +6,9 @@ namespace AssetProvenanceHelper;
 partial class MainForm
 {
     private readonly record struct PixelSeedCompletion(string RequestKey, string SeriesId);
+    /// <summary>A deferred phase this commit is about to resolve from the
+    /// journal, so the journal can be closed out once the asset is durable.</summary>
+    private readonly record struct PixelExactDeferredResolution(string SeriesId, int OutputIndex, string RequestKey);
     private readonly record struct PixelExactTarget(int OutputIndex, AssetRequestItem Request);
     /// <summary>Bound queue rows plus the output indices this manifest part does
     /// not carry. A canonical series may legitimately continue in a later
@@ -21,6 +24,18 @@ partial class MainForm
         string TargetAssetName,
         string Resolution,
         bool IsDeferred = false);
+    /// <summary>Where a canonical collection takes its master authority from.</summary>
+    private enum PixelExactSeedAuthority
+    {
+        /// <summary>A durable seed receipt for this series is in the journal, or
+        /// the row is a manual collection that never has one.</summary>
+        Journal = 0,
+
+        /// <summary>The series master was committed from a manifest part this
+        /// journal no longer covers and the operator confirmed continuing.</summary>
+        ConfirmedContinuation = 1
+    }
+
     /// <summary>0 means no collection on this row; otherwise 1..MaxPixelExactOutputCount.</summary>
     private int GetSelectedPixelExactOutputCount() => Math.Max(0, cmbPixelExactCount.SelectedIndex);
 
@@ -106,16 +121,19 @@ partial class MainForm
 
         try
         {
-            var existing = _pixelExactBatchStateService.Load();
+            // Scoped to this series. A manifest part may end with a run of seed
+            // rows whose collections all live in a later part, so several seed
+            // receipts have to be pending at the same time.
+            var seriesId = metadata.SeriesId!;
+            var existing = _pixelExactBatchStateService.Load(seriesId);
             if (existing?.Completed == true)
             {
-                _pixelExactBatchStateService.ClearCompletedState();
+                _pixelExactBatchStateService.ClearCompletedState(seriesId);
                 existing = null;
             }
-            if (existing is not null && (!string.Equals(existing.SeriesId, metadata.SeriesId, StringComparison.Ordinal)
-                || !string.Equals(existing.SeedRequestKey, _activeRequest.RequestKey, StringComparison.Ordinal)))
+            if (existing is not null && !string.Equals(existing.SeedRequestKey, _activeRequest.RequestKey, StringComparison.Ordinal))
             {
-                ShowMessageBox("Another Pixel-Exact batch is pending. Finish or discard it before committing this master image.", "Pixel-Exact batch pending", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowMessageBox($"Series '{seriesId}' already has a pending Pixel-Exact batch from a different queue row. Finish or discard it before committing this master image.", "Pixel-Exact batch pending", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
 
@@ -145,7 +163,7 @@ partial class MainForm
 
         try
         {
-            var state = _pixelExactBatchStateService.Load();
+            var state = _pixelExactBatchStateService.Load(metadata.SeriesId!);
             if (state is null || !string.Equals(state.SeedRequestKey, _activeRequest.RequestKey, StringComparison.Ordinal))
             {
                 throw new InvalidDataException("The durable Pixel-Exact seed receipt is unavailable.");
@@ -178,8 +196,8 @@ partial class MainForm
     {
         try
         {
-            var state = _pixelExactBatchStateService.Load();
-            if (state is null || !state.SeedCommitted || !string.Equals(state.SeedRequestKey, requestKey, StringComparison.Ordinal)) return;
+            var state = _pixelExactBatchStateService.LoadBySeedRequestKey(requestKey);
+            if (state is null || !state.SeedCommitted) return;
             if (!_completedRequestKeys.Contains(requestKey)) return;
             state.SeedQueueCompleted = true;
             _pixelExactBatchStateService.Save(state);
@@ -250,12 +268,23 @@ partial class MainForm
             return;
         }
         var targets = resolution.Targets;
+        var journalSeriesId = ResolvePixelExactJournalSeriesId(workflow, _activeRequest);
+
+        // A canonical collection normally consumes the durable receipt its own
+        // seed row wrote. When the series started in an earlier manifest part
+        // whose journal is no longer available, the operator confirms the
+        // missing master authority instead of losing the whole collection.
+        var seedAuthority = ResolvePixelExactSeedAuthority(workflow, journalSeriesId, resolution.OutputCount);
+        if (seedAuthority is null)
+        {
+            return;
+        }
 
         var settings = ReadSettingsFromUi();
         IReadOnlyList<string> sources = Array.Empty<string>();
         try
         {
-            var pending = _pixelExactBatchStateService.Load();
+            var pending = _pixelExactBatchStateService.Load(journalSeriesId);
             var needsFreshDownloads = pending is null || pending.Outputs.Count == 0;
             if (needsFreshDownloads)
             {
@@ -280,7 +309,7 @@ partial class MainForm
         {
             if (previewSources.Count == 0)
             {
-                previewSources = _pixelExactBatchStateService.Load()?.Outputs
+                previewSources = _pixelExactBatchStateService.Load(journalSeriesId)?.Outputs
                     .OrderBy(output => output.OutputIndex)
                     .Select(output => output.StagedPath)
                     .ToArray()
@@ -301,7 +330,7 @@ partial class MainForm
 
         try
         {
-            state = PreparePixelExactCollectionState(workflow, _activeRequest, sources);
+            state = PreparePixelExactCollectionState(workflow, _activeRequest, sources, seedAuthority.Value);
             _pixelExactBatchStateService.ValidateStagedAuthority(state);
         }
         catch (Exception ex)
@@ -751,7 +780,11 @@ partial class MainForm
             + "The helper will freeze these files and commit them oldest-to-newest. Continue?";
     }
 
-    private PixelExactBatchState PreparePixelExactCollectionState(QueuePromptWorkflowMetadata workflow, AssetRequestItem activeRequest, IReadOnlyList<string> sources)
+    private PixelExactBatchState PreparePixelExactCollectionState(
+        QueuePromptWorkflowMetadata workflow,
+        AssetRequestItem activeRequest,
+        IReadOnlyList<string> sources,
+        PixelExactSeedAuthority seedAuthority)
     {
         if (_currentManifest is null)
         {
@@ -764,20 +797,39 @@ partial class MainForm
             throw new InvalidOperationException("Pixel-Exact collection has no selected output count.");
         }
 
-        var existing = _pixelExactBatchStateService.Load();
+        var existing = _pixelExactBatchStateService.Load(ResolvePixelExactJournalSeriesId(workflow, activeRequest));
         PixelExactBatchState state;
         if (workflow.HasCanonicalMetadata)
         {
-            if (existing is null
-                || !existing.HasCanonicalSeriesIdentity
-                || !existing.SeedCommitted
-                || !existing.SeedQueueCompleted
-                || !string.Equals(existing.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
-                || existing.BundleCount != outputCount)
+            if (seedAuthority == PixelExactSeedAuthority.Journal)
             {
-                throw new InvalidDataException("The matching Pixel-Exact seed has not been committed and marked done. Process the preceding seed row first.");
+                // A batch this very row already staged is resumable on its own
+                // authority. A confirmed continuation never has a seed receipt,
+                // so requiring one here would make its retry unresumable.
+                var resumesOwnBatch = existing is not null
+                    && existing.Outputs.Count > 0
+                    && string.Equals(existing.CollectionRequestKey, activeRequest.RequestKey, StringComparison.Ordinal);
+                if (existing is null
+                    || !existing.HasCanonicalSeriesIdentity
+                    || !string.Equals(existing.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
+                    || existing.BundleCount != outputCount
+                    || !resumesOwnBatch && (!existing.SeedCommitted || !existing.SeedQueueCompleted))
+                {
+                    throw new InvalidDataException("The matching Pixel-Exact seed has not been committed and marked done. Process the preceding seed row first.");
+                }
+                state = existing;
             }
-            state = existing;
+            else
+            {
+                // Confirmed continuation: the series master was committed from a
+                // manifest part this journal no longer covers. The collection
+                // still records its own prompt and staged image authority.
+                if (existing is not null)
+                {
+                    throw new InvalidDataException("The pending Pixel-Exact journal belongs to another collection request.");
+                }
+                state = _pixelExactBatchStateService.CreateCollectionState(workflow, _currentManifest, activeRequest);
+            }
         }
         else
         {
@@ -809,6 +861,91 @@ partial class MainForm
         }
 
         return state;
+    }
+
+    /// <summary>The journal key of a collection row: its canonical series, or
+    /// the derived identity of a manual (unannotated) collection.</summary>
+    private static string ResolvePixelExactJournalSeriesId(QueuePromptWorkflowMetadata workflow, AssetRequestItem activeRequest) =>
+        workflow.HasCanonicalMetadata && !string.IsNullOrWhiteSpace(workflow.SeriesId)
+            ? workflow.SeriesId!
+            : Services.PixelExactBatchStateService.DeriveManualSeriesId(activeRequest.RequestKey);
+
+    /// <summary>The canonical seed row of one series in the imported manifest,
+    /// or null when the series started in another manifest part.</summary>
+    private AssetRequestItem? FindCanonicalPixelExactSeedRow(string? seriesId)
+    {
+        if (_currentManifest is null || string.IsNullOrWhiteSpace(seriesId))
+        {
+            return null;
+        }
+
+        return _currentManifest.Items.FirstOrDefault(item =>
+        {
+            var parsed = _queuePromptWorkflowParser.Parse(item.Prompt);
+            return parsed.Kind == QueuePromptWorkflowKind.PixelExactSeed
+                && parsed.HasCanonicalMetadata
+                && string.Equals(parsed.SeriesId, seriesId, StringComparison.Ordinal);
+        });
+    }
+
+    /// <summary>
+    /// Decides whether this collection may run, and on whose authority. Returns
+    /// null when it must not run at all, which is when the series' own seed row
+    /// is importable here and still open - that row has to be processed first.
+    /// </summary>
+    private PixelExactSeedAuthority? ResolvePixelExactSeedAuthority(QueuePromptWorkflowMetadata workflow, string journalSeriesId, int outputCount)
+    {
+        if (!workflow.HasCanonicalMetadata)
+        {
+            return PixelExactSeedAuthority.Journal;
+        }
+
+        PixelExactBatchState? existing;
+        try
+        {
+            existing = _pixelExactBatchStateService.Load(journalSeriesId);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not read the Pixel-Exact batch journal for this series.", ex);
+            return null;
+        }
+
+        if (existing is not null)
+        {
+            // A journal entry for this series exists; the established checks in
+            // PreparePixelExactCollectionState decide whether it is usable.
+            return PixelExactSeedAuthority.Journal;
+        }
+
+        var seedRow = FindCanonicalPixelExactSeedRow(workflow.SeriesId);
+        if (seedRow is not null && IsOpenQueueRequest(seedRow))
+        {
+            ShowMessageBox(
+                $"The master row of series '{workflow.SeriesId}' has not been committed yet. Process '{seedRow.AssetName}' first, then run this collection.",
+                "Pixel-Exact master missing",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return null;
+        }
+
+        var confirmation = ShowConfirmDialog(
+            $"No durable master receipt for series '{workflow.SeriesId}' exists in this helper's Pixel-Exact journal, and the manifest carries no open master row for it."
+                + Environment.NewLine + Environment.NewLine
+                + "This is expected when the master was committed from an earlier manifest part."
+                + Environment.NewLine + Environment.NewLine
+                + "It is NOT expected if that master row is still open in another manifest part. This collection does not produce the master asset - process that row in its own part first, or it stays missing."
+                + Environment.NewLine + Environment.NewLine
+                + $"Commit the {outputCount} downloaded images as this series' outputs anyway? The provenance records each queue row's own prompt.",
+            "Continue Pixel-Exact series without a local master receipt",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Question);
+        if (confirmation != DialogResult.OK)
+        {
+            AddStatus($"Pixel-Exact collection cancelled: series '{workflow.SeriesId}' has no local master receipt.");
+            return null;
+        }
+        return PixelExactSeedAuthority.ConfirmedContinuation;
     }
 
     private bool TryMarkPixelExactQueueCompletion(PixelExactBatchState state, PixelExactStagedOutput output, AssetRequestItem request)
@@ -861,17 +998,19 @@ partial class MainForm
 
     private void ResetPixelExactJournalForDeletedRequest(AssetRequestItem request)
     {
-        var state = _pixelExactBatchStateService.Load();
-        if (state is null)
+        // Deleting the master invalidates the external-reference authority for
+        // every later phase of that series. Do not leave a misleading resumable
+        // journal behind - but only for the series the deleted row belongs to.
+        var seed = _pixelExactBatchStateService.LoadBySeedRequestKey(request.RequestKey);
+        if (seed is not null)
         {
+            _pixelExactBatchStateService.DiscardPendingState(seed.SeriesId);
             return;
         }
 
-        // Deleting the master invalidates the external-reference authority for
-        // every later phase. Do not leave a misleading resumable journal behind.
-        if (string.Equals(state.SeedRequestKey, request.RequestKey, StringComparison.Ordinal))
+        var state = _pixelExactBatchStateService.LoadByOutputRequestKey(request.RequestKey);
+        if (state is null)
         {
-            _pixelExactBatchStateService.DiscardPendingState();
             return;
         }
 
@@ -902,10 +1041,9 @@ partial class MainForm
 
         try
         {
-            var state = _pixelExactBatchStateService.Load();
+            var state = _pixelExactBatchStateService.LoadByCollectionRequestKey(item.RequestKey);
             return state is not null
-                && state.Outputs.Any(output => output.State != PixelExactOutputCommitState.QueueCompleted && !output.DeferredNoTargetRow)
-                && string.Equals(state.CollectionRequestKey, item.RequestKey, StringComparison.Ordinal);
+                && state.Outputs.Any(output => output.State != PixelExactOutputCommitState.QueueCompleted && !output.DeferredNoTargetRow);
         }
         catch
         {
@@ -952,13 +1090,14 @@ partial class MainForm
             return false;
         }
 
+        _pendingPixelExactDeferredResolution = null;
+        PixelExactBatchState? journal;
         try
         {
-            var pending = _pixelExactBatchStateService.Load();
-            if (pending is not null
-                && !pending.Completed
-                && string.Equals(pending.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
-                && pending.Outputs.Any(output => output.OutputIndex == outputIndex && !output.DeferredNoTargetRow && output.State != PixelExactOutputCommitState.QueueCompleted))
+            journal = _pixelExactBatchStateService.Load(workflow.SeriesId!);
+            if (journal is not null
+                && !journal.Completed
+                && journal.Outputs.Any(output => output.OutputIndex == outputIndex && !output.DeferredNoTargetRow && output.State != PixelExactOutputCommitState.QueueCompleted))
             {
                 ShowMessageBox(
                     "A Pixel-Exact collection of this series is still pending and already holds a staged image for this output. Finish that collection from its RefN row before committing this row on its own.",
@@ -974,12 +1113,27 @@ partial class MainForm
             return false;
         }
 
+        // The RefN collection that deferred this phase froze its image and
+        // recorded which download it was. Offer exactly that image instead of
+        // making the operator identify it again among unrelated downloads.
+        var deferred = journal?.Outputs.FirstOrDefault(output =>
+            output.OutputIndex == outputIndex
+            && output.DeferredNoTargetRow
+            && output.State == PixelExactOutputCommitState.Staged);
+        var deferredSource = deferred is null ? null : ResolveDeferredPixelExactPhaseSource(deferred);
+
         var confirmation = ShowConfirmDialog(
-            $"No open RefN collection request for series '{workflow.SeriesId}' exists in the imported manifest, so output {outputIndex}/{outputCount} cannot be filled automatically here."
-                + Environment.NewLine + Environment.NewLine
-                + $"Commit the selected image directly as '{_activeRequest.AssetName}'?"
-                + Environment.NewLine + Environment.NewLine
-                + "Use this for a series that continues in another manifest part. The provenance records this queue row's own prompt.",
+            deferredSource is null
+                ? $"No open RefN collection request for series '{workflow.SeriesId}' exists in the imported manifest, so output {outputIndex}/{outputCount} cannot be filled automatically here."
+                    + Environment.NewLine + Environment.NewLine
+                    + $"Commit the selected image directly as '{_activeRequest.AssetName}'?"
+                    + Environment.NewLine + Environment.NewLine
+                    + "Use this for a series that continues in another manifest part. The provenance records this queue row's own prompt."
+                : $"The RefN collection of series '{workflow.SeriesId}' deferred output {outputIndex}/{outputCount} to this manifest part and still holds its frozen image:"
+                    + Environment.NewLine + Environment.NewLine
+                    + Path.GetFileName(deferred!.OriginalSourcePath)
+                    + Environment.NewLine + Environment.NewLine
+                    + $"Commit that image as '{_activeRequest.AssetName}'? Any image selected by hand is replaced by it.",
             "Commit continuation output",
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Question);
@@ -988,7 +1142,78 @@ partial class MainForm
             AddStatus($"Continuation commit cancelled for output {outputIndex}/{outputCount}.");
             return false;
         }
+
+        if (deferredSource is not null)
+        {
+            SetSelectedImage(ImageSlot.Main, deferredSource);
+            _pendingPixelExactDeferredResolution = new PixelExactDeferredResolution(journal!.SeriesId, outputIndex, _activeRequest.RequestKey);
+        }
         return true;
+    }
+
+    /// <summary>The still-trustworthy bytes of a deferred phase: the frozen
+    /// staging copy first, then the original download, and only while the file
+    /// still hashes to the receipt the collection wrote.</summary>
+    private static string? ResolveDeferredPixelExactPhaseSource(PixelExactStagedOutput deferred)
+    {
+        foreach (var candidate in new[] { deferred.StagedPath, deferred.OriginalSourcePath })
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(candidate) || !File.Exists(candidate)) continue;
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate))).ToLowerInvariant();
+                if (string.Equals(hash, deferred.Sha256, StringComparison.OrdinalIgnoreCase)) return candidate;
+            }
+            catch (IOException)
+            {
+                // An unreadable candidate simply is not offered.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Closes out a deferred phase once its asset and its queue row are
+    /// durable, so it is neither offered twice nor pinned in the journal.</summary>
+    private void FinalizePixelExactDeferredOutputAfterCommit(AssetSession session, bool queueProgressSaved)
+    {
+        var pending = _pendingPixelExactDeferredResolution;
+        _pendingPixelExactDeferredResolution = null;
+        if (pending is not { } resolution
+            || !queueProgressSaved
+            || _currentManifest is null
+            || !string.Equals(session.SourceRequestKey, resolution.RequestKey, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            var state = _pixelExactBatchStateService.Load(resolution.SeriesId);
+            var output = state?.Outputs.FirstOrDefault(item => item.OutputIndex == resolution.OutputIndex && item.DeferredNoTargetRow);
+            if (state is null || output is null)
+            {
+                return;
+            }
+
+            output.DeferredNoTargetRow = false;
+            output.ManifestFingerprint = _currentManifest.ManifestFingerprint;
+            output.RequestKey = resolution.RequestKey;
+            output.AssetName = session.AssetFolderName;
+            output.ExpectedCommitSession = _pixelExactBatchStateService.CloneSessionReceipt(session);
+            output.AssetFolderPath = session.AssetFolder;
+            output.AssetCommittedAtUtc = DateTimeOffset.UtcNow;
+            output.State = PixelExactOutputCommitState.QueueCompleted;
+            _pixelExactBatchStateService.Save(state);
+            AddStatus($"Deferred Pixel-Exact phase {resolution.OutputIndex}/{state.BundleCount} of series '{state.SeriesId}' resolved.");
+        }
+        catch (Exception ex)
+        {
+            // The asset is already durable; only the journal needs attention.
+            AddStatus($"Deferred Pixel-Exact phase state requires reconciliation: {ex.Message}");
+        }
     }
 
     private void TryActivateNextPixelExactCollection(string seriesId)
