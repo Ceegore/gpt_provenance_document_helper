@@ -69,9 +69,10 @@ inert and can be deleted by hand.
 
 ## Verification
 
-- 1298 passed / 1 skipped / 0 failed, up from 1285 passed / 1 skipped in v1.5.4:
-  13 new tests. `scripts/verify_like_ci.ps1` green on a clean tree
+- 1299 passed / 1 skipped / 0 failed, up from 1285 passed / 1 skipped in v1.5.4:
+  14 new tests. `scripts/verify_like_ci.ps1` green on a clean tree
   (`--no-incremental`, `-warnaserror`, Debug + Release + RecoveryCritical).
 - New `PixelExactMultiSeriesJournalTests` reproduce the production shape
   end-to-end: two master rows in one part, both collections in the next, plus the
-  journal, migration, retention, confirmation and deferred-hand-off invariants.
+  journal, migration, retention, confirmation, resumability and
+  deferred-hand-off invariants. Each was confirmed to fail before its fix.

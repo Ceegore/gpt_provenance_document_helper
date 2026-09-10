@@ -253,6 +253,20 @@ public sealed class PixelExactMultiSeriesJournalTests : IDisposable
         }
     }
 
+    private static object? InvokePrivateWithArgs(MainForm form, string method, params object?[] args)
+    {
+        var target = typeof(MainForm).GetMethod(method, BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.True(target is not null, $"Method '{method}' not found.");
+        try
+        {
+            return target!.Invoke(form, args);
+        }
+        catch (TargetInvocationException invocation) when (invocation.InnerException is not null)
+        {
+            throw invocation.InnerException;
+        }
+    }
+
     private static void ImportManifest(TestWorkspace workspace, MainForm form, string fileName, string json)
     {
         var path = Path.Combine(workspace.Root, fileName);
@@ -495,6 +509,54 @@ public sealed class PixelExactMultiSeriesJournalTests : IDisposable
                 Assert.False(resolved.DeferredNoTargetRow);
                 Assert.Equal(PixelExactOutputCommitState.QueueCompleted, resolved.State);
                 Assert.Equal("split_state_three", resolved.AssetName);
+            }
+            finally
+            {
+                ClearSeams();
+            }
+        });
+    }
+
+    /// <summary>
+    /// A confirmed continuation collection never has a seed receipt. Requiring
+    /// one to reopen it would make its own retry - delete a committed output
+    /// with the row's x, then run the RefN row again - permanently unresumable.
+    /// </summary>
+    [Fact]
+    public void ContinuationCollection_IsStillResumable_AfterOneOfItsOutputsIsDeleted()
+    {
+        RunOnSta(() =>
+        {
+            using var workspace = new TestWorkspace();
+            var batchState = new PixelExactBatchStateService(
+                Path.Combine(workspace.Root, "pixel-exact-batch-state.json"),
+                Path.Combine(workspace.Root, "pixel-exact-staging"));
+            var messages = new List<string>();
+            var confirmations = new List<string>();
+            InstallSafeSeams(messages, confirmations);
+            try
+            {
+                using var form = CreateForm(workspace, batchState);
+                ImportManifest(workspace, form, "part-b.json", CollectionOnlyManifest);
+
+                CreateOrderedImages(workspace, "alpha_phase", 2, DateTime.UtcNow.AddMinutes(-40));
+                form.HandleRequestQueueItemActivate(QueueRow(form, "alpha_state_one"));
+                InvokePrivate(form, "HandleMainImageEntryPoint");
+                Assert.True(Directory.Exists(Path.Combine(workspace.Assets, "alpha_state_two")));
+
+                var journal = batchState.Load("series_alpha")!;
+                Assert.False(journal.SeedCommitted);
+
+                InvokePrivateWithArgs(form, "HandleCompletedRequestReset", QueueRow(form, "alpha_state_two"));
+                Assert.False(Directory.Exists(Path.Combine(workspace.Assets, "alpha_state_two")));
+
+                form.HandleRequestQueueItemActivate(QueueRow(form, "alpha_state_one"));
+                messages.Clear();
+                InvokePrivate(form, "HandleMainImageEntryPoint");
+
+                Assert.DoesNotContain(messages, text => text.Contains("has not been committed and marked done", StringComparison.Ordinal));
+                Assert.DoesNotContain(messages, text => text.Contains("durable Pixel-Exact collection receipt", StringComparison.Ordinal));
+                Assert.True(Directory.Exists(Path.Combine(workspace.Assets, "alpha_state_two")));
             }
             finally
             {

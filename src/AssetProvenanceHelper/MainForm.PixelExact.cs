@@ -803,12 +803,17 @@ partial class MainForm
         {
             if (seedAuthority == PixelExactSeedAuthority.Journal)
             {
+                // A batch this very row already staged is resumable on its own
+                // authority. A confirmed continuation never has a seed receipt,
+                // so requiring one here would make its retry unresumable.
+                var resumesOwnBatch = existing is not null
+                    && existing.Outputs.Count > 0
+                    && string.Equals(existing.CollectionRequestKey, activeRequest.RequestKey, StringComparison.Ordinal);
                 if (existing is null
                     || !existing.HasCanonicalSeriesIdentity
-                    || !existing.SeedCommitted
-                    || !existing.SeedQueueCompleted
                     || !string.Equals(existing.SeriesId, workflow.SeriesId, StringComparison.Ordinal)
-                    || existing.BundleCount != outputCount)
+                    || existing.BundleCount != outputCount
+                    || !resumesOwnBatch && (!existing.SeedCommitted || !existing.SeedQueueCompleted))
                 {
                     throw new InvalidDataException("The matching Pixel-Exact seed has not been committed and marked done. Process the preceding seed row first.");
                 }
