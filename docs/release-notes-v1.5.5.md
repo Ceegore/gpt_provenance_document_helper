@@ -43,6 +43,10 @@ recording each queue row's own prompt. It refuses, as before, while the series'
 own master row *is* importable and still open, and now names the row to process
 first instead of reporting a receipt failure.
 
+The confirmation is explicit that it does **not** produce the master asset: if
+that master row is still open in a different manifest part, process it there
+first, or it stays missing.
+
 ## Deferred phases hand themselves over
 
 When a collection defers a phase because this manifest part carries no row for

@@ -929,6 +929,8 @@ partial class MainForm
                 + Environment.NewLine + Environment.NewLine
                 + "This is expected when the master was committed from an earlier manifest part."
                 + Environment.NewLine + Environment.NewLine
+                + "It is NOT expected if that master row is still open in another manifest part. This collection does not produce the master asset - process that row in its own part first, or it stays missing."
+                + Environment.NewLine + Environment.NewLine
                 + $"Commit the {outputCount} downloaded images as this series' outputs anyway? The provenance records each queue row's own prompt.",
             "Continue Pixel-Exact series without a local master receipt",
             MessageBoxButtons.OKCancel,
